@@ -1118,7 +1118,7 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
                 egui::Slider::new(&mut app.preferences.look_at_speed, 0.5..=3.0).step_by(0.25).custom_formatter(|v, _| format!("{v:.2}×")),
             );
             ui.end_row();
-            ui.label(crate::i18n::tr_label("3D mouse (Windows)"));
+            ui.label(crate::i18n::tr_label("3D mouse"));
             ui.checkbox(&mut app.preferences.space_mouse_enabled, crate::i18n::tr_label("Navigate with SpaceNavigator / SpaceMouse"));
             ui.end_row();
             ui.label(crate::i18n::tr_label("3D mouse speed"));

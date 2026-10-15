@@ -145,6 +145,7 @@ pub mod sketch_tools;
 pub mod smart_extrude;
 #[cfg(test)]
 mod smart_extrude_ui_tests;
+pub mod space_mouse;
 pub mod stand_up;
 #[cfg(test)]
 mod sweep_dialog_tests;

@@ -110,6 +110,56 @@ cd apps/solidcraft-web && trunk serve --release --no-autoreload
 Offline use needs `--no-autoreload`: Trunk's live reload changes the page as it serves it, so it
 no longer matches the build the browser would keep. Debug builds (`trunk serve`) never keep a copy.
 
+### 3D mouse in the browser
+
+The web app reads a 3Dconnexion SpaceMouse or SpaceNavigator through the browser's Gamepad API,
+with the same switch and speed in Preferences › Navigation as the desktop app. Edge and Chrome
+read the device as it is. A browser shows a gamepad to a page only once it has been moved there,
+so if nothing happens at first, push the cap firmly once. 3DxWare also turns the cap into
+mouse-wheel zoom in browsers; while the cap moves, the web app ignores the wheel and reads the
+cap itself. Before the browser shows the cap to the page, that zoom still gets through, so the
+first push after opening the page may zoom a little.
+
+Firefox doesn't list 3D mice ([Mozilla bug 1226575](https://bugzilla.mozilla.org/show_bug.cgi?id=1226575)).
+On Windows it does list 3DxWare's virtual joystick, which can carry the cap instead. Save this
+as `%APPDATA%\3Dconnexion\3DxWare\Cfg\Firefox.xml`, then restart Firefox (and 3DxWare, if the cap
+still only zooms). It changes Firefox only: there 3DxWare sends the cap's six axes to the
+joystick instead of the mouse wheel. Delete the file to undo it.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<AppCfg Default="false" xmlns="" CfgFormatVersion="1.3" ThisFileVersion="1.1">
+  <AppInfo>
+    <Signature>
+      <Name>STR_FIREFOX</Name>
+      <ExecutableName>FIREFOX.EXE</ExecutableName>
+      <Transport>KMJ</Transport>
+    </Signature>
+    <Options/>
+  </AppInfo>
+  <CfgProperties>
+    <ID>ID_STR_FIREFOX</ID>
+    <Name>STR_FIREFOX</Name>
+    <InheritsFromID>ID_STR_FIREFOX</InheritsFromID>
+  </CfgProperties>
+  <Devices>
+    <Device>
+      <ID>ID_Standard_3D_Mouse</ID>
+      <AxisBank>
+        <Name>STR_DEFAULT_BANK</Name>
+        <ID>Default</ID>
+        <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_X</ActionID><Min>-512</Min><Max>511</Max><Deadband>0</Deadband></Input><Output><ActionID>HIDJoystick_X</ActionID></Output></Axis>
+        <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_Y</ActionID><Min>-512</Min><Max>511</Max><Deadband>0</Deadband></Input><Output><ActionID>HIDJoystick_Y</ActionID></Output></Axis>
+        <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_Z</ActionID><Min>-512</Min><Max>511</Max><Deadband>0</Deadband></Input><Output><ActionID>HIDJoystick_Z</ActionID></Output></Axis>
+        <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_Rx</ActionID><Min>-512</Min><Max>511</Max><Deadband>0</Deadband></Input><Output><ActionID>HIDJoystick_Rx</ActionID></Output></Axis>
+        <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_Ry</ActionID><Min>-512</Min><Max>511</Max><Deadband>0</Deadband></Input><Output><ActionID>HIDJoystick_Ry</ActionID></Output></Axis>
+        <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_Rz</ActionID><Min>-512</Min><Max>511</Max><Deadband>0</Deadband></Input><Output><ActionID>HIDJoystick_Rz</ActionID></Output></Axis>
+      </AxisBank>
+    </Device>
+  </Devices>
+</AppCfg>
+```
+
 ## CLI
 
 `solidcraft-cli` runs the same commands without a window:

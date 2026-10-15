@@ -15,79 +15,18 @@ use hid_descriptor::Layout;
 use hidapi::{DeviceInfo, HidApi};
 use quick_xml::Reader;
 use quick_xml::events::Event;
-use solidcraft_engine::render::Camera;
 use solidcraft_ui_egui::SolveApp;
+use solidcraft_ui_egui::space_mouse::{Axes, AxisRule, DriverMapping, navigate_frame};
 
 const STALE_AFTER: Duration = Duration::from_millis(150);
 const RETRY_AFTER: Duration = Duration::from_secs(2);
 const MAX_PROFILE_BYTES: u64 = 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Axes {
-    translation: [i16; 3],
-    rotation: [i16; 3],
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct AxisRule {
-    output: usize,
-    enabled: bool,
-    reversed: bool,
-    scale: f64,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct DriverMapping {
-    axes: [AxisRule; 6],
-    overall_scale: f64,
-}
-
-impl Default for DriverMapping {
-    fn default() -> Self {
-        Self { axes: std::array::from_fn(|output| AxisRule { output, enabled: true, reversed: false, scale: 1.0 }), overall_scale: 1.0 }
-    }
-}
-
-impl DriverMapping {
-    /// The mapping used when no 3DxWare profile is found. On Linux there is no 3DxWare, so it is
-    /// what the driver applies by default in object mode (#1172): the physical Ry and Rz swapped
-    /// and reversed, so a tilt left/right rolls and a twist spins. Elsewhere the driver writes a
-    /// profile, and the raw axes are used until it does.
-    fn without_profile() -> Self {
-        let mut mapping = Self::default();
-        if cfg!(target_os = "linux") {
-            mapping.axes[4] = AxisRule { output: 5, enabled: true, reversed: true, scale: 1.0 };
-            mapping.axes[5] = AxisRule { output: 4, enabled: true, reversed: true, scale: 1.0 };
-        }
-        mapping
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
-struct Motion {
-    translation: [f64; 3],
-    rotation: [f64; 3],
-}
-
-impl DriverMapping {
-    fn apply(self, axes: Axes) -> Motion {
-        let raw = [
-            normalized(axes.translation[0]),
-            normalized(axes.translation[1]),
-            normalized(axes.translation[2]),
-            normalized(axes.rotation[0]),
-            normalized(axes.rotation[1]),
-            normalized(axes.rotation[2]),
-        ];
-        let mut logical = [0.0; 6];
-        for (input, rule) in self.axes.iter().enumerate() {
-            if rule.enabled {
-                let sign = if rule.reversed { -1.0 } else { 1.0 };
-                logical[rule.output] = raw[input] * sign * rule.scale * self.overall_scale;
-            }
-        }
-        Motion { translation: [logical[0], logical[1], logical[2]], rotation: [logical[3], logical[4], logical[5]] }
-    }
+/// The mapping used when no 3DxWare profile is found. On Linux there is no 3DxWare, so it is what
+/// the driver applies by default in object mode (#1172). Elsewhere the driver writes a profile,
+/// and the raw axes are used until it does.
+fn without_profile() -> DriverMapping {
+    if cfg!(target_os = "linux") { DriverMapping::object_mode() } else { DriverMapping::default() }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -392,88 +331,34 @@ impl SpaceMouse {
         if let Err(error) = std::thread::Builder::new().name("solidcraft-3d-mouse".into()).spawn(move || reader(worker_ctx, worker_state)) {
             log::warn!("3D mouse: reader could not start: {error}");
         }
-        Self {
-            shared,
-            last_frame: now,
-            driver_mapping: load_driver_mapping().unwrap_or_else(DriverMapping::without_profile),
-            mapping_checked_at: now,
-        }
+        Self { shared, last_frame: now, driver_mapping: load_driver_mapping().unwrap_or_else(without_profile), mapping_checked_at: now }
     }
 
     pub fn tick(&mut self, app: &mut SolveApp, ctx: &Context) {
         let now = Instant::now();
-        let seconds = now.duration_since(self.last_frame).as_secs_f64().min(0.05);
+        let seconds = now.duration_since(self.last_frame).as_secs_f64();
         self.last_frame = now;
         if now.duration_since(self.mapping_checked_at) >= RETRY_AFTER {
-            let updated = load_driver_mapping().unwrap_or_else(DriverMapping::without_profile);
+            let updated = load_driver_mapping().unwrap_or_else(without_profile);
             if updated != self.driver_mapping {
                 log::info!("3D mouse: applying updated 3DxWare axis profile");
                 self.driver_mapping = updated;
             }
             self.mapping_checked_at = now;
         }
-        if !app.preferences.space_mouse_enabled || app.home.open {
-            return;
-        }
         let axes = match self.shared.lock() {
             Ok(reading) => reading.current(now),
             Err(_) => return,
         };
-        if axes == Axes::default() {
-            return;
-        }
-        let speed = f64::from(app.preferences.space_mouse_speed);
-        if !speed.is_finite() {
-            return;
-        }
-        app.begin_external_navigation();
-        let height = app.viewport.rect.map_or(600.0, |rect| f64::from(rect.height().max(1.0)));
-        navigate(
-            &mut app.cam,
-            self.driver_mapping.apply(axes),
-            seconds * speed.clamp(0.1, 5.0),
-            height,
-            app.session.active_sketch.is_some(),
-            app.preferences.zoom_reverse,
-        );
-        ctx.request_repaint_after(Duration::from_millis(16));
-    }
-}
-
-/// A small dead zone avoids drift at rest. A full cap deflection takes roughly one viewport
-/// per second to pan and about two radians per second to turn, independent of frame rate.
-fn normalized(value: i16) -> f64 {
-    let v = f64::from(value);
-    if v.abs() <= 20.0 { 0.0 } else { v.signum() * ((v.abs() - 20.0) / 330.0).min(1.0) }
-}
-
-fn navigate(cam: &mut Camera, motion: Motion, seconds: f64, height: f64, sketch: bool, reverse_zoom: bool) {
-    if !(seconds > 0.0) || !seconds.is_finite() {
-        return;
-    }
-    let [x, y, z] = motion.translation;
-    let [rx, ry, rz] = motion.rotation;
-    // Logical 3DxWare coordinates are X = left/right, Y = zoom and Z = up/down. The user's
-    // profile above can swap the physical forward/back and up/down axes before they reach here.
-    cam.pan(x * height * 0.6 * seconds, z * height * 0.6 * seconds, height);
-    let zoom_sign = if reverse_zoom { -1.0 } else { 1.0 };
-    cam.zoom_at((-y * zoom_sign * 1.5 * seconds).exp(), None);
-    if !sketch {
-        // These are logical 3DxWare coordinates after the profile mapping above: Rx is Tilt,
-        // Ry is Roll and Rz is Spin. The KMJ profile swaps physical Ry/Rz for the selected
-        // navigation mode, so swapping them again here would make Roll behave like Spin.
-        cam.orbit(ry * 250.0 * seconds, rx * 250.0 * seconds);
-        cam.roll_by(rz * 2.0 * seconds);
+        navigate_frame(app, ctx, self.driver_mapping, axes, seconds);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn raw(axes: Axes) -> Motion {
-        DriverMapping::default().apply(axes)
-    }
+    use solidcraft_engine::render::Camera;
+    use solidcraft_ui_egui::space_mouse::navigate;
 
     #[test]
     fn decodes_separate_reports_without_stale_motion_or_padding_interference() {
@@ -520,69 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn six_axes_move_the_camera_and_sketches_keep_their_orientation() {
-        let mut cam = Camera::default();
-        let before = cam;
-        navigate(&mut cam, raw(Axes { translation: [350, 350, 350], rotation: [350, 350, 350] }), 0.02, 600.0, false, false);
-        assert_ne!(cam.target, before.target);
-        assert!(cam.distance < before.distance);
-        assert_ne!(cam.yaw, before.yaw);
-        assert_ne!(cam.pitch, before.pitch);
-        assert_ne!(cam.roll, before.roll);
-        let orientation = (cam.yaw, cam.pitch, cam.roll);
-        navigate(&mut cam, raw(Axes { translation: [350, 0, 0], rotation: [350, 350, 350] }), 0.02, 600.0, true, false);
-        assert_eq!((cam.yaw, cam.pitch, cam.roll), orientation);
-        assert!(cam.is_valid());
-    }
-
-    #[test]
-    fn individual_axes_have_physical_spacemouse_meaning() {
-        let before = Camera::default();
-
-        let mut slide = before;
-        navigate(&mut slide, raw(Axes { translation: [350, 0, 0], rotation: [0; 3] }), 0.02, 600.0, false, false);
-        assert_ne!(slide.target, before.target);
-        assert_eq!(slide.distance, before.distance);
-
-        let mut push = before;
-        navigate(&mut push, raw(Axes { translation: [0, 350, 0], rotation: [0; 3] }), 0.02, 600.0, false, false);
-        assert_eq!(push.target, before.target);
-        assert!(push.distance < before.distance);
-
-        let mut lift = before;
-        navigate(&mut lift, raw(Axes { translation: [0, 0, 350], rotation: [0; 3] }), 0.02, 600.0, false, false);
-        assert_ne!(lift.target, before.target);
-        assert_eq!(lift.distance, before.distance);
-
-        let mut tilt = before;
-        navigate(&mut tilt, raw(Axes { translation: [0; 3], rotation: [350, 0, 0] }), 0.02, 600.0, false, false);
-        assert_eq!((tilt.yaw, tilt.roll), (before.yaw, before.roll));
-        assert_ne!(tilt.pitch, before.pitch);
-
-        let mut roll = before;
-        navigate(&mut roll, raw(Axes { translation: [0; 3], rotation: [0, 350, 0] }), 0.02, 600.0, false, false);
-        assert_eq!((roll.pitch, roll.roll), (before.pitch, before.roll));
-        assert_ne!(roll.yaw, before.yaw);
-
-        let mut twist = before;
-        navigate(&mut twist, raw(Axes { translation: [0; 3], rotation: [0, 0, 350] }), 0.02, 600.0, false, false);
-        assert_eq!((twist.yaw, twist.pitch), (before.yaw, before.pitch));
-        assert_ne!(twist.roll, before.roll);
-    }
-
-    #[test]
-    fn reverse_zoom_setting_applies_to_spacemouse() {
-        let before = Camera::default();
-        let motion = raw(Axes { translation: [0, 350, 0], rotation: [0; 3] });
-        let mut normal = before;
-        navigate(&mut normal, motion, 0.02, 600.0, false, false);
-        let mut reversed = before;
-        navigate(&mut reversed, motion, 0.02, 600.0, false, true);
-        assert!(normal.distance < before.distance);
-        assert!(reversed.distance > before.distance);
-    }
-
-    #[test]
     fn applies_3dxware_axis_swaps_and_reversals() {
         let profile = br#"
             <AppCfg><Devices><Device><AxisBank>
@@ -615,33 +437,19 @@ mod tests {
         "#;
         let profile = parse_driver_mapping(object_mode).expect("valid 3DxWare profile");
         if cfg!(target_os = "linux") {
-            assert_eq!(DriverMapping::without_profile(), profile);
+            assert_eq!(without_profile(), profile);
             // Tilting the cap rolls the view and twisting it spins it, as with the driver.
             let before = Camera::default();
             let mut tilt = before;
-            navigate(
-                &mut tilt,
-                DriverMapping::without_profile().apply(Axes { translation: [0; 3], rotation: [0, 350, 0] }),
-                0.02,
-                600.0,
-                false,
-                false,
-            );
+            navigate(&mut tilt, without_profile().apply(Axes { translation: [0; 3], rotation: [0, 350, 0] }), 0.02, 600.0, false, false);
             assert_eq!((tilt.yaw, tilt.pitch), (before.yaw, before.pitch));
             assert_ne!(tilt.roll, before.roll);
             let mut twist = before;
-            navigate(
-                &mut twist,
-                DriverMapping::without_profile().apply(Axes { translation: [0; 3], rotation: [0, 0, 350] }),
-                0.02,
-                600.0,
-                false,
-                false,
-            );
+            navigate(&mut twist, without_profile().apply(Axes { translation: [0; 3], rotation: [0, 0, 350] }), 0.02, 600.0, false, false);
             assert_ne!(twist.yaw, before.yaw);
             assert_eq!(twist.roll, before.roll);
         } else {
-            assert_eq!(DriverMapping::without_profile(), DriverMapping::default());
+            assert_eq!(without_profile(), DriverMapping::default());
         }
     }
 
@@ -665,5 +473,25 @@ mod tests {
         navigate(&mut physical_spin, mapping.apply(Axes { translation: [0; 3], rotation: [0, 0, 350] }), 0.02, 600.0, false, false);
         assert_ne!(physical_spin.yaw, before.yaw);
         assert_eq!((physical_spin.pitch, physical_spin.roll), (before.pitch, before.roll));
+    }
+
+    #[test]
+    fn each_frame_moves_the_view_through_the_drivers_mapping() {
+        // The reader's latest tilt, and a profile that makes tilt roll: the frame rolls the view.
+        let now = Instant::now();
+        let mut reading = Reading::new(now);
+        reading.axes.rotation = [0, 350, 0];
+        let mut mouse = SpaceMouse {
+            shared: Arc::new(Mutex::new(reading)),
+            last_frame: now - Duration::from_millis(20),
+            driver_mapping: DriverMapping::object_mode(),
+            mapping_checked_at: now,
+        };
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
+        app.home.open = false;
+        let before = app.cam;
+        mouse.tick(&mut app, &Context::default());
+        assert_eq!((app.cam.yaw, app.cam.pitch), (before.yaw, before.pitch));
+        assert_ne!(app.cam.roll, before.roll);
     }
 }

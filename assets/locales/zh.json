@@ -316,7 +316,7 @@
   "sketch.make_selection": "将选择转换为 {linetype}",
   "ui.1_degree_of_freedom": "1 个自由度",
   "ui.3d_mouse_speed": "3D 鼠标速度",
-  "ui.3d_mouse_windows": "3D 鼠标（Windows）",
+  "ui.3d_mouse_windows": "3D 鼠标",
   "ui.3d_sketch": "3D 草图",
   "ui.about": "关于",
   "ui.activate": "激活",
