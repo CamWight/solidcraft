@@ -756,6 +756,8 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         v.push(cmd(app, "sketch.rectangle.two_point", "Rectangle"));
         v.push(cmd(app, "sketch.circle.center", "Circle"));
         v.push(cmd(app, "sketch.dimension", "Sketch Dimension"));
+        v.push(Item::sep());
+        v.push(act("ui.paste", "Paste", "").key("Ctrl+V").on(app.session.sketch_clipboard.is_some()));
         return v;
     }
     let ents: Vec<String> = curves.iter().chain(points.iter()).cloned().collect();
@@ -770,6 +772,9 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
         v.push(cmd(app, "sketch.edit_text", "Edit Text"));
     }
     v.push(cmd(app, "sketch.move", "Move/Copy").key("M"));
+    v.push(act("ui.cut", "Cut", "").key("Ctrl+X"));
+    v.push(act("ui.copy", "Copy", "").key("Ctrl+C"));
+    v.push(act("ui.paste", "Paste", "").key("Ctrl+V").on(app.session.sketch_clipboard.is_some()));
     if !curves.is_empty() {
         v.push(cmd(app, "sketch.construction", "Normal / Construction").with(json!({ "curves": curves })));
     }
@@ -852,6 +857,9 @@ pub fn run_item(app: &mut SolveApp, item: &Item, at: Pos2) {
         "ui.delete" if item.params.is_some() => crate::delete::request(app, p),
         "ui.delete" => delete(app),
         "ui.finishSketch" => app.finish_sketch(),
+        "ui.copy" => drop(crate::edit_clipboard::copy(app)),
+        "ui.cut" => drop(crate::edit_clipboard::cut(app)),
+        "ui.paste" => drop(crate::edit_clipboard::paste(app, Some(at))),
         "ui.editSketchPattern" => {
             if let Some(id) = p.get("pattern").and_then(Value::as_str) {
                 crate::sketch_modify_ui::edit_pattern(app, id);

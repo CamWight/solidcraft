@@ -235,6 +235,9 @@ impl crate::Feature {
                         mapped_name(n, parameters);
                     }
                 }
+                for e in sketch.text_exprs_mut() {
+                    *e = clone_expression(e, parameters);
+                }
                 for link in &mut sketch.links {
                     remap_link(&mut link.source, ids, names, bodies, 0);
                     for n in link.face_name.iter_mut().chain(&mut link.edge_name) {

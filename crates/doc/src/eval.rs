@@ -737,11 +737,13 @@ pub struct Model {
     pub no_cache: bool,
 }
 
-/// Parameters a feature uses directly (inputs and sketch dimensions), sorted.
+/// Parameters a feature uses directly (inputs, sketch dimensions and the expressions of a
+/// sketch's texts), sorted.
 fn param_names(f: &Feature) -> Vec<String> {
     let mut names: Vec<String> = f.kind.expressions().iter().flat_map(|e| expr::references(e)).collect();
     if let FeatureKind::Sketch { sketch, .. } = &f.kind {
         names.extend(sketch.constraints.iter().filter_map(|c| c.param.clone()));
+        names.extend(sketch.text_exprs().into_iter().flat_map(|(_, e)| expr::references(e)));
     }
     names.sort();
     names.dedup();
@@ -1307,7 +1309,7 @@ fn point(vals: &BTreeMap<String, Value>, p: &crate::PointExpr) -> Result<Vec3> {
     if [v.x, v.y, v.z].iter().all(|c| c.is_finite() && c.abs() < 1e9) { Ok(v) } else { Err(DocError::Invalid("the position is out of range".into())) }
 }
 
-fn val(vals: &BTreeMap<String, Value>, e: &str, k: Kind) -> Result<f64> {
+pub(crate) fn val(vals: &BTreeMap<String, Value>, e: &str, k: Kind) -> Result<f64> {
     let scale = vals.get(DESIGN_LEN).map(|x| x.v).unwrap_or(1.0);
     if k == Kind::Length && scale != 1.0 && !expr::is_literal(e) {
         let v = expr::eval_with(e, &|n| vals.get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`"))))?;
@@ -1711,6 +1713,53 @@ fn region_samples(r: &Region2) -> Vec<Vec2> {
         }
     }
     out
+}
+
+/// The region with each hole filled whose inside the tool would sweep with no change to the
+/// targets: all empty for a cut (the profile drawn round a hole in the part), all material for a
+/// join. Then the tool's walls don't lie on the part's walls there (the boolean can't intersect
+/// walls lying on each other, #1360), and what it cuts or joins is the same. A hole is filled only
+/// when points across it at levels through the tool are all empty (or all material) and no
+/// vertex of the targets lies inside the column over it (an island in it, a floor).
+fn fill_void_holes(st: &ModelState, r: &Region2, op: Operation, targets: &[String], plane: &Plane, (lo, hi): (f64, f64)) -> Region2 {
+    if r.holes.is_empty() || !matches!(op, Operation::Cut | Operation::Join) || hi - lo <= 0.0 {
+        return r.clone();
+    }
+    let bodies: Vec<&ModelBody> = st.bodies.iter().filter(|b| targets.is_empty() || targets.contains(&b.name)).collect();
+    if bodies.is_empty() {
+        return r.clone();
+    }
+    let meshes: Vec<Arc<Mesh>> = bodies.iter().map(|b| b.mesh()).collect();
+    let size = bodies.iter().map(|b| b.body.size()).fold(0.0, f64::max);
+    let margin = (size * 1e-4).max(1e-4);
+    let n = plane.normal();
+    let inside_any = |p: Vec3| meshes.iter().any(|m| m.contains(p));
+    let want = op == Operation::Join;
+    let mut holes = Vec::with_capacity(r.holes.len());
+    for h in &r.holes {
+        let column = Region2 { outer: h.ccw(), holes: vec![] };
+        let samples = region_samples(&column);
+        let swept = (1..=8).all(|k| {
+            let z = lo + (hi - lo) * (k as f64 - 0.5) / 8.0;
+            samples.iter().all(|s| inside_any(plane.to_world(*s) + n * z) == want)
+        });
+        // No boundary of the targets within the column (shrunk off its wall, short of its ends).
+        let clear = swept
+            && meshes.iter().all(|m| {
+                m.positions.iter().all(|p| {
+                    let z = (*p - plane.origin).dot(n);
+                    let q = plane.to_local(*p);
+                    !(z > lo + margin
+                        && z < hi - margin
+                        && column.contains(q)
+                        && h.segs.iter().all(|sg| sg.point_at(sg.closest_param(q)).dist(q) > margin))
+                })
+            });
+        if !clear {
+            holes.push(h.clone());
+        }
+    }
+    Region2 { outer: r.outer.clone(), holes }
 }
 
 /// Grow profile edges that lie on a face of a target body away from the profile, by a small
@@ -2825,6 +2874,8 @@ fn feature_tools_with_constructor(
             let mut untrimmed = extent.to.is_none() && extent.from.is_none() && !extent.through_all;
             // The footprint of each tool in the sketch: a tool lies in the prism over it.
             let mut footprints = Vec::with_capacity(regions.len());
+            // Each tool's extent along the normal (they differ where one is run on into a face).
+            let mut extents: Vec<(f64, f64)> = Vec::with_capacity(regions.len());
             for r in &regions {
                 if *operation == Operation::Join {
                     let exact = centered_extrude(&ss.plane, r, lo + off, hi + off, Some(&ss))?;
@@ -2838,6 +2889,7 @@ fn feature_tools_with_constructor(
                         // the sewable seam with a coincident curved intersection.
                         tools.extend(exact);
                         footprints.push(r.clone());
+                        extents.push((lo + off, hi + off));
                         continue;
                     }
                 }
@@ -2845,18 +2897,31 @@ fn feature_tools_with_constructor(
                 let probe = |p: Vec2| (1..4).map(|k| ss.plane.to_world(p) + n * (lo + off + (hi - lo) * k as f64 / 4.0)).collect::<Vec<_>>();
                 let original = r;
                 let r = grow_profile_for_coplanar(st, r, *operation, targets, &probe);
+                let r = fill_void_holes(st, &r, *operation, targets, &ss.plane, (l2, h2));
                 untrimmed &= l2 == lo + off && h2 == hi + off && &r == original;
                 tools.extend(centered_extrude(&ss.plane, &r, l2, h2, Some(&ss))?);
                 footprints.push(r);
+                extents.push((l2, h2));
             }
-            // A cut by profiles apart in the sketch (the letters of a text): each tool lies in the
-            // prism over its footprint, so the tools are apart too (whatever their heights, and
-            // trimmed or not). The body is then cut once by all of them rather than once per
-            // profile, each cut working on a body grown by the one before.
-            // (Sheet metal keeps its own way of cutting, tool by tool, to keep its flat pattern.)
+            // A cut or a join by profiles apart in the sketch (the letters of a text): each tool
+            // lies in the prism over its footprint, so the tools are apart too (whatever their
+            // heights, and trimmed or not). The body is then cut once by all of them, or joined to
+            // all of them at once, rather than once per profile, each on a body grown or cut by
+            // the ones before. (A join meeting several bodies keeps joining them tool by tool;
+            // sheet metal keeps its own way of cutting, tool by tool, to keep its flat pattern.)
             let sheet =
                 if targets.is_empty() { !st.sheets.is_empty() } else { targets.iter().any(|t| st.sheets.iter().any(|sheet| &sheet.body == t)) };
-            if *operation == Operation::Cut && !sheet && tools.len() > 1 && regions_apart(&footprints, APART_GAP) {
+            let one_target = if targets.is_empty() { st.bodies.len() == 1 } else { targets.len() == 1 };
+            // A join at once only of tools alike in height (one prism of them all, which the
+            // boolean joins exactly): tools that start at different levels (some run on into the
+            // face, one hanging over its edge) keep joining one by one.
+            let alike = extents.windows(2).all(|w| (w[0].0 - w[1].0).abs() < 1e-9 && (w[0].1 - w[1].1).abs() < 1e-9);
+            let at_once = match operation {
+                Operation::Cut => !sheet,
+                Operation::Join => one_target && !sheet && alike,
+                _ => false,
+            };
+            if at_once && tools.len() > 1 && regions_apart(&footprints, APART_GAP) {
                 let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();
                 if let Ok(Some(one)) = kernel::join_apart(&bodies) {
                     tools = vec![Traced::step(one, &tools.iter().collect::<Vec<_>>())];
@@ -4082,6 +4147,9 @@ fn eval_feature(doc: &Document, vals: &BTreeMap<String, Value>, f: &Feature, st:
                 (None, other) => (doc.resolve_plane_in(vals, other, 0, Some(&fst))?, None),
             };
             let mut sk = sketch.clone();
+            // A text's outlines are rebuilt from its numbers when the links are refreshed: the
+            // ones its expressions give come first.
+            doc.apply_text_values(vals, &mut sk)?;
             let mut warns = match anchor {
                 Some(anchor) => crate::project::refresh_face_anchor_links(doc, vals, &fst, &plane, &mut sk, anchor),
                 None => crate::project::refresh_links(doc, vals, &fst, &plane, &mut sk),

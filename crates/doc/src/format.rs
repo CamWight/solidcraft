@@ -217,6 +217,11 @@
 //!   `crown` (0 by default, and then not saved: a bump that vanishes on the loop, so the face
 //!   still meets the picked edges). Version 21 designs need no transformation; 0.12.0 asks for an
 //!   update instead of meeting a feature it can't read or dropping a patch's crown.
+//!   Also under 22, a sketch text's link source can say that its place, height or angle are
+//!   expressions (`exprs`: `x`, `y`, `height`, `angle`, each an expression over the design's
+//!   parameters); the source's `at`, `height` and `angle` then hold the numbers they last came
+//!   to. A text without `exprs` is set as it always was; 0.12.0 asks for an update instead of
+//!   dropping the expressions and keeping the text at its last numbers.
 
 use serde_json::Value;
 

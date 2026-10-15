@@ -1286,10 +1286,13 @@ fn exact_loop(lp: &Loop2, tags: &[Tag], sources: &[Seg2], near: f64) -> (Vec<Seg
             j += 1;
         }
         let Some(last) = lp.segs.get((first + j) % n) else { return plain() };
+        // A run reaching the curve's end is the curve to its end, exactly: the same curve the
+        // walls over it are read from, which a parameter found by projection (a hair short of 1)
+        // would cut short into a different one.
         let at = |p: Vec2| {
-            if p.dist(src.start()) < 1e-9 {
+            if p.dist(src.start()) < near {
                 0.0
-            } else if p.dist(src.end()) < 1e-9 {
+            } else if p.dist(src.end()) < near {
                 1.0
             } else {
                 src.closest_param(p)
@@ -1357,6 +1360,29 @@ fn exact_loop(lp: &Loop2, tags: &[Tag], sources: &[Seg2], near: f64) -> (Vec<Seg
                 segs.push(s);
                 ts.push(t);
             }
+        }
+    }
+    // The loop closed exactly: where a segment ends a hair from where the next starts (a font's
+    // nearly round curve read as an arc ends a few hundredths of a micron off the curve after
+    // it), the one that is not an arc moves its end onto the arc's (an arc's ends stay on its
+    // circle). Two arcs are left as they meet, as a boolean of lines and arcs leaves them.
+    let m = segs.len();
+    for i in 0..m {
+        let j = (i + 1) % m;
+        let (Some(x), Some(y)) = (segs.get(i).copied(), segs.get(j).copied()) else { continue };
+        let gap = x.end().dist(y.start());
+        if gap == 0.0 || gap > near {
+            continue;
+        }
+        let arc = |s: &Seg2| matches!(s, Seg2::Arc { .. });
+        if !arc(&y) {
+            if let Some(s) = segs.get_mut(j) {
+                *s = seg_with_ends(&y, x.end(), y.end());
+            }
+        } else if !arc(&x)
+            && let Some(s) = segs.get_mut(i)
+        {
+            *s = seg_with_ends(&x, x.start(), y.start());
         }
     }
     (segs, ts)
@@ -1902,6 +1928,27 @@ fn sew_connected_sections(
             && s.length() <= 2.0 * tol
             && matches!((weld(&ends, &grid, s.start()), weld(&ends, &grid, s.end())), (Some(p), Some(q)) if p == q)
     };
+    // One curve between two ends, as the walls and the caps beside them each read it: their
+    // sections come from different booleans, which split it from different pieces, so the
+    // control points can differ by a hair, and sewing tells edges apart by them. The first
+    // reading stands for all of them.
+    let chains: std::cell::RefCell<Vec<[Vec3; 4]>> = std::cell::RefCell::new(Vec::new());
+    let same_chain = |c: [Vec3; 4]| -> [Vec3; 4] {
+        let mid = |k: &[Vec3; 4]| (k[0] + (k[1] + k[2]) * 3.0 + k[3]) * 0.125;
+        let mut known = chains.borrow_mut();
+        for k in known.iter() {
+            if mid(k).dist(mid(&c)) <= tol * 10.0 {
+                if k[0] == c[0] && k[3] == c[3] {
+                    return *k;
+                }
+                if k[0] == c[3] && k[3] == c[0] {
+                    return [k[3], k[2], k[1], k[0]];
+                }
+            }
+        }
+        known.push(c);
+        c
+    };
     let at = |u: Vec2, z: f64| plane.to_world(u) + d * z;
     let welded = |u: Vec2, z: f64| at(weld(&ends, &grid, u).unwrap_or(u), z);
     let edge = |sg: &Seg2, z: f64| -> Option<EdgeSpec> {
@@ -1910,7 +1957,7 @@ fn sew_connected_sections(
             Seg2::Arc { .. } => EdgeSpec::Arc { a: welded(sg.start(), z), b: welded(sg.end(), z), mid: at(sg.point_at(0.5), z) },
             _ => {
                 let [p0, p1, p2, p3] = cubic_of(sg)?;
-                EdgeSpec::Chain { ctrl: vec![welded(p0, z), at(p1, z), at(p2, z), welded(p3, z)].into() }
+                EdgeSpec::Chain { ctrl: same_chain([welded(p0, z), at(p1, z), at(p2, z), welded(p3, z)]).to_vec().into() }
             }
         })
     };

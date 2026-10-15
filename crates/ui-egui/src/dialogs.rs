@@ -1935,7 +1935,10 @@ fn picked_side(app: &SolveApp, d: &Dialog, first: &Sel) -> Option<usize> {
 /// Sketch Palette keeps the right there, and the dialog takes the left so both stay on screen.
 pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     app.viewport.dialog_rect = None;
-    let Some(mut d) = app.dialog.take() else { return };
+    let Some(mut d) = app.dialog.take() else {
+        crate::frame::reset_dock_offset(ctx);
+        return;
+    };
     // Edit Text lasts as long as its text: other design changes leave it open.
     if let Kind::Text(k) = &mut d.kind
         && !crate::sketch_text::refresh(app, k)
@@ -1979,7 +1982,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     } else {
         crate::frame::Side::Right
     };
-    let anchor = egui::pos2(side.anchor_x(vp), top);
+    // Dragged by its title band, the dialog keeps that offset from its docked place while it
+    // is open (#1335), kept inside the viewport.
+    let moved = crate::frame::dock_offset(ctx, title(&d.kind));
+    let docked = egui::pos2(side.anchor_x(vp), top);
+    let anchor = crate::frame::offset_anchor(docked, moved, vp, side);
     let mut keep = true;
     let mut ok = false;
     let mut applied = false;
@@ -2020,7 +2027,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
         ui.set_max_width(if wide { DIALOG_WIDE_MAX_W } else { DIALOG_MAX_W } - margin);
         // Rows that end at the right edge line up with last frame's content width.
         let total = crate::frame::content_width(ui, wkey, min_w);
-        // Header: "−" folds the dialog, the command name, "»" at the right, on the title band.
+        // Header: "−" folds the dialog, the command name, "»" at the right, on the title band,
+        // which also moves the dialog.
+        let band_top = ui.cursor().min;
+        let band = egui::Rect::from_min_size(band_top, vec2(total, ui.spacing().interact_size.y + 2.0));
+        crate::frame::drag_dock(ui, band, title(&d.kind), moved, anchor - docked);
         crate::frame::heading(ui, crate::frame::Level::Title, total, |ui| {
             let total = total - 2.0 * crate::frame::HEADING_MARGIN;
             let fold = if d.collapsed { "+" } else { "−" };
@@ -2031,7 +2042,8 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
             {
                 d.collapsed = !d.collapsed;
             }
-            ui.label(RichText::new(heading.as_str()).strong().size(12.5));
+            // Not selectable: a drag on the title moves the dialog.
+            ui.add(egui::Label::new(RichText::new(heading.as_str()).strong().size(12.5)).selectable(false));
             let chevron_width = ui.spacing().interact_size.x;
             crate::frame::right_aligned(ui, total, chevron_width, |ui| {
                 let chevron = if d.collapsed { "«" } else { "»" };

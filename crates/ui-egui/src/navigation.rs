@@ -129,11 +129,12 @@ pub(crate) fn pinch_factor(input: &egui::InputState) -> f32 {
 
 /// Zoom anchor: the model point under the cursor, else the target's depth.
 /// Preferences › Navigation › Zoom to the cursor (off: toward the view's centre).
-pub(crate) fn zoom_anchor(app: &mut SolveApp, rect: egui::Rect, hover: Option<egui::Pos2>) -> Option<Vec3> {
+pub(crate) fn zoom_anchor(app: &mut SolveApp, rect: egui::Rect, hover: Option<egui::Pos2>, surface: bool) -> Option<Vec3> {
     hover.filter(|_| app.preferences.zoom_to_cursor).map(|p| {
         let proj = projection(app, rect);
         // Toward the model's surface under the cursor, else the target's depth.
-        if let Some(q) = pick_cached(app, &proj, p).iter().find_map(|h| if let Hit::Face { point, .. } = h { Some(*point) } else { None }) {
+        if surface && let Some(q) = pick_cached(app, &proj, p).iter().find_map(|h| if let Hit::Face { point, .. } = h { Some(*point) } else { None })
+        {
             return q;
         }
         let (o, d) = proj.ray(p);
@@ -244,7 +245,7 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     app.viewport.mouse = hover.filter(|_| inside);
     // Ctrl or Alt held: drawing and dragging don't snap.
     crate::drag_snap::set_suppressed(mods.ctrl || mods.alt || mods.command);
-    middle_double_click(app, ui, inside, caps.orbit);
+    middle_double_click(app, ui, inside);
     // The 3D mouse's motion this frame, with what this page's camera may do.
     device(app, rect, caps);
 
@@ -282,7 +283,7 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
         app.viewport.orbit_free = None;
         // Spread zooms in: the camera distance shrinks by the pinch factor.
         let f = f64::from(pinch).powf(-crate::prefs::zoom_sign(app));
-        let anchor = zoom_anchor(app, rect, hover);
+        let anchor = zoom_anchor(app, rect, hover, caps.orbit);
         if app.preferences.nav == crate::prefs::TOUCHPAD_NAV {
             let mut params = json!({"motion":"zoom", "factor":f.clamp(0.05,20.0)});
             if let Some(anchor) = anchor {
@@ -298,7 +299,7 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
         app.viewport.orbit_snap = None;
         app.viewport.orbit_free = None;
         let f = (-scroll as f64 * 0.0015 * crate::prefs::zoom_sign(app)).exp();
-        let anchor = zoom_anchor(app, rect, hover);
+        let anchor = zoom_anchor(app, rect, hover, caps.orbit);
         if app.preferences.nav == crate::prefs::TOUCHPAD_NAV {
             let mut params = json!({"motion":"zoom", "factor":f.clamp(0.05,20.0)});
             if let Some(anchor) = anchor {
@@ -607,7 +608,7 @@ pub(crate) fn step_orbit_snap(app: &mut SolveApp, rect: Rect, dt: f64) {
 /// A middle-button double-click goes Home (or fits, or nothing: Preferences › Navigation). Only
 /// clicks count: a press that moves (a pan or orbit drag) or is held is not one, and the two
 /// clicks must both be the middle button's, close together in time and place.
-pub(crate) fn middle_double_click(app: &mut SolveApp, ui: &egui::Ui, inside: bool, orbit: bool) {
+pub(crate) fn middle_double_click(app: &mut SolveApp, ui: &egui::Ui, inside: bool) {
     use egui::PointerButton::{Extra1, Extra2, Middle, Primary, Secondary};
     let (double, releases, middle, other, dragging) = ui.input(|i| {
         (
@@ -626,9 +627,7 @@ pub(crate) fn middle_double_click(app: &mut SolveApp, ui: &egui::Ui, inside: boo
         return;
     }
     match crate::prefs::MiddleDoubleClick::of(app) {
-        // Home turns the view; a flat page only frames its content.
-        crate::prefs::MiddleDoubleClick::Home if orbit => app.animate_view("home"),
-        crate::prefs::MiddleDoubleClick::Home => app.animate_fit_all(),
+        crate::prefs::MiddleDoubleClick::Home => app.animate_view("home"),
         crate::prefs::MiddleDoubleClick::Fit => app.animate_fit_all(),
         crate::prefs::MiddleDoubleClick::Off => {}
     }

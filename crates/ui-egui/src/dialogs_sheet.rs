@@ -808,7 +808,7 @@ fn bend_colors() -> (Color32, Color32) {
 
 /// The flat pattern view: the outline, cut-outs and bend lines (up and down in their colours)
 /// drawn flat over the viewport, fitted to it. True when the dialog is a flat pattern.
-pub fn overlay(app: &SolveApp, painter: &egui::Painter, rect: Rect, d: &Dialog) -> bool {
+pub fn overlay(app: &mut SolveApp, painter: &egui::Painter, rect: Rect, d: &Dialog) -> bool {
     let Kind::Sheet(Sm::FlatPattern { data, .. }) = &d.kind else { return false };
     let t = Tokens::get();
     let (up_col, down_col) = bend_colors();
@@ -842,9 +842,13 @@ pub fn overlay(app: &SolveApp, painter: &egui::Painter, rect: Rect, d: &Dialog) 
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return true;
     }
-    let scale = (f64::from(area.width()) / (hi.0 - lo.0)).min(f64::from(area.height()) / (hi.1 - lo.1));
-    let ox = f64::from(area.center().x) - (lo.0 + hi.0) * 0.5 * scale;
-    let oy = f64::from(area.center().y) + (lo.1 + hi.1) * 0.5 * scale;
+    if !app.flat_view.fitted {
+        app.flat_view.fit(rect, area, lo, hi);
+    }
+    let cam = app.flat_view.cam;
+    let scale = f64::from(rect.height()) / (2.0 * cam.half_height());
+    let ox = f64::from(rect.center().x) - cam.target.x * scale;
+    let oy = f64::from(rect.center().y) + cam.target.y * scale;
     let to = |p: (f64, f64)| -> Pos2 { pos2((ox + p.0 * scale) as f32, (oy - p.1 * scale) as f32) };
     for l in &loops {
         let pts: Vec<Pos2> = l.iter().map(|p| to(*p)).collect();
@@ -912,6 +916,56 @@ pub fn overlay(app: &SolveApp, painter: &egui::Painter, rect: Rect, d: &Dialog) 
         painter.text(pos2(rect.left() + 44.0, y), Align2::LEFT_TOP, "Pocket boundary (material remains)", FontId::proportional(12.0), t.text_dim);
     }
     true
+}
+
+/// The flat pattern's own 2D view: a top-down orthographic camera over the flat plane (x right,
+/// y up, millimetres), so the shared navigation moves it like any other camera. The Design
+/// camera is left alone while this has the viewport.
+pub struct FlatView {
+    pub cam: solidcraft_engine::render::Camera,
+    /// The camera frames the pattern; cleared by Fit and Home, and whenever the dialog is closed.
+    pub fitted: bool,
+}
+
+impl Default for FlatView {
+    fn default() -> Self {
+        let mut cam = solidcraft_engine::render::Camera::default();
+        cam.set_view(solidcraft_engine::render::StandardView::Top);
+        cam.fov = 0.0;
+        cam.up = solidcraft_engine::render::UpAxis::Z;
+        FlatView { cam, fitted: false }
+    }
+}
+
+impl FlatView {
+    /// Frame the pattern's bounds `lo..hi` in `area`, the part of `rect` the command panel leaves.
+    fn fit(&mut self, rect: Rect, area: Rect, lo: (f64, f64), hi: (f64, f64)) {
+        let scale = (f64::from(area.width()) / (hi.0 - lo.0)).min(f64::from(area.height()) / (hi.1 - lo.1));
+        self.cam.target.x = (lo.0 + hi.0) * 0.5 - f64::from(area.center().x - rect.center().x) / scale;
+        self.cam.target.y = (lo.1 + hi.1) * 0.5 + f64::from(area.center().y - rect.center().y) / scale;
+        self.cam.target.z = 0.0;
+        self.cam.distance = f64::from(rect.height()) / (2.0 * scale) / 0.4;
+        self.fitted = true;
+    }
+}
+
+/// The Create Flat Pattern dialog is open, so the viewport shows its 2D view.
+pub(crate) fn flat_active(app: &SolveApp) -> bool {
+    matches!(app.dialog.as_ref().map(|d| &d.kind), Some(Kind::Sheet(Sm::FlatPattern { .. })))
+}
+
+/// Camera input for the flat pattern: the shared navigation without orbit, driving the flat view
+/// instead of the Design camera. The result reports nothing under the pointer, so the model
+/// beneath neither hovers, selects nor navigates.
+pub(crate) fn navigate(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &egui::Response) -> crate::navigation::CameraInput {
+    use crate::navigation::{NavCaps, handle};
+    let design = std::mem::replace(&mut app.cam, app.flat_view.cam);
+    let mut input = handle(app, ui, rect, resp, NavCaps { orbit: false, pick: false });
+    app.flat_view.cam = std::mem::replace(&mut app.cam, design);
+    app.viewport.mouse = None;
+    input.inside = false;
+    input.hover = None;
+    input
 }
 
 fn pocket_label(app: &SolveApp, pocket: &Value) -> Option<String> {

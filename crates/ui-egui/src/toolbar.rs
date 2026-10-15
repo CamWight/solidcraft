@@ -1261,6 +1261,11 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
     });
     // Home hides the design: only New, Open and Preferences work there.
     let shown = design_shown(app);
+    if shown {
+        crate::edit_clipboard::handle(app, ctx);
+    } else {
+        crate::edit_clipboard::flush(ctx);
+    }
     for k in keys {
         use egui::Key;
         if mods.command {
@@ -1277,6 +1282,8 @@ pub fn shortcuts(app: &mut SolveApp, ctx: &egui::Context) {
                 _ if !shown => {}
                 Key::Z => drop(app.run("edit.undo", json!({}))),
                 Key::Y => drop(app.run("edit.redo", json!({}))),
+                // Copy, Cut and Paste (`edit_clipboard::handle`).
+                Key::C | Key::X | Key::V if !mods.shift && !mods.alt => {}
                 Key::S => save(app),
                 _ => crate::keymap::press(app, &crate::keymap::key_name(k, mods)),
             }

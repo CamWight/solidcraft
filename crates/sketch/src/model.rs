@@ -438,7 +438,9 @@ impl ConstraintKind {
             OffsetDistance { .. } => (vec![], vec![]),
         }
     }
-    pub(crate) fn remap(&mut self, pmap: &dyn Fn(usize) -> Option<usize>, cmap: &dyn Fn(usize) -> Option<usize>) -> bool {
+    /// Renumber the points and curves the constraint refers to; false when one has no new
+    /// number (the constraint is then partly renumbered and should be dropped).
+    pub fn remap(&mut self, pmap: &dyn Fn(usize) -> Option<usize>, cmap: &dyn Fn(usize) -> Option<usize>) -> bool {
         use ConstraintKind::*;
         let mut ok = true;
         let mut fp = |i: &mut usize| match pmap(*i) {

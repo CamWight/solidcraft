@@ -64,6 +64,7 @@ pub(crate) use sketch::author_path_for_rebind;
 pub(crate) use sketch::created as sketch_created;
 mod sketch_3d;
 mod sketch_canvas;
+pub mod sketch_clipboard;
 mod sketch_constraints;
 mod sketch_create;
 mod sketch_freeform;
@@ -252,6 +253,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(delete::COMMANDS.iter());
     v.extend(edit::COMMANDS.iter());
     v.extend(clipboard::COMMANDS.iter());
+    v.extend(sketch_clipboard::COMMANDS.iter());
     v.extend(script::COMMANDS.iter());
     v.extend(parameters::COMMANDS.iter());
     v.extend(file::COMMANDS.iter());

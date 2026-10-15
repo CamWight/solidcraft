@@ -39,6 +39,7 @@ pub mod dim_view;
 mod dimension_create_ui_tests;
 pub mod documents;
 pub mod drag_snap;
+pub mod edit_clipboard;
 pub mod fonts;
 pub mod frame;
 pub mod gizmo;
@@ -364,6 +365,8 @@ pub struct SolveApp {
     styled: bool,
     fitted: bool,
     pending_fit: Option<(Camera, solidcraft_engine::geom::Aabb3, bool)>,
+    /// The sheet metal flat pattern's own pan and zoom.
+    pub flat_view: dialogs_sheet::FlatView,
     /// The start page.
     pub home: home::HomeState,
     pub file_load: file_load::FileLoad,
@@ -449,6 +452,7 @@ impl SolveApp {
             styled: false,
             fitted: false,
             pending_fit: None,
+            flat_view: Default::default(),
             home: home::HomeState::default(),
             file_load: file_load::FileLoad::default(),
             docs: documents::Documents::default(),
@@ -987,6 +991,10 @@ impl SolveApp {
     }
 
     pub fn fit_view(&mut self) {
+        if dialogs_sheet::flat_active(self) {
+            self.flat_view.fitted = false;
+            return;
+        }
         if render_workspace::active(self) {
             self.cancel_view_animation();
             match solidcraft_engine::product_scene::extract(&self.session) {
@@ -1074,6 +1082,10 @@ impl SolveApp {
 
     /// Frame everything shown, keeping the orientation (animated; the selection is ignored).
     pub fn animate_fit_all(&mut self) {
+        if dialogs_sheet::flat_active(self) {
+            self.animate_view("fit");
+            return;
+        }
         if render_workspace::active(self) {
             // The Render preview frames its product scene (see `fit_view`).
             self.fit_view();
@@ -1088,6 +1100,11 @@ impl SolveApp {
 
     /// Animated view changes for the axis view and navigation bar.
     pub fn animate_view(&mut self, v: &str) {
+        // The flat pattern is a 2D view: Fit and Home frame it, and the Design camera stays put.
+        if dialogs_sheet::flat_active(self) && matches!(v, "fit" | "home") {
+            self.flat_view.fitted = false;
+            return;
+        }
         if render_workspace::active(self) && matches!(v, "fit" | "home") {
             if v == "home" {
                 self.cam.set_view(StandardView::Iso);

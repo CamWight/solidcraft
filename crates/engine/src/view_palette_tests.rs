@@ -68,7 +68,15 @@ fn each_sketch_state_takes_its_palette_colour() {
     let lost_link = sk.add_link(LinkKind::Project, LinkSource::Origin, &[LinkGeom::Line(Vec2::new(0., 6.), Vec2::new(2., 6.))]).unwrap();
     sk.set_link_lost(&lost_link, true);
     let lost = sk.curves.len() - 1;
-    let text = LinkSource::Text { text: "A".into(), at: Vec2::ZERO, height: 2., angle: 0., font: None, style: Default::default() };
+    let text = LinkSource::Text {
+        text: "A".into(),
+        at: Vec2::ZERO,
+        height: 2.,
+        angle: 0.,
+        font: None,
+        style: Default::default(),
+        exprs: Default::default(),
+    };
     sk.add_link(LinkKind::Text, text, &[LinkGeom::Line(Vec2::new(0., 7.), Vec2::new(2., 7.))]).unwrap();
     let text = sk.curves.len() - 1;
     let mut flags = vec![false; sk.curves.len()];

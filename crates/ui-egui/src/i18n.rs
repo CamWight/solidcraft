@@ -267,6 +267,17 @@ mod tests {
         );
     }
 
+    /// The start page shows each built-in sample's name and description through `label()`, so a
+    /// sample added to the engine without English catalog entries would stay English everywhere.
+    #[test]
+    fn every_sample_name_and_description_is_in_the_english_catalog() {
+        let texts = english_texts();
+        let samples = solidcraft_engine::sample::samples();
+        let missing: Vec<&str> = samples.iter().flat_map(|s| [s.name, s.about]).filter(|text| !texts.contains(text)).collect();
+        assert!(missing.is_empty(), "sample texts absent from en.json: {missing:?}");
+        assert_eq!(Locale::for_language("ja").label("Sample Plate"), "サンプル プレート");
+    }
+
     /// The whole engine registry now reaches the catalogs. Sample command labels from areas that
     /// had no entry at all before (sheet metal, inspect, joints, motion) must resolve to their
     /// translation rather than echo the English source text — `label()` returns its argument when
@@ -317,6 +328,7 @@ mod tests {
             include_str!("browser.rs"),
             include_str!("sketch_palette.rs"),
             include_str!("design_properties.rs"),
+            include_str!("home.rs"),
         ] {
             for call in [".tr(\"", "i18n::tr(\"", "i18n::format(\""] {
                 for tail in source.split(call).skip(1) {

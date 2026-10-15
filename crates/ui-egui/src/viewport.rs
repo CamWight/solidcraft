@@ -2103,6 +2103,12 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     app.viewport.rect = Some(rect);
     refresh_layout(app, ui.ctx().pixels_per_point());
     let resp = ui.interact(rect, ui.id().with("viewport"), Sense::click_and_drag());
+    let flat = crate::dialogs_sheet::flat_active(app);
+    if !flat {
+        app.flat_view.fitted = false;
+    }
+    let input =
+        if flat { crate::dialogs_sheet::navigate(app, ui, rect, &resp) } else { crate::navigation::handle(app, ui, rect, &resp, NavCaps::MODEL) };
     let CameraInput {
         hover,
         scroll,
@@ -2118,7 +2124,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         pan,
         primary_nav,
         mode,
-    } = crate::navigation::handle(app, ui, rect, &resp, NavCaps::MODEL);
+    } = input;
     app.viewport.physical_scale = ui.ctx().pixels_per_point();
     let proj = projection(app, rect);
     if let Ok(mut cache) = app.viewport.display.lock() {
@@ -3456,6 +3462,8 @@ mod tests {
         assert_eq!(supersampled_size([3840.0, 2160.0], 2.0, 4096, 1), None);
         assert_eq!(supersampled_size([1920.0, 1080.0], 1.0, 16384, 1), None);
         assert_eq!(supersampled_size([0.0, 1080.0], 2.0, 16384, 1), None);
+        // Under 1: drawn smaller and filtered up (the product preview past its budget, #1464).
+        assert_eq!(supersampled_size([3840.0, 2160.0], 0.5, 4096, 4), Some([1920, 1080]));
         // 4× MSAA at 1440p: the memory budget caps it below 2×.
         let [w, h] = supersampled_size([2560.0, 1440.0], 2.0, 16384, 4).unwrap();
         assert!(w < 5120 && w as f32 >= 2560.0 * 1.25 && u64::from(w) * u64::from(h) * 32 <= 384 << 20, "{w} x {h}");

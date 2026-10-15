@@ -1016,6 +1016,48 @@ fn fillets_on_tapered_bosses_saved_before_still_find_their_edges() {
     assert_eq!(s.world_state().bodies.len(), 1);
 }
 
+/// #1360: a ring drawn round a hole, its inner circle on the hole's wall, cut into a chamfered
+/// disc. The ring's hole lies over the part's hole all the way down the cut, so the tool takes
+/// it in (a disc instead of a ring cuts the same): its wall no longer lies on the hole's wall,
+/// which the boolean couldn't intersect. Over a hole whose floor the cut reaches, the ring's hole
+/// stays: the material under the floor is not cut (the cut may still fail there, as before).
+#[test]
+fn a_ring_cut_round_a_hole_takes_in_the_hole_it_is_drawn_round() {
+    let ring = |hole: Value| {
+        let mut s = Session::default();
+        for (c, p) in [
+            ("sketch.create", json!({"plane":"XY"})),
+            ("sketch.circle.center", json!({"center":[0,0],"radius":40})),
+            ("sketch.finish", json!({})),
+            ("solid.extrude", json!({"distance":10})),
+            ("solid.hole", hole),
+            ("solid.chamfer", json!({"edges":[[40,0,10]],"distance":1})),
+            ("sketch.create", json!({"plane":{"face":[0,0,10]}})),
+            ("sketch.circle.center", json!({"center":[20,0],"radius":3})),
+            ("sketch.circle.center", json!({"center":[20,0],"radius":6})),
+            ("sketch.finish", json!({})),
+        ] {
+            run(&mut s, c, p);
+        }
+        let before = volume(&mut s);
+        // Profile 2: the ring between the hole's wall and the larger circle.
+        let r = s.execute("solid.extrude", &json!({"direction":"negative","distance":"3","operation":"cut","profiles":[2]}));
+        let clean = r
+            .as_ref()
+            .ok()
+            .and_then(|v| v["feature"].as_u64())
+            .and_then(|id| s.model.result(id))
+            .is_some_and(|f| f.boolean_diagnostics.events.is_empty());
+        (r.is_ok(), before - volume(&mut s), clean)
+    };
+    let taken = std::f64::consts::PI * (36.0 - 9.0) * 3.0;
+    let (ok, through, clean) = ring(json!({"position":[20,0,10],"diameter":6}));
+    assert!(ok && clean && rel(through, taken) < 1e-3, "{through} vs {taken}");
+    // A blind hole 1 deep: under its floor the ring's hole is material, and nothing of it goes.
+    let (ok, blind, _) = ring(json!({"position":[20,0,10],"diameter":6,"depth":1}));
+    assert!(if ok { rel(blind, taken) < 1e-3 } else { blind.abs() < 1e-6 }, "{ok} {blind} vs {taken}");
+}
+
 /// A line of text cut into a face: the letters' curves (the font's quadratics) are read
 /// exactly, and the cut is decided in 2D in one boolean, at any depth and where the text runs
 /// off the face. The B-rep boolean failed on many letters at once ("no result" at 3.5 mm, and
@@ -1043,4 +1085,36 @@ fn a_line_of_text_is_cut_in_one_exact_boolean() {
     // Off the face's edge, the part of the text still over it.
     let off = cut([-6.0, 20.0], 1.0);
     assert!(off > 0.0 && off < one, "{off} {one}");
+}
+
+/// A line of text cut right through a part, and one joined on in relief, are decided in 2D in
+/// one boolean too. Through, each letter's counter (inside an "e" or an "a") comes out as a
+/// piece of its own. In relief the letters are joined to the part all at once: one by one, each
+/// joined to a part grown by the ones before, it took minutes.
+#[test]
+fn a_line_of_text_cut_through_or_joined_in_relief_is_one_boolean() {
+    let text = |op: &str, distance: f64| {
+        let mut s = Session::default();
+        run(&mut s, "sketch.create", json!({"plane":"XY"}));
+        run(&mut s, "sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[105,26]}));
+        run(&mut s, "sketch.finish", json!({}));
+        run(&mut s, "solid.extrude", json!({"distance":40}));
+        let before = volume(&mut s);
+        run(&mut s, "sketch.create", json!({"plane":{"face":[50,13,40]}}));
+        run(&mut s, "sketch.text", json!({"text":"textvraiment tres long","at":[3,9],"height":6.5}));
+        run(&mut s, "sketch.finish", json!({}));
+        let id = run(&mut s, "solid.extrude", json!({"distance":distance,"operation":op}))["feature"].as_u64().unwrap();
+        let r = s.model.result(id).unwrap();
+        assert!(r.error.is_none() && r.boolean_diagnostics.events.is_empty(), "{op}: {r:?}");
+        (before, volume(&mut s), s.model.state().bodies.len())
+    };
+    let (before, through, pieces) = text("cut", -40.0);
+    let (_, one, _) = text("cut", -1.0);
+    // Through: the letters' area all the way down, with the counters left as pieces.
+    assert!(pieces > 1, "{pieces}");
+    assert!(rel(before - through, 40.0 * (before - one)) < 2e-3, "{} vs {}", before - through, 40.0 * (before - one));
+    // In relief 2 high: twice what a 1 mm cut takes.
+    let (_, relief, pieces) = text("join", 2.0);
+    assert_eq!(pieces, 1);
+    assert!(rel(relief - before, 2.0 * (before - one)) < 2e-3, "{} vs {}", relief - before, 2.0 * (before - one));
 }

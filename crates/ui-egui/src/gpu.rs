@@ -244,7 +244,8 @@ pub struct ViewportCallback {
     /// and the depth bias.
     pub eye: [f32; 4],
     /// Supersampling (#1288): draw the frame this many times the viewport's pixels in each
-    /// direction and filter it down (1: off).
+    /// direction and filter it down (1: off). Under 1 the frame is drawn smaller and filtered up
+    /// (the product preview past its pixel budget, #1464).
     pub ssaa: f32,
 }
 
@@ -522,9 +523,12 @@ const SS_BUDGET: u64 = 384 << 20;
 /// The size (px) to draw a `size` viewport supersampled `factor` times in each direction:
 /// within the device's largest texture side (#869) and the memory budget (at `samples` per pixel,
 /// four bytes of colour and four of depth each). `None` when that leaves under 1.25×: the frame
-/// is drawn as usual.
+/// is drawn as usual. A `factor` under 1 draws it that much smaller, to be filtered up.
 pub(crate) fn supersampled_size(size: [f32; 2], factor: f32, max_side: u32, samples: u32) -> Option<[u32; 2]> {
     let [w, h] = size;
+    if w >= 1.0 && h >= 1.0 && factor > 0.0 && factor < 1.0 {
+        return Some([((w * factor).floor() as u32).clamp(1, max_side.max(1)), ((h * factor).floor() as u32).clamp(1, max_side.max(1))]);
+    }
     if !(w >= 1.0 && h >= 1.0 && factor.is_finite() && factor > 1.0) {
         return None;
     }
@@ -1139,7 +1143,7 @@ impl egui_wgpu::CallbackTrait for ViewportCallback {
                 res.quads.push((img.id, b));
             }
         }
-        res.ss_ready = self.ssaa > 1.0 && res.supersample(device, encoder, self);
+        res.ss_ready = self.ssaa != 1.0 && res.supersample(device, encoder, self);
         Vec::new()
     }
 
