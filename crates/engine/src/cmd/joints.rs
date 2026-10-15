@@ -39,7 +39,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("joint.motion_link", "Motion Link", motion_link)
         .at("SOLID", "ASSEMBLE")
         .icon("motion_link")
-        .params("a, b: joints; ratio (b = ratio · a + offset); offset?: in b's units (deg for an angle, mm for a distance, or an expression); ia?, ib?: value indices (default 0)"),
+        .params("a, b: joints; ratio (b = ratio · a + offset): b's units per a's (mm per deg for an angle driving a distance); offset?: in b's units (deg for an angle, mm for a distance, or an expression); ia?, ib?: value indices (default 0)"),
     CommandSpec::new("joint.limits", "Joint Limits", limits).params("joint; index?: value index (default 0); min?, max? (omit both to clear)"),
     CommandSpec::new("joint.edit", "Edit Joint", edit).params("joint; type?, flip?, offset?, angle?, suppressed?, name?"),
     CommandSpec::new("joint.delete", "Delete Joint", delete).params("joint: id|name (or origin: name, link: index)"),
@@ -521,14 +521,25 @@ fn motion_link(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "the linked joints need moving values at those indices"));
     }
     // In b's units, like its values and limits (stored in radians for an angle).
-    let angle = s.doc.assembly.joints.iter().find(|j| j.id == b).is_some_and(|j| j.kind.is_angle(ib));
     let offset = match p.get("offset") {
-        Some(v) => value(s, v, angle, cmd)?,
+        Some(v) => value(s, v, is_angle(s, b, ib), cmd)?,
         None => 0.0,
     };
+    let ratio = ratio * ratio_scale(s, a, ia, b, ib);
     s.doc_mut().assembly.links.push(MotionLink { a, ia, b, ib, ratio, offset });
     let sol = resolve(s);
     Ok(sol_json(&sol, p))
+}
+
+fn is_angle(s: &Session, joint: u64, i: usize) -> bool {
+    s.doc.assembly.joints.iter().find(|j| j.id == joint).is_some_and(|j| j.kind.is_angle(i))
+}
+
+/// A link's `ratio` is in b's units per a's (mm per degree, degrees per mm) and stored per
+/// radian: the given one times this is the stored one.
+fn ratio_scale(s: &Session, a: u64, ia: usize, b: u64, ib: usize) -> f64 {
+    let unit = |angle: bool| if angle { 1f64.to_radians() } else { 1.0 };
+    unit(is_angle(s, b, ib)) / unit(is_angle(s, a, ia))
 }
 
 fn limits(s: &mut Session, p: &Value) -> Result<Value> {
@@ -652,9 +663,10 @@ fn list(s: &mut Session, p: &Value) -> Result<Value> {
         .links
         .iter()
         .map(|l| {
-            let angle = s.doc.assembly.joints.iter().find(|j| j.id == l.b).is_some_and(|j| j.kind.is_angle(l.ib));
+            let angle = is_angle(s, l.b, l.ib);
             let offset = if angle { l.offset.to_degrees() } else { l.offset };
-            json!({"a": l.a, "ia": l.ia, "b": l.b, "ib": l.ib, "ratio": l.ratio, "offset": offset, "unit": if angle { "deg" } else { "mm" }})
+            let ratio = l.ratio / ratio_scale(s, l.a, l.ia, l.b, l.ib);
+            json!({"a": l.a, "ia": l.ia, "b": l.b, "ib": l.ib, "ratio": ratio, "offset": offset, "unit": if angle { "deg" } else { "mm" }})
         })
         .collect();
     let origins: Vec<Value> = s.doc.assembly.origins.iter().map(|o| json!({"name": o.name, "occurrence": o.origin.occurrence})).collect();

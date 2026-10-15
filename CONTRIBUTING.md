@@ -116,6 +116,12 @@ The [README](README.md#architecture) has the layer table. The short version:
 5. **Everything is a command, with a test.** A new feature means a `CommandSpec` in
    `crates/engine/src/cmd/`, engine tests that measure the result (volume, area,
    face/edge/vertex counts against a value you can derive), and for UI work a scenario (below).
+6. **One set of camera controls.** Every page or canvas that shows a view (the modelling
+   viewport, the Render preview, and any new page such as a flat pattern or drawing) calls
+   `navigation::handle` (`crates/ui-egui/src/navigation.rs`) for its camera input, with
+   `NavCaps` saying whether it can orbit (off for flat 2D pages) and pick. New canvases must use
+   `navigation::handle`; never read drags, the wheel or pinch to move the camera yourself. The
+   `hand_rolled_camera_input_is_rejected` test fails if a page does.
 
 [AGENTS.md](AGENTS.md) has the long form of these rules. It's written for AI agents, but it's
 the most complete description of the house style.

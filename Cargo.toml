@@ -36,6 +36,7 @@ syn = { version = "2", features = ["full"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 log = "0.4"
 sha2 = "0.10"
+moxcms = { version = "0.8.1", default-features = false, features = ["extended_range"] }
 semver = "1"
 
 # geometry kernel (Apache-2.0; see plan/adr/0001-geometry-kernel.md). Only crates/kernel uses it.

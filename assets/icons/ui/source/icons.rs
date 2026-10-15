@@ -271,6 +271,13 @@ pub(crate) fn paint_with(p: &Painter, r: Rect, name: &str, ink: Color32, fill: C
             pen.line(&[(7.5, 10.0), (12.0, 14.5), (16.5, 10.0)], ink);
             pen.line(&[(4.0, 15.0), (4.0, 20.0), (20.0, 20.0), (20.0, 15.0)], ink);
         }
+        // Agent chat: a speech bubble with three dots.
+        "agent_chat" => {
+            pen.closed(&[(4.0, 5.0), (20.0, 5.0), (20.0, 16.0), (11.0, 16.0), (6.5, 20.0), (7.5, 16.0), (4.0, 16.0)], ink);
+            for x in [8.5, 12.0, 15.5] {
+                pen.dot(x, 10.5, ink);
+            }
+        }
         // Help: a question mark in a ring.
         "help" => {
             pen.circle(12.0, 12.0, 9.0, Color32::TRANSPARENT, ink);

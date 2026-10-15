@@ -438,20 +438,11 @@ fn hash_surface(surface: Option<solidcraft_engine::render::surface::OpaqueSurfac
 pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     let rect = ui.max_rect();
     app.viewport.rect = Some(rect);
-    let response = ui.allocate_rect(rect, Sense::click_and_drag());
-    let delta = ui.input(|i| i.pointer.delta());
-    if response.dragged_by(egui::PointerButton::Primary) {
-        app.cam.orbit(f64::from(delta.x), f64::from(delta.y));
-    }
-    if response.dragged_by(egui::PointerButton::Middle) {
-        app.cam.pan(f64::from(delta.x), f64::from(delta.y), f64::from(rect.height()));
-    }
-    if response.hovered() {
-        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll != 0.0 {
-            app.cam.zoom_at((-f64::from(scroll) * 0.0015 * crate::prefs::zoom_sign(app)).exp(), None);
-        }
-    }
+    crate::viewport::refresh_layout(app, ui.ctx().pixels_per_point());
+    let response = ui.interact(rect, ui.id().with("render_preview"), Sense::click_and_drag());
+    // The modelling viewport's camera input (preset, Orbit around, zoom to the cursor, middle
+    // double-click), with nothing to pick or select here.
+    crate::navigation::handle(app, ui, rect, &response, crate::navigation::NavCaps::RENDER);
     let bg = app.render_workspace.view.draft.background;
     ui.painter().rect_filled(rect, 0.0, Color32::from_rgb(bg[0], bg[1], bg[2]));
     let result = (|| -> Result<(), String> {
@@ -533,4 +524,5 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     if let Err(error) = result {
         ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, error, egui::FontId::proportional(14.0), Tokens::get().text);
     }
+    crate::viewport::axis_view(app, ui, rect);
 }

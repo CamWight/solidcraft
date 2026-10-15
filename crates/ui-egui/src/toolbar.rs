@@ -650,7 +650,10 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             if tab == "SKETCH" && panel == "CREATE" { (count.max(1) as f32 * 68.0).max(64.0) + 8.0 } else { panel_width(count) }
         };
         let widths: Vec<f32> = lists.iter().map(|(panel, _, shown)| width_of(panel, shown.len())).collect();
-        let fits = fit(&widths, r.right() - 40.0 - px);
+        // The AI button keeps the toolbar row's right end, whatever the ribbon's width
+        // (docs/agent-chat.md); panels that no longer fit go to the » menu as usual.
+        let right = if crate::agent_chat::toolbar_button_shown(app) { r.right() - AI_BUTTON_ROOM } else { r.right() };
+        let fits = fit(&widths, right - 40.0 - px);
         crate::scenario::publish_count("toolbar_collapsed", fits.iter().filter(|f| **f == Fit::Collapsed).count() as f64);
         crate::scenario::publish_count("toolbar_more", fits.iter().filter(|f| **f == Fit::More).count() as f64);
         for ((panel, cmds, shown), fit) in lists.into_iter().zip(fits) {
@@ -910,7 +913,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             px += 2.0;
         }
         if !overflow.is_empty() {
-            let at = Rect::from_min_size(pos2(px.min(r.right() - 40.0), top + 4.0), vec2(38.0, 52.0));
+            let at = Rect::from_min_size(pos2(px.min(right - 40.0), top + 4.0), vec2(38.0, 52.0));
             ui.scope_builder(egui::UiBuilder::new().max_rect(at), |ui| {
                 let response = ui.menu_button("»", |ui| {
                     for (panel, cmds) in &overflow {
@@ -937,6 +940,9 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
                 crate::scenario::publish_handle("toolbar:overflow", response.response.rect.center());
                 response.response.on_hover_text(crate::i18n::tr_label("More toolbar panels"));
             });
+        }
+        if right < r.right() {
+            ai_button(app, ui, Rect::from_min_max(pos2(right + 4.0, r.top() + 4.0), pos2(r.right() - 6.0, r.bottom() - 5.0)));
         }
         painter.line_segment([pos2(r.left(), r.bottom() - 0.5), pos2(r.right(), r.bottom() - 0.5)], Stroke::new(1.0, t.border));
         // Dragging a command: its icon follows the pointer; a toolbar button dragged off the
@@ -965,6 +971,40 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             crate::context_menu::open_for(app, at, crate::context_menu::Target::ToolbarCommand { id: id.to_string() });
         }
     });
+}
+
+/// Room the AI button takes at the toolbar row's right end.
+const AI_BUTTON_ROOM: f32 = 52.0;
+
+/// The AI button: shows and hides the agent chat panel (lit while it is open).
+fn ai_button(app: &mut SolveApp, ui: &mut egui::Ui, at: Rect) {
+    let t = Tokens::get();
+    let resp = ui.interact(at, ui.id().with("ai_button"), Sense::click());
+    crate::scenario::publish_handle("toolbar:ai", at.center());
+    let open = app.agent_chat.open;
+    let painter = ui.painter();
+    painter.line_segment([pos2(at.left() - 4.0, at.top() + 4.0), pos2(at.left() - 4.0, at.bottom() - 4.0)], Stroke::new(1.0, t.border));
+    if open || resp.hovered() {
+        painter.rect_filled(at, 4.0, if open { t.accent_soft } else { t.hover });
+    }
+    icons::paint(
+        painter,
+        Rect::from_center_size(pos2(at.center().x, at.top() + 24.0), vec2(26.0, 26.0)),
+        "agent_chat",
+        t.icon,
+        t.icon_fill,
+        t.accent,
+    );
+    painter.text(pos2(at.center().x, at.top() + 52.0), Align2::CENTER_CENTER, crate::i18n::tr("ui.ai_button"), FontId::proportional(11.0), t.text);
+    let waiting = app.agent_chat.waiting();
+    if waiting > 0 {
+        let c = pos2(at.right() - 6.0, at.top() + 9.0);
+        painter.circle_filled(c, 6.0, t.warning);
+        painter.text(c, Align2::CENTER_CENTER, waiting.min(9).to_string(), FontId::proportional(9.5), t.toolbar);
+    }
+    if resp.on_hover_text(crate::agent_chat::panel_tip()).clicked() {
+        crate::agent_chat::toggle(app);
+    }
 }
 
 /// What a click on a panel drop-down row asks for.

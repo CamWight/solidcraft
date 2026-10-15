@@ -40,7 +40,7 @@ Written against SolidCraft `main` after 0.11.1, which counts the degrees of free
 - **Every chain must reach something grounded.** A part that is neither grounded nor joined to a grounded part is never placed. A drive on a joint in that chain moves nothing and answers `moved: false`, with a `reason` and the part joined to nothing as `unconnected`. `joint.list` lists such chains under `floating`, and their occurrences have `dof: 6`. Fix it with `joint.rigid_group {"occurrences":["Frame:1", ...]}`, or with a joint to the grounded structure.
 
 ## Linked and closed motion
-- **Motion links:** `joint.motion_link {"a":..., "b":..., "ratio":r, "offset":o}` sets b = r·a + o, clamped to b's own limits. `offset` is in b's units: degrees for an angle, mm for a distance, or an expression. A mirrored part takes `ratio: -1`, and limits mirrored too. Chains (a drives b, b drives c) work in any order of creation. Drive only the head of a chain.
+- **Motion links:** `joint.motion_link {"a":..., "b":..., "ratio":r, "offset":o}` sets b = r·a + o, clamped to b's own limits. `ratio` is b's units per a's: a pinion that moves its rack 0.5 mm per degree takes `ratio: 0.5`. `offset` is in b's units: degrees for an angle, mm for a distance, or an expression. A mirrored part takes `ratio: -1`, and limits mirrored too. Chains (a drives b, b drives c) work in any order of creation. Drive only the head of a chain.
 - **Closed loops:** an actuator between a frame and a hinged panel takes three joints besides the hinge:
   - a revolute root pin (frame and barrel)
   - a slider (barrel and rod), with z along the actuator from root to tip on both origins, both at the root pin, and the stroke as its limits

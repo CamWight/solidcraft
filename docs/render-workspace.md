@@ -43,7 +43,9 @@ discards staged settings. Draft settings are separate for each open document.
 **Restore Saved Camera** runs `render.settings.apply {name}`, preserving target,
 distance, yaw, pitch, roll, FOV and up axis as view state. It neither edits the document
 nor settles a stale model. The UI honours its up axis in Render; the Design camera
-is restored when returning. Drag orbits, middle-drag pans, scrolling zooms, and
+is restored when returning. The camera moves exactly as in Design: the navigation preset,
+Orbit around, zoom to the cursor, the SpaceMouse, the middle double-click, F6 and the axis
+view or navigation cube all work (nothing is picked or selected here), and
 **Fit Product** frames visible product bodies without including sketches or selection.
 
 Preview drafts do not make the document dirty until saved. Unknown backend preferences

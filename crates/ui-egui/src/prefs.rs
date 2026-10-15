@@ -206,7 +206,8 @@ pub fn nav_preset(id: &str) -> &'static NavPreset {
     NAV_PRESETS.iter().find(|p| p.id == id).unwrap_or(&NAV_PRESETS[0])
 }
 /// The dialog's pages, in order.
-pub const PAGES: [&str; 7] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection"];
+pub const PAGES: [&str; 8] = ["General", "Navigation", "Keyboard Shortcuts", "Design", "Graphics", "Sketch", "Selection", "AI"];
+pub const PAGE_AI: usize = 7;
 pub const PAGE_SHORTCUTS: usize = 2;
 pub const PAGE_DESIGN: usize = 3;
 pub const PAGE_GRAPHICS: usize = 4;
@@ -325,6 +326,27 @@ pub struct Prefs {
     pub save_mesh_send: bool,
     pub save_mesh_slicer: String,
     pub custom_slicers: Vec<String>,
+    /// AI features (docs/agent-chat.md): the master switch. Off: no AI button, shortcut, menu
+    /// entry or panel, and nothing is looked for or started.
+    pub ai_features: bool,
+    /// The AI button at the toolbar row's right end (the shortcut and View menu entry stay).
+    pub ai_toolbar_button: bool,
+    /// Agents the user added (the installed ones are found by themselves). API keys are never
+    /// here: they live in the system keychain.
+    pub agents: Vec<crate::agent_chat::agents::AgentConfig>,
+    /// The agent a new conversation starts with (an agent's id; empty: the first one available).
+    pub agent_default: String,
+    /// How much the agent may do without asking (`ask`, `edits`, `all`), and per agent.
+    pub ai_permissions: crate::agent_chat::agents::Mode,
+    pub agent_permissions: std::collections::BTreeMap<String, crate::agent_chat::agents::Mode>,
+    /// "Always allow" answers: per agent, the tools it may use without asking.
+    pub agent_always_allow: std::collections::BTreeMap<String, Vec<String>>,
+    /// The side the panel docks on (`left` or `right`), its width, and whether it is folded to a strip.
+    pub agent_chat_side: String,
+    pub agent_chat_width: f32,
+    pub agent_chat_minimized: bool,
+    /// Changes the agent may make for one message.
+    pub agent_chat_turn_limit: u32,
 }
 
 /// What a middle-button double-click in the view does.
@@ -394,6 +416,17 @@ impl Default for Prefs {
             save_mesh_send: false,
             save_mesh_slicer: String::new(),
             custom_slicers: Vec::new(),
+            ai_features: true,
+            ai_toolbar_button: true,
+            agents: Vec::new(),
+            agent_default: String::new(),
+            ai_permissions: crate::agent_chat::agents::Mode::Edits,
+            agent_permissions: Default::default(),
+            agent_always_allow: Default::default(),
+            agent_chat_side: "right".into(),
+            agent_chat_width: 380.0,
+            agent_chat_minimized: false,
+            agent_chat_turn_limit: crate::agent_chat::gate::DEFAULT_TURN_LIMIT,
         }
     }
 }
@@ -491,6 +524,17 @@ fn defaults(app: &mut SolveApp, page: usize) {
             app.ui.agent_cursor = Default::default();
             app.autosave_minutes = 5.0;
             set_autosave(app);
+        }
+        PAGE_AI => {
+            // The agents the user added and their "always allow" answers stay.
+            p.ai_features = d.ai_features;
+            p.ai_toolbar_button = d.ai_toolbar_button;
+            p.ai_permissions = d.ai_permissions;
+            p.agent_permissions = d.agent_permissions;
+            p.agent_chat_side = d.agent_chat_side;
+            p.agent_chat_width = d.agent_chat_width;
+            p.agent_chat_minimized = d.agent_chat_minimized;
+            p.agent_chat_turn_limit = d.agent_chat_turn_limit;
         }
         1 => {
             p.nav = d.nav;
@@ -602,44 +646,6 @@ pub fn nav_mode(app: &SolveApp, button: NavButton, mods: Modifiers) -> Option<Na
 /// +1, or −1 when the wheel zooms the other way.
 pub fn zoom_sign(app: &SolveApp) -> f64 {
     if app.preferences.zoom_reverse { -1.0 } else { 1.0 }
-}
-
-/// Orbit by pixel deltas about the configured centre: the view's centre (default), the world
-/// origin, or the model point that was under the cursor when the drag began. The origin and the
-/// cursor pivot are kept still on screen; a cursor drag that begins over empty space turns around
-/// the centre of the visible geometry instead, so the model never swings around a far-off point.
-/// The cursor pivot is chosen once, when the drag begins.
-pub fn orbit(app: &mut SolveApp, rect: egui::Rect, dx: f64, dy: f64, press: Option<Pos2>) {
-    let pivot = match app.preferences.orbit_around {
-        OrbitAround::ViewCentre => None,
-        OrbitAround::Origin => Some(Vec3::ZERO),
-        OrbitAround::Cursor => Some(match app.viewport.orbit_pivot {
-            Some(p) => p,
-            None => {
-                let proj = crate::viewport::projection(app, rect);
-                let at = press.unwrap_or(rect.center());
-                let p = pivot_under(app, &proj, at);
-                app.viewport.orbit_pivot = Some(p);
-                p
-            }
-        }),
-    };
-    let Some(pivot) = pivot else {
-        app.cam.orbit(dx, dy);
-        return;
-    };
-    orbit_about(app, rect, dx, dy, pivot);
-}
-
-/// Orbit by pixel deltas, keeping `pivot` still on screen: the camera turns about it and a pan
-/// correction puts it back where it was.
-fn orbit_about(app: &mut SolveApp, rect: egui::Rect, dx: f64, dy: f64, pivot: Vec3) {
-    let before = crate::viewport::projection(app, rect).to_screen(pivot);
-    app.cam.orbit(dx, dy);
-    let after = crate::viewport::projection(app, rect).to_screen(pivot);
-    if let (Some(a), Some(b)) = (before, after) {
-        app.cam.pan(f64::from(a.x - b.x), f64::from(a.y - b.y), f64::from(rect.height().max(1.0)));
-    }
 }
 
 /// The model point under a screen position. Over empty space: the centre of the visible bodies
@@ -961,6 +967,10 @@ fn page(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
     };
     if app.prefs_window.section == PAGE_SHORTCUTS {
         crate::keymap::page(app, ui);
+        return;
+    }
+    if app.prefs_window.section == PAGE_AI {
+        crate::agent_chat::settings::page(app, ui);
         return;
     }
     egui::Grid::new(("sc_prefs_grid", app.prefs_window.section)).num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| match app.prefs_window.section {
@@ -1521,6 +1531,7 @@ mod tests {
     }
 
     use super::*;
+    use crate::navigation::orbit;
 
     #[test]
     fn unsupported_saved_msaa_is_reset_to_the_default_with_a_notice() {

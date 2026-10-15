@@ -1122,6 +1122,35 @@ fn a_link_offset_is_in_the_linked_values_units() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A link between an angle and a distance takes its ratio in b's units per a's, like its offset:
+/// a pinion moves its rack 0.5 mm per degree, and a car turns its dial 2 degrees per mm.
+/// `joint.list` answers the ratios the same way; they are stored per radian, as before.
+#[test]
+fn a_link_ratio_between_an_angle_and_a_distance_is_per_degree() {
+    let mut s = Session::default();
+    for (name, x) in [("Ground", 0.0), ("Pinion", 80.0), ("Rack", 100.0), ("Car", 120.0), ("Dial", 140.0)] {
+        part(&mut s, name, [x, 0.0, -5.0]);
+    }
+    let g = occ(&s, "Ground");
+    run(&mut s, "occurrence.ground", json!({"occurrence": g, "grounded": true}));
+    for (kind, name, x) in [("revolute", "Pinion", 80.0), ("slider", "Rack", 100.0), ("slider", "Car", 120.0), ("revolute", "Dial", 140.0)] {
+        pin(&mut s, kind, name, "Ground", name, Vec3::new(x, 0.0, 0.0), Vec3::Z);
+    }
+    run(&mut s, "joint.motion_link", json!({"a": "Pinion", "b": "Rack", "ratio": 0.5}));
+    run(&mut s, "joint.motion_link", json!({"a": "Car", "b": "Dial", "ratio": 2}));
+    run(&mut s, "joint.drive", json!({"joint": "Pinion", "value": 20}));
+    run(&mut s, "joint.drive", json!({"joint": "Car", "value": 3}));
+    let l = run(&mut s, "joint.list", json!({}));
+    let value = |name: &str| {
+        l["joints"].as_array().into_iter().flatten().find(|j| j["name"] == name).and_then(|j| j["values"][0]["value"].as_f64()).unwrap_or(f64::NAN)
+    };
+    assert!((value("Rack") - 10.0).abs() < 1e-9 && (value("Dial") - 6.0).abs() < 1e-9, "{l}");
+    let ratios: Vec<f64> = l["links"].as_array().into_iter().flatten().map(|k| k["ratio"].as_f64().unwrap_or(f64::NAN)).collect();
+    assert!(ratios.len() == 2 && (ratios[0] - 0.5).abs() < 1e-9 && (ratios[1] - 2.0).abs() < 1e-9, "{l}");
+    let stored: Vec<f64> = s.doc.assembly.links.iter().map(|k| k.ratio).collect();
+    assert!((stored[0] - 0.5f64 / 1f64.to_radians()).abs() < 1e-9 && (stored[1] - 2f64.to_radians()).abs() < 1e-12, "{stored:?}");
+}
+
 /// A new joint starts at its values inside its limits. Limits that leave out 0 (or the values
 /// given) start it at the nearer limit, which it keeps, and the answer says the part moved there.
 #[test]

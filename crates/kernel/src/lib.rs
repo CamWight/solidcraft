@@ -17,6 +17,8 @@ mod blend_corner;
 mod blend_fit;
 mod blend_variable;
 mod blend_vertex;
+#[cfg(test)]
+mod blend_wrong_way_tests;
 mod body;
 mod boolean_diagnostics;
 mod boolean_guard;
