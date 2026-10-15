@@ -5,9 +5,10 @@
 //! One entry point, [`handle`], reads a frame's pointer, wheel, trackpad and modifier input over a
 //! view and moves `app.cam` the way Preferences › Navigation says: the navigation preset (Fusion,
 //! SolidWorks, Blender, Touchpad…), Orbit around, zoom to the cursor, the middle double-click and
-//! orbit snapping. The SpaceMouse, view keys and the navigators act on `app.cam` independently of
-//! the page. New canvases must call `navigation::handle` rather than reading drags or the wheel
-//! themselves; `hand_rolled_camera_input_is_rejected` fails when they do.
+//! orbit snapping. The 3D mouse's motion goes through [`device`] too, with the page's
+//! [`NavCaps`]. The view keys and the navigators act on `app.cam` independently of the page. New
+//! canvases must call `navigation::handle` rather than reading drags or the wheel themselves;
+//! `hand_rolled_camera_input_is_rejected` fails when they do.
 
 use egui::{Pos2, Rect, pos2, vec2};
 use serde_json::json;
@@ -16,6 +17,7 @@ use solidcraft_engine::render::Camera;
 
 use crate::SolveApp;
 use crate::prefs::{OrbitAround, pivot_under};
+use crate::space_mouse::Motion;
 use crate::viewport::{Hit, NavMode, axis_rect, nearest_quarter_turn, pick, pick_cached, projection};
 
 /// What a page's camera may do.
@@ -243,6 +245,8 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     // Ctrl or Alt held: drawing and dragging don't snap.
     crate::drag_snap::set_suppressed(mods.ctrl || mods.alt || mods.command);
     middle_double_click(app, ui, inside, caps.orbit);
+    // The 3D mouse's motion this frame, with what this page's camera may do.
+    device(app, rect, caps);
 
     // ---- navigation ----
     let trackpad_pan = app.preferences.trackpad_pans();
@@ -463,6 +467,40 @@ pub(crate) fn handle(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect, resp: &e
     CameraInput { hover, scroll, mods, middle, secondary_down, primary_down, primary_pressed, delta, inside, axes, pinch, pan, primary_nav, mode }
 }
 
+/// The 3D mouse's motion this frame (#1336), on a page `rect` whose camera may do `caps`: the cap
+/// pans and zooms every page, and turns the view only where the page may orbit and no sketch is
+/// being edited (a sketch keeps its view square to it). [`handle`] calls it for its page; the 3D
+/// mouse only reads the device and queues the motion ([`crate::space_mouse::navigate_frame`]).
+pub(crate) fn device(app: &mut SolveApp, rect: Rect, caps: NavCaps) {
+    let Some(queued) = app.viewport.device_motion.take() else { return };
+    let turn = caps.orbit && app.session.active_sketch.is_none();
+    let height = f64::from(rect.height().max(1.0));
+    device_camera(&mut app.cam, queued.motion, queued.seconds, height, turn, app.preferences.zoom_reverse);
+}
+
+/// `seconds` of 3D mouse `motion` on `cam`, in a view `height` points tall. A full deflection
+/// pans about 0.6 of the view's height a second and turns about two radians a second, whatever
+/// the frame rate. With `turn` off the view keeps its orientation.
+pub(crate) fn device_camera(cam: &mut Camera, motion: Motion, seconds: f64, height: f64, turn: bool, reverse_zoom: bool) {
+    if !(seconds > 0.0) || !seconds.is_finite() {
+        return;
+    }
+    let [x, y, z] = motion.translation;
+    let [rx, ry, rz] = motion.rotation;
+    // Logical 3DxWare coordinates are X = left/right, Y = zoom and Z = up/down. The user's
+    // profile can swap the physical forward/back and up/down axes before they reach here.
+    cam.pan(x * height * 0.6 * seconds, z * height * 0.6 * seconds, height);
+    let zoom_sign = if reverse_zoom { -1.0 } else { 1.0 };
+    cam.zoom_at((-y * zoom_sign * 1.5 * seconds).exp(), None);
+    if turn {
+        // These are logical 3DxWare coordinates after the profile mapping: Rx is Tilt, Ry is
+        // Roll and Rz is Spin. The KMJ profile swaps physical Ry/Rz for the selected navigation
+        // mode, so swapping them again here would make Roll behave like Spin.
+        cam.orbit(ry * 250.0 * seconds, rx * 250.0 * seconds);
+        cam.roll_by(rz * 2.0 * seconds);
+    }
+}
+
 /// Six principal views, twelve edge diagonals and eight isometric corner directions.
 pub(crate) fn snap_directions() -> impl Iterator<Item = Vec3> {
     [-1.0, 0.0, 1.0].into_iter().flat_map(|x| {
@@ -638,15 +676,15 @@ pub(crate) fn orbit_about(app: &mut SolveApp, rect: egui::Rect, dx: f64, dy: f64
 mod tests {
     /// Every page with a camera navigates through [`super::handle`] (#1454). A page that reads
     /// the wheel or moves the view camera itself would drift from the user's navigation settings,
-    /// so outside this module (and the SpaceMouse driver, a device rather than a page) the camera
-    /// may only be moved through it, the view commands or the navigators.
+    /// so outside this module the camera may only be moved through it, the view commands or the
+    /// navigators. The 3D mouse in both apps hands its motion to [`super::device`].
     #[test]
     fn hand_rolled_camera_input_is_rejected() {
         const PATTERNS: [&str; 7] =
             ["smooth_scroll_delta", "raw_scroll_delta", "zoom_delta()", "cam.orbit(", "cam.pan(", "cam.zoom_at(", "cam.roll_by("];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let dirs = [root.join("src"), root.join("../../apps/solidcraft/src")];
-        let allowed = ["navigation.rs", "space_mouse.rs"];
+        let dirs = [root.join("src"), root.join("../../apps/solidcraft/src"), root.join("../../apps/solidcraft-web/src")];
+        let allowed = ["navigation.rs"];
         let mut offenders = Vec::new();
         let mut scanned = 0;
         let mut stack: Vec<std::path::PathBuf> = dirs.iter().filter(|d| d.is_dir()).cloned().collect();
@@ -662,7 +700,8 @@ mod tests {
                     continue;
                 }
                 scanned += 1;
-                let text = std::fs::read_to_string(&path).unwrap();
+                // A Windows checkout's CRLF lines, read as written, so the split below finds the tests.
+                let text = std::fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
                 // In-file unit tests set cameras up directly; only the code above them counts.
                 let code = text.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
                 for (n, line) in code.lines().enumerate() {
@@ -739,5 +778,61 @@ mod tests {
             }
             assert_ne!(app.cam.distance, before.distance, "{preset}: the wheel zooms");
         }
+    }
+
+    /// The 3D mouse pans and zooms a flat page with the cap and never turns it, as the mouse
+    /// does there; pages that orbit turn with it (#1336).
+    #[test]
+    fn the_3d_mouse_pans_and_zooms_a_flat_page_but_never_turns_it() {
+        use crate::space_mouse::{DeviceMotion, Motion};
+        let every_axis = DeviceMotion { motion: Motion { translation: [1.0, 1.0, 1.0], rotation: [1.0, 1.0, 1.0] }, seconds: 0.05 };
+        let flat = super::NavCaps { orbit: false, pick: false };
+        for (caps, turns) in [(flat, false), (super::NavCaps::MODEL, true), (super::NavCaps::RENDER, true)] {
+            let mut s = solidcraft_engine::Session::default();
+            s.execute("solid.box", &serde_json::json!({"length":40,"width":30,"height":20})).unwrap();
+            let mut app = crate::SolveApp::new(s, crate::Services::default());
+            let ctx = egui::Context::default();
+            let before = app.cam;
+            app.viewport.device_motion = Some(every_axis);
+            let raw = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+                time: Some(0.0),
+                focused: true,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(raw, |ui| {
+                let rect = ui.max_rect();
+                app.viewport.rect = Some(rect);
+                let resp = ui.interact(rect, ui.id().with("page"), egui::Sense::click_and_drag());
+                super::handle(&mut app, ui, rect, &resp, caps);
+            });
+            out.textures_delta.clear();
+            assert!(app.viewport.device_motion.is_none(), "{caps:?}: the page takes the motion");
+            assert_ne!(app.cam.target, before.target, "{caps:?}: the cap pans");
+            assert!(app.cam.distance < before.distance, "{caps:?}: the cap zooms");
+            let turned = (app.cam.yaw, app.cam.pitch, app.cam.roll) != (before.yaw, before.pitch, before.roll);
+            assert_eq!(turned, turns, "{caps:?}: the cap turns the view only where the page orbits");
+        }
+    }
+
+    /// While a sketch is edited the cap pans and zooms, and the view stays square to the sketch.
+    #[test]
+    fn the_3d_mouse_never_turns_a_sketch_being_edited() {
+        use crate::space_mouse::{DeviceMotion, Motion};
+        let mut s = solidcraft_engine::Session::default();
+        s.execute("sketch.create", &serde_json::json!({"plane": "XY"})).unwrap();
+        let mut app = crate::SolveApp::new(s, crate::Services::default());
+        assert!(app.session.active_sketch.is_some());
+        let before = app.cam;
+        app.viewport.device_motion = Some(DeviceMotion { motion: Motion { translation: [1.0; 3], rotation: [1.0; 3] }, seconds: 0.05 });
+        let page = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        super::device(&mut app, page, super::NavCaps::MODEL);
+        assert_eq!((app.cam.yaw, app.cam.pitch, app.cam.roll), (before.yaw, before.pitch, before.roll));
+        assert_ne!(app.cam.target, before.target);
+        assert!(app.cam.distance < before.distance);
+        // Nothing queued, nothing moves.
+        let still = app.cam;
+        super::device(&mut app, page, super::NavCaps::MODEL);
+        assert_eq!(app.cam, still);
     }
 }

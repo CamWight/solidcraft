@@ -91,6 +91,9 @@ pub struct ViewportState {
     pub orbit_pivot: Option<Vec3>,
     /// Continuous orbit: the view turns about the vertical until the next click or key.
     pub spin: bool,
+    /// The 3D mouse's motion this frame, for the page showing the camera to apply with what its
+    /// camera may do (`navigation::device`).
+    pub device_motion: Option<crate::space_mouse::DeviceMotion>,
     /// After immediate zoom, ignore egui's outstanding smoothing until the gesture ends.
     pub(crate) wheel_zoom_raw_until_idle: bool,
     /// While trackpad scrolling runs, ignore egui's smoothing tail for zoom so

@@ -357,8 +357,13 @@ impl SpaceMouse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use solidcraft_engine::render::Camera;
-    use solidcraft_ui_egui::space_mouse::navigate;
+    use solidcraft_ui_egui::space_mouse::{DeviceMotion, Motion};
+
+    /// The logical axes a reading reaches. Logical Rz rolls the view and logical Ry turns it about
+    /// its vertical (`navigation::device_camera` in solidcraft-ui-egui, tested there).
+    fn rotation(mapping: DriverMapping, rotation: [i16; 3]) -> [f64; 3] {
+        mapping.apply(Axes { translation: [0; 3], rotation }).rotation
+    }
 
     #[test]
     fn decodes_separate_reports_without_stale_motion_or_padding_interference() {
@@ -439,22 +444,15 @@ mod tests {
         if cfg!(target_os = "linux") {
             assert_eq!(without_profile(), profile);
             // Tilting the cap rolls the view and twisting it spins it, as with the driver.
-            let before = Camera::default();
-            let mut tilt = before;
-            navigate(&mut tilt, without_profile().apply(Axes { translation: [0; 3], rotation: [0, 350, 0] }), 0.02, 600.0, false, false);
-            assert_eq!((tilt.yaw, tilt.pitch), (before.yaw, before.pitch));
-            assert_ne!(tilt.roll, before.roll);
-            let mut twist = before;
-            navigate(&mut twist, without_profile().apply(Axes { translation: [0; 3], rotation: [0, 0, 350] }), 0.02, 600.0, false, false);
-            assert_ne!(twist.yaw, before.yaw);
-            assert_eq!(twist.roll, before.roll);
+            assert_eq!(rotation(without_profile(), [0, 350, 0]), [0.0, 0.0, -1.0]);
+            assert_eq!(rotation(without_profile(), [0, 0, 350]), [0.0, -1.0, 0.0]);
         } else {
             assert_eq!(without_profile(), DriverMapping::default());
         }
     }
 
     #[test]
-    fn mapped_roll_and_spin_reach_distinct_camera_rotations() {
+    fn mapped_roll_and_spin_reach_the_roll_and_turn_axes() {
         let profile = br#"
             <AppCfg><Devices><Device><AxisBank>
               <Axis><Enabled>true</Enabled><Input><ActionID>HIDMultiAxis_Ry</ActionID></Input><Output><ActionID>HIDMultiAxis_Rz</ActionID><Reversed>false</Reversed></Output></Axis>
@@ -462,22 +460,14 @@ mod tests {
             </AxisBank></Device></Devices></AppCfg>
         "#;
         let mapping = parse_driver_mapping(profile).expect("valid 3DxWare profile");
-        let before = Camera::default();
-
-        let mut physical_roll = before;
-        navigate(&mut physical_roll, mapping.apply(Axes { translation: [0; 3], rotation: [0, 350, 0] }), 0.02, 600.0, false, false);
-        assert_eq!((physical_roll.yaw, physical_roll.pitch), (before.yaw, before.pitch));
-        assert_ne!(physical_roll.roll, before.roll);
-
-        let mut physical_spin = before;
-        navigate(&mut physical_spin, mapping.apply(Axes { translation: [0; 3], rotation: [0, 0, 350] }), 0.02, 600.0, false, false);
-        assert_ne!(physical_spin.yaw, before.yaw);
-        assert_eq!((physical_spin.pitch, physical_spin.roll), (before.pitch, before.roll));
+        // The physical roll reaches the roll axis only, and the physical spin the turn only.
+        assert_eq!(rotation(mapping, [0, 350, 0]), [0.0, 0.0, 1.0]);
+        assert_eq!(rotation(mapping, [0, 0, 350]), [0.0, -1.0, 0.0]);
     }
 
     #[test]
-    fn each_frame_moves_the_view_through_the_drivers_mapping() {
-        // The reader's latest tilt, and a profile that makes tilt roll: the frame rolls the view.
+    fn each_frame_hands_the_view_its_motion_through_the_drivers_mapping() {
+        // The reader's latest tilt, and a profile that makes tilt roll: the frame's motion rolls.
         let now = Instant::now();
         let mut reading = Reading::new(now);
         reading.axes.rotation = [0, 350, 0];
@@ -489,9 +479,9 @@ mod tests {
         };
         let mut app = SolveApp::new(solidcraft_engine::Session::default(), solidcraft_ui_egui::Services::default());
         app.home.open = false;
-        let before = app.cam;
         mouse.tick(&mut app, &Context::default());
-        assert_eq!((app.cam.yaw, app.cam.pitch), (before.yaw, before.pitch));
-        assert_ne!(app.cam.roll, before.roll);
+        let DeviceMotion { motion, seconds } = app.viewport.device_motion.expect("the frame hands the page its motion");
+        assert_eq!(motion, Motion { translation: [0.0; 3], rotation: [0.0, 0.0, -1.0] });
+        assert!(seconds > 0.0);
     }
 }

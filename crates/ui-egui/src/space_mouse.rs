@@ -1,10 +1,10 @@
-//! 3D mouse navigation, shared by the desktop and web apps. Each app reads the device its own way
-//! (the desktop through HID, the web app through the browser's Gamepad API) and hands its six raw
-//! axes to [`navigate_frame`] once per frame.
+//! 3D mouse input, shared by the desktop and web apps. Each app reads the device its own way (the
+//! desktop through HID, the web app through the browser's Gamepad API) and hands its six raw axes
+//! to [`navigate_frame`] once per frame. This module maps them, applies the dead zone and drops
+//! 3DxWare's emulated wheel; the page showing the camera moves it (`navigation::device`), so the
+//! cap does what that page's camera may do.
 
 use std::time::Duration;
-
-use solidcraft_engine::render::Camera;
 
 use crate::SolveApp;
 
@@ -88,9 +88,18 @@ pub struct Motion {
     pub rotation: [f64; 3],
 }
 
-/// Moves the camera by one frame of 3D mouse input, `seconds` after the previous frame. Nothing
-/// happens with navigation switched off, on the start page or while a file picker is open.
-/// Returns whether the camera moved; it then asks for the next frame itself.
+/// One frame of 3D mouse motion, waiting for the page that shows the camera: the logical axes,
+/// and how many seconds of motion they stand for (the frame's time, scaled by the speed).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct DeviceMotion {
+    pub motion: Motion,
+    pub seconds: f64,
+}
+
+/// Hands one frame of 3D mouse input, `seconds` after the previous frame, to the page showing
+/// the camera. Nothing happens with navigation switched off, on the start page or while a file
+/// picker is open. Returns whether there was motion to hand over; it then asks for the next frame
+/// itself.
 pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMapping, axes: Axes, seconds: f64) -> bool {
     if !app.preferences.space_mouse_enabled || app.home.open || app.file_picker_busy() || axes == Axes::default() {
         return false;
@@ -100,17 +109,9 @@ pub fn navigate_frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMa
         return false;
     }
     app.begin_external_navigation();
-    let height = app.viewport.rect.map_or(600.0, |rect| f64::from(rect.height().max(1.0)));
     // A long gap (the first frame after a pause) moves as far as a 50 ms one.
     let step = if seconds.is_finite() { seconds.min(0.05) } else { 0.0 };
-    navigate(
-        &mut app.cam,
-        mapping.apply(axes),
-        step * speed.clamp(0.1, 5.0),
-        height,
-        app.session.active_sketch.is_some(),
-        app.preferences.zoom_reverse,
-    );
+    app.viewport.device_motion = Some(DeviceMotion { motion: mapping.apply(axes), seconds: step * speed.clamp(0.1, 5.0) });
     ctx.request_repaint_after(Duration::from_millis(16));
     true
 }
@@ -122,31 +123,26 @@ fn normalized(value: i16) -> f64 {
     if v.abs() <= 20.0 { 0.0 } else { v.signum() * ((v.abs() - 20.0) / 330.0).min(1.0) }
 }
 
-pub fn navigate(cam: &mut Camera, motion: Motion, seconds: f64, height: f64, sketch: bool, reverse_zoom: bool) {
-    if !(seconds > 0.0) || !seconds.is_finite() {
-        return;
-    }
-    let [x, y, z] = motion.translation;
-    let [rx, ry, rz] = motion.rotation;
-    // Logical 3DxWare coordinates are X = left/right, Y = zoom and Z = up/down. The user's
-    // profile above can swap the physical forward/back and up/down axes before they reach here.
-    cam.pan(x * height * 0.6 * seconds, z * height * 0.6 * seconds, height);
-    let zoom_sign = if reverse_zoom { -1.0 } else { 1.0 };
-    cam.zoom_at((-y * zoom_sign * 1.5 * seconds).exp(), None);
-    if !sketch {
-        // These are logical 3DxWare coordinates after the profile mapping above: Rx is Tilt,
-        // Ry is Roll and Rz is Spin. The KMJ profile swaps physical Ry/Rz for the selected
-        // navigation mode, so swapping them again here would make Roll behave like Spin.
-        cam.orbit(ry * 250.0 * seconds, rx * 250.0 * seconds);
-        cam.roll_by(rz * 2.0 * seconds);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::Services;
     use solidcraft_engine::Session;
+    use solidcraft_engine::render::Camera;
+
+    /// The camera math the page applies the motion with (`navigation::device`): `sketch` keeps
+    /// the orientation, as editing a sketch does.
+    fn navigate(cam: &mut Camera, motion: Motion, seconds: f64, height: f64, sketch: bool, reverse_zoom: bool) {
+        crate::navigation::device_camera(cam, motion, seconds, height, !sketch, reverse_zoom);
+    }
+
+    /// One frame: the 3D mouse hands its motion over, and the modelling viewport applies it.
+    fn frame(app: &mut SolveApp, ctx: &egui::Context, mapping: DriverMapping, axes: Axes, seconds: f64) -> bool {
+        let handed = navigate_frame(app, ctx, mapping, axes, seconds);
+        let page = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
+        crate::navigation::device(app, page, crate::navigation::NavCaps::MODEL);
+        handed
+    }
 
     fn raw(axes: Axes) -> Motion {
         DriverMapping::default().apply(axes)
@@ -276,12 +272,12 @@ mod tests {
         let ctx = egui::Context::default();
         let mut app = app();
         let before = app.cam;
-        assert!(navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
+        assert!(frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
         assert!(app.cam.distance < before.distance);
         // At rest, or with no time passed, nothing moves.
         let still = app.cam;
-        assert!(!navigate_frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.02));
-        assert!(navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.0));
+        assert!(!frame(&mut app, &ctx, DriverMapping::default(), Axes::default(), 0.02));
+        assert!(frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.0));
         assert_eq!(app.cam.distance, still.distance);
     }
 
@@ -294,13 +290,13 @@ mod tests {
         app.pick_open(|_, _| {});
         assert!(app.file_picker_busy());
         let before = app.cam;
-        assert!(!navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
+        assert!(!frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
         assert_eq!(app.cam.distance, before.distance);
         // Cancelled: the 3D mouse moves the view again.
         *slot.borrow_mut() = Some(None);
         crate::file_picker::tick(&mut app, &ctx);
         assert!(!app.file_picker_busy());
-        assert!(navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
+        assert!(frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
         assert!(app.cam.distance < before.distance);
     }
 
@@ -308,13 +304,13 @@ mod tests {
     fn a_long_gap_between_frames_moves_as_far_as_a_short_one() {
         let ctx = egui::Context::default();
         let (mut short, mut long) = (app(), app());
-        navigate_frame(&mut short, &ctx, DriverMapping::default(), PUSH, 0.05);
-        navigate_frame(&mut long, &ctx, DriverMapping::default(), PUSH, 30.0);
+        frame(&mut short, &ctx, DriverMapping::default(), PUSH, 0.05);
+        frame(&mut long, &ctx, DriverMapping::default(), PUSH, 30.0);
         assert_eq!(short.cam.distance, long.cam.distance);
         for seconds in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
             let mut app = app();
             let before = app.cam;
-            navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, seconds);
+            frame(&mut app, &ctx, DriverMapping::default(), PUSH, seconds);
             assert_eq!(app.cam.distance, before.distance, "{seconds}");
         }
     }
@@ -330,7 +326,7 @@ mod tests {
         nan.preferences.space_mouse_speed = f32::NAN;
         for mut app in [off, home, nan] {
             let before = app.cam;
-            assert!(!navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
+            assert!(!frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02));
             assert_eq!(app.cam.distance, before.distance);
         }
         // Speed follows the preference, within 0.1 to 5 times.
@@ -340,7 +336,7 @@ mod tests {
             .map(|&speed| {
                 let mut app = app();
                 app.preferences.space_mouse_speed = speed;
-                navigate_frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02);
+                frame(&mut app, &ctx, DriverMapping::default(), PUSH, 0.02);
                 assert!(app.cam.is_valid(), "{speed}");
                 app.cam.distance
             })
