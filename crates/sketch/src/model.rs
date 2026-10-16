@@ -169,6 +169,11 @@ pub struct Curve {
     /// Fixed (locked): its points and radius are constants for the solver.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub fixed: bool,
+    /// Infinite line type (#1359), for lines only: construction geometry drawn across the whole
+    /// view, through its two points, which fix where it lies and which way it runs. Never part of
+    /// a profile (it is construction too).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub infinite: bool,
 }
 
 /// Geometric constraints and dimensions. Indices refer to `Sketch::points` (`p`, `q`) or
@@ -735,6 +740,7 @@ impl Sketch {
             link: None,
             centerline: false,
             fixed: false,
+            infinite: false,
         });
         Ok(self.curves.len() - 1)
     }
@@ -772,6 +778,7 @@ impl Sketch {
             link: None,
             centerline: false,
             fixed: false,
+            infinite: false,
         });
         Ok(self.curves.len() - 1)
     }
@@ -806,6 +813,7 @@ impl Sketch {
             link: None,
             centerline: false,
             fixed: false,
+            infinite: false,
         });
         Ok(self.curves.len() - 1)
     }
@@ -1376,7 +1384,7 @@ impl Sketch {
             }
         };
         let id = self.curve_id(id, prefix)?;
-        self.curves.push(Curve { id, kind, construction: false, reversed: false, link: None, centerline: false, fixed: false });
+        self.curves.push(Curve { id, kind, construction: false, reversed: false, link: None, centerline: false, fixed: false, infinite: false });
         Ok(self.curves.len() - 1)
     }
 

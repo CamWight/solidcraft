@@ -1216,3 +1216,54 @@ fn a_primitive_without_a_pick_or_with_its_position_cleared_stays_at_the_origin()
     let (p, _) = primitive_on(&mut app, vec![v], "solid.sphere", |_| {});
     assert_eq!(p["center"], json!([40.0, 30.0, 20.0]), "{p}");
 }
+
+#[test]
+fn patch_dialog_takes_continuity_and_points_and_brings_them_back() {
+    // A tube with its top face taken off: the rim's edges, G1, through a point above it.
+    let mut app = app_with(json!([
+        {"command": "solid.cylinder", "params": {"radius": 10, "height": 30, "body_name": "Tube"}},
+        {"command": "surface.unstitch", "params": {"body": "Tube", "faces": [[0, 0, 30]]}}
+    ]));
+    let rim: Vec<Sel> = {
+        let st = app.session.model.state();
+        let m = st.body("Tube").unwrap().mesh();
+        m.edges
+            .iter()
+            .enumerate()
+            .filter(|(_, e)| e.iter().all(|p| (p.z - 30.0).abs() < 1e-6))
+            .map(|(i, e)| Sel::Edge { body: "Tube".into(), index: i, point: e[e.len() / 2] })
+            .collect()
+    };
+    assert!(!rim.is_empty());
+    let mut d = start(&mut app, vec![], "surface.patch");
+    d.inputs[0].items = rim;
+    d.inputs[1].items = vec![Sel::Vertex { body: "Tube".into(), point: Vec3::new(0.0, 0.0, 36.0) }];
+    if let Kind::Surface(crate::dialogs_surface::Surf::Patch { continuity }) = &mut d.kind {
+        *continuity = 1;
+    }
+    let (id, p) = apply_commands(&app, &d).unwrap().remove(0);
+    assert_eq!((id.as_str(), &p["continuity"], &p["points"]), ("surface.patch", &json!("g1"), &json!([[0.0, 0.0, 36.0]])), "{p}");
+    app.session.execute(&id, &p).unwrap();
+    let top = app.session.model.state().bodies.last().unwrap().mesh().bounds().max.z;
+    assert!(top > 35.9, "the cap reaches the point: {top}");
+    // Edit Feature: G1 again, and the point (on no face) kept as it was.
+    let fid = app.session.doc.features.last().unwrap().id;
+    let back = crate::dialogs::for_feature(&app, fid, None).unwrap();
+    assert!(matches!(back.kind, Kind::Surface(crate::dialogs_surface::Surf::Patch { continuity: 1 })));
+    let (_, p) = apply_commands(&app, &back).unwrap().remove(0);
+    assert_eq!((&p["params"]["continuity"], &p["params"]["points"]), (&json!("g1"), &json!([[0.0, 0.0, 36.0]])), "{p}");
+}
+
+#[test]
+fn patch_dialog_rows_are_translated() {
+    for (lang, continuity, through) in [("en", "Continuity", "Pass through"), ("de", "Stetigkeit", "Durch Punkte"), ("ja", "連続性", "通過点")]
+    {
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = lang.into();
+        h.app.home.open = false;
+        h.call("ui.start", json!({"command": "surface.patch"}));
+        h.frames(3);
+        assert!(h.widget(continuity).is_some(), "{lang}: the Continuity row must show {continuity:?}");
+        assert!(h.widget(through).is_some(), "{lang}: the points input must show {through:?}");
+    }
+}

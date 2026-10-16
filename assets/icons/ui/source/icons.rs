@@ -490,6 +490,23 @@ pub(crate) fn paint_with(p: &Painter, r: Rect, name: &str, ink: Color32, fill: C
             }
             p.circle_filled(at(0.5), dot_r, a);
         }
+        "infinite" => {
+            // An infinite line (#1359): Construction's broken line, with an open arrowhead at
+            // each end saying it runs on. Accent only, like Construction and Centerline.
+            let w = line_type_stroke(r);
+            let at = |t: f32| pen.at(3.0 + 16.0 * t, 19.0 - 16.0 * t);
+            for (t0, t1) in [(0.0, 0.38), (0.62, 1.0)] {
+                p.add(Shape::line(vec![at(t0), at(t1)], Stroke::new(w, a)));
+            }
+            // Each head: two short strokes back from the tip, either side of the line.
+            let tip_len = 0.3;
+            for (tip, back) in [(0.0f32, tip_len), (1.0, 1.0 - tip_len)] {
+                let (t, b) = (at(tip), at(back));
+                let along = b - t;
+                let side = egui::vec2(-along.y, along.x) * 0.55;
+                p.add(Shape::line(vec![b + side, t, b - side], Stroke::new(w, a)));
+            }
+        }
         "c_hv" => {
             pen.line(&[(4.0, 18.0), (20.0, 18.0)], a);
             pen.line(&[(6.0, 4.0), (6.0, 14.0)], a);
@@ -1482,7 +1499,7 @@ mod tests {
     /// theme's construction orange) and must not change with `ink`.
     #[test]
     fn construction_and_centerline_icons_follow_the_callers_accent_only() {
-        for name in ["construction", "centerline"] {
+        for name in ["construction", "centerline", "infinite"] {
             let base = drawn(name, Color32::BLACK, Color32::WHITE, Color32::from_rgb(1, 2, 3));
             let other_accent = drawn(name, Color32::BLACK, Color32::WHITE, Color32::from_rgb(4, 5, 6));
             assert_ne!(base, other_accent, "{name} icon must change with the caller's accent colour");

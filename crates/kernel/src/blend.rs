@@ -1611,7 +1611,7 @@ fn tangent_faces(solid: &Solid, edge: &mt::Edge) -> bool {
 
 /// The chain of edges continuing `edge` smoothly at its ends (its ids): closed, or open where
 /// the next edge turns sharply.
-fn smooth_chain(solid: &Solid, edge: &mt::Edge) -> Option<Vec<mt::EdgeID>> {
+pub(crate) fn smooth_chain(solid: &Solid, edge: &mt::Edge) -> Option<Vec<mt::EdgeID>> {
     smooth_chain_within(solid, edge, &|_| true)
 }
 

@@ -147,8 +147,10 @@ fn cut_points(sk: &Sketch, ci: usize) -> Vec<(f64, Vec2, usize)> {
         {
             pts.extend([other.point(0.0), other.point(sweep)]);
         }
+        // An infinite line (#1359) cuts wherever its line crosses, beyond its two points too.
+        let other_infinite = sk.curves.get(oi).is_some_and(|c| c.infinite);
         for q in pts {
-            if on_bounded(&other, q).is_some()
+            if (other_infinite || on_bounded(&other, q).is_some())
                 && let Some(t) = on_bounded(&sh, q)
                 && !out.iter().any(|(_, x, _)| x.dist(q) < TOL * 10.0)
             {
@@ -197,7 +199,7 @@ fn split_at(sk: &mut Sketch, ci: usize, ts: &[f64]) -> Result<(Vec<usize>, Vec<u
     let mut pieces = vec![ci];
     let mut push = |sk: &mut Sketch, kind: CurveKind, prefix: &str| -> Result<()> {
         let id = sk.fresh(prefix)?;
-        sk.curves.push(Curve { id, kind, construction, reversed: false, link: None, centerline: false, fixed: false });
+        sk.curves.push(Curve { id, kind, construction, reversed: false, link: None, centerline: false, fixed: false, infinite: false });
         pieces.push(sk.curves.len() - 1);
         Ok(())
     };
@@ -286,6 +288,9 @@ fn trim(s: &mut Session, p: &Value) -> Result<Value> {
     let (out, info) = edit(s, p, cmd, false, |sk, doc| {
         let ci = curve_arg(sk, p, cmd)?;
         let id = sk.curves.get(ci).map(|c| c.id.clone()).unwrap_or_default();
+        if sk.curves.get(ci).is_some_and(|c| c.infinite) {
+            return Err(bad(cmd, "an infinite line has no ends to trim back to: make it a normal line first"));
+        }
         if sk.curves.get(ci).is_some_and(|c| c.kind.is_freeform()) {
             let r = super::sketch_freeform::trim_or_break(sk, ci, at, true, cmd)?;
             doc.prune_model_params();
@@ -418,7 +423,11 @@ fn extend(s: &mut Session, p: &Value) -> Result<Value> {
             if oi == ci {
                 continue;
             }
-            let pieces = sk.exact_segs(oi).unwrap_or_else(|| sk.segs(oi));
+            let mut pieces = sk.exact_segs(oi).unwrap_or_else(|| sk.segs(oi));
+            // An infinite line (#1359) is a boundary along its whole line.
+            if sk.curves.get(oi).is_some_and(|c| c.infinite) {
+                pieces = pieces.iter().map(|s| support::endless(s, sh.point(sh.param(at)))).collect();
+            }
             segment_count += pieces.len();
             if segment_count > 16_384 {
                 return Err(bad(cmd, "too many exact curve pieces to extend safely"));
@@ -526,6 +535,16 @@ fn weld_corner(sk: &mut Sketch, p: &Value) {
             q -= 1;
         }
     }
+}
+
+/// Fillets and chamfers refuse a corner on an infinite line (#1359): it has no end there.
+fn refuse_infinite_corner(sk: &Sketch, p: &Value, cmd: &str) -> Result<()> {
+    let infinite = |c: Option<usize>| c.and_then(|c| sk.curves.get(c)).is_some_and(|c| c.infinite);
+    let at_corner = match str_(p, "point").and_then(|r| sk.resolve_point(r)) {
+        Some(q) => sk.curves.iter().any(|c| c.infinite && c.kind.uses(q)),
+        None => ["a", "b"].iter().any(|k| infinite(str_(p, k).and_then(|i| sk.curve_index(i)))),
+    };
+    if at_corner { Err(bad(cmd, "an infinite line has no corner to round or cut: make it a normal line first")) } else { Ok(()) }
 }
 
 /// A corner of two lines: (line a, line b, corner point, far end of a, far end of b).
@@ -745,6 +764,7 @@ fn kept_json(kept: Vec<CornerKept>) -> (Vec<String>, Vec<String>) {
 /// Round one corner (`point` or `a`, `b`) with an arc of radius `r` tangent to both curves:
 /// the arc, the tangent constraints and what became of the corner point.
 fn fillet_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<(usize, Vec<String>, CornerKept)> {
+    refuse_infinite_corner(sk, p, cmd)?;
     weld_corner(sk, p);
     let (la, lb, c, fa, fb) = match corner(sk, p, cmd) {
         Ok(x) => x,
@@ -854,6 +874,7 @@ fn round_corner(sk: &mut Sketch, p: &Value, r: f64, cmd: &str) -> Result<Option<
 
 fn chamfer(s: &mut Session, p: &Value, cmd: &str, dists: impl FnOnce(f64) -> Result<(f64, f64)>) -> Result<Value> {
     let (out, info) = edit(s, p, cmd, false, |sk, _| {
+        refuse_infinite_corner(sk, p, cmd)?;
         weld_corner(sk, p);
         let (la, lb, c, fa, fb) = corner(sk, p, cmd)?;
         let (pc, pa, pb) = (sk.point(c).unwrap_or_default(), sk.point(fa).unwrap_or_default(), sk.point(fb).unwrap_or_default());
@@ -1343,6 +1364,18 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
                 .map(|o| o.sources.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>())
                 .or_else(|| sk.freeform_offsets.iter().find(|o| o.output == *output).map(|o| vec![o.source.clone()]))
                 .ok_or_else(|| bad(cmd, "offset association is missing"))?;
+            // An offset of infinite lines is infinite lines too (#1359).
+            let infinite = sources.iter().all(|id| sk.curve_index(id).and_then(|c| sk.curves.get(c)).is_some_and(|c| c.infinite));
+            if infinite {
+                for id in group.iter().flat_map(|side| side.curves.iter()) {
+                    if let Some(cu) = sk.curve_index(id).and_then(|c| sk.curves.get_mut(c))
+                        && matches!(cu.kind, CurveKind::Line { .. })
+                    {
+                        cu.infinite = true;
+                        cu.construction = true;
+                    }
+                }
+            }
             for (index, side) in group.iter_mut().enumerate() {
                 let name = if index == 1 { param2.as_ref().unwrap_or(&param) } else { &param };
                 let output = side.curves.first().ok_or_else(|| bad(cmd, "offset produced no curves"))?;
@@ -1631,6 +1664,8 @@ fn copy_through(
             }
         };
         let id = sk.fresh(prefix)?;
+        // A mirrored or patterned infinite line is an infinite line too (#1359).
+        let infinite = cu.infinite && matches!(kind, CurveKind::Line { .. });
         sk.curves.push(Curve {
             id,
             kind,
@@ -1639,6 +1674,7 @@ fn copy_through(
             link: None,
             centerline: false,
             fixed: false,
+            infinite,
         });
         made.push(sk.curves.len() - 1);
     }

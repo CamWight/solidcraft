@@ -2244,11 +2244,14 @@ fn construction(s: &mut Session, p: &Value) -> Result<Value> {
         let mut n = 0;
         for c in cs {
             if let Some(cu) = sk.curves.get_mut(c)
-                && (cu.construction != to || to && cu.centerline)
+                && (cu.construction != to || to && cu.centerline || !to && cu.infinite)
             {
                 cu.construction = to;
                 if to {
                     cu.centerline = false;
+                } else {
+                    // A normal line is a finite one.
+                    cu.infinite = false;
                 }
                 n += 1;
             }
@@ -2511,6 +2514,9 @@ mod drag_live_tests;
 #[cfg(test)]
 #[path = "sketch_ids_tests.rs"]
 mod ids_tests;
+#[cfg(test)]
+#[path = "sketch_infinite_tests.rs"]
+mod infinite_tests;
 #[cfg(test)]
 #[path = "sketch_redundant_tests.rs"]
 mod redundant_tests;

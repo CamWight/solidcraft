@@ -94,6 +94,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .icon("centerline")
         .enabled(in_sketch)
         .params("curves: [line ids], value?: bool (default toggles): centerline line type (not in profiles; an axis)"),
+    CommandSpec::new("sketch.infinite", "Infinite Line", infinite_line)
+        .enabled(in_sketch)
+        .params("curves: [line ids], value?: bool (default toggles): infinite line type (#1359): construction geometry drawn across the whole view through the line's two points; off, a normal line"),
     CommandSpec::new("sketch.text", "Text", text).at("SKETCH", "CREATE").icon("text").enabled(in_sketch).params(concat!(
         "text: string (\\n breaks lines), at: baseline start [x,y], height?: capital height mm (default 5), angle?: deg; at's x and y, height and angle each take a number or an expression over the design's parameters as a string (\"plate_width / 2\", \"label_size\"): the text keeps the expression, follows the parameters, and returns it in `exprs`; an expression naming no parameter is the number it comes to, a bare number in one is in the design's units, \
          font?: an installed font's family or full name, or a .ttf/.otf file path (~ and %VAR% expand; default: the built-in Liberation Sans), ",
@@ -436,7 +439,32 @@ fn centerline(s: &mut Session, p: &Value) -> Result<Value> {
             cu.centerline = want.unwrap_or(!cu.centerline);
             if cu.centerline {
                 cu.construction = false;
+                cu.infinite = false;
             }
+        }
+        Ok(ids.len())
+    })?;
+    Ok(json!({"changed": n, "sketch": info}))
+}
+
+fn infinite_line(s: &mut Session, p: &Value) -> Result<Value> {
+    let cmd = "sketch.infinite";
+    let ids = string_list(p, "curves");
+    if ids.is_empty() {
+        return Err(bad(cmd, "`curves` must list lines"));
+    }
+    let want = crate::params::bool_(p, "value");
+    let (n, info) = edit(s, p, cmd, false, |sk, _| {
+        for id in &ids {
+            let c = sk.curve_index(id).ok_or_else(|| bad(cmd, format!("unknown curve `{id}`")))?;
+            let cu = sk.curves.get_mut(c).ok_or_else(|| bad(cmd, "curve"))?;
+            if !matches!(cu.kind, CurveKind::Line { .. }) {
+                return Err(bad(cmd, format!("`{id}` is not a line")));
+            }
+            // Infinite lines are construction geometry (never in a profile); off, a normal line.
+            cu.infinite = want.unwrap_or(!cu.infinite);
+            cu.construction = cu.infinite;
+            cu.centerline = false;
         }
         Ok(ids.len())
     })?;

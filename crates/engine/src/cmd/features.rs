@@ -48,7 +48,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .at("SOLID", "CREATE")
         .icon("pattern_rect")
         .params("features: [names] | bodies: [names]; path_sketch: sketch; path: [curve ids in order]; count; spacing (between instances) | distance (first to last); orientation?: identical|path; flip?: bool"),
-    CommandSpec::new("solid.mirror", "Mirror", mirror).at("SOLID", "CREATE").icon("mirror").params("features: [names] | bodies: [names] (combine?: join with the original); plane: XY|XZ|YZ|construction plane name or id|{origin, normal}|{origin, x_dir, y_dir} (a construction plane keeps the mirror following it)"),
+    CommandSpec::new("solid.mirror", "Mirror", mirror).at("SOLID", "CREATE").icon("mirror").params("features: [names] | bodies: [names] (combine?: join with the original); plane: XY|XZ|YZ|construction plane name or id|{origin, normal}|{origin, x_dir, y_dir} (origin coordinates may be length expressions; the mirror follows them, or a construction plane)"),
     CommandSpec::new("solid.hole", "Hole", hole)
         .at("SOLID", "CREATE")
         .icon("hole")
@@ -593,7 +593,8 @@ fn thin_param(s: &Session, p: &Value, sketch: u64, cmd: &str) -> Result<ThinWall
     let ss = st.sketch(sketch).ok_or_else(|| bad(cmd, "the sketch is not evaluated"))?;
     let mut curves = string_list(p, "curves");
     if curves.is_empty() {
-        curves = ss.sketch.curves.iter().filter(|c| !c.construction && !c.centerline && c.link.is_none()).map(|c| c.id.clone()).collect();
+        curves =
+            ss.sketch.curves.iter().filter(|c| !c.construction && !c.centerline && !c.infinite && c.link.is_none()).map(|c| c.id.clone()).collect();
     }
     if curves.is_empty() || curves.len() > 1000 {
         return Err(bad(cmd, "a thin extrude needs 1…1000 sketch curves (`curves`)"));
@@ -1303,7 +1304,7 @@ pub(super) fn check_plane_name(name: &str, cmd: &str) -> Result<()> {
 /// plane reads it here.
 pub(super) fn plane_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<solidcraft_doc::PlaneRef> {
     use solidcraft_doc::PlaneRef;
-    const WANT: &str = "XY, XZ, YZ, a construction plane name or id, or {origin, normal}";
+    const WANT: &str = "XY, XZ, YZ, a construction plane name or id, or {origin, normal} (origin coordinates may be length expressions)";
     let construction = |r: &str| match s.doc.find_feature(r) {
         Some(f) if matches!(f.kind, FeatureKind::ConstructionPlane { .. }) => Ok(PlaneRef::Construction { name: f.name.clone() }),
         Some(f) => Err(bad(cmd, format!("`{}` is not a construction plane (a plane is {WANT})", f.name))),
@@ -1332,16 +1333,24 @@ pub(super) fn plane_param(s: &Session, v: Option<&Value>, cmd: &str) -> Result<s
             None => Err(bad(cmd, format!("`plane` must be {WANT}"))),
         },
         Some(o @ Value::Object(_)) => {
+            // The origin's coordinates are numbers or length expressions; expressions are kept,
+            // so the plane follows its parameters.
             let origin = match o.get("origin") {
-                None => Vec3::ZERO,
-                Some(x) => vec3(x).ok_or_else(|| bad(cmd, "the plane's `origin` must be a point [x, y, z]"))?,
+                None => point_expr(Vec3::ZERO),
+                Some(_) => point_param(s, o, "origin", cmd)?.unwrap_or_else(|| point_expr(Vec3::ZERO)),
             };
+            let at = |e: &String| s.doc.eval(e, Kind::Length).unwrap_or(0.0);
+            let here = Vec3::new(at(&origin[0]), at(&origin[1]), at(&origin[2]));
             let pl = match (o.get("x_dir").and_then(vec3), o.get("y_dir").and_then(vec3), o.get("normal").and_then(vec3)) {
-                (Some(x), Some(y), _) => solidcraft_geom::Plane::new(origin, x, y),
-                (_, _, Some(n)) => solidcraft_geom::Plane::from_normal(origin, n),
+                (Some(x), Some(y), _) => solidcraft_geom::Plane::new(here, x, y),
+                (_, _, Some(n)) => solidcraft_geom::Plane::from_normal(here, n),
                 _ => None,
             };
-            Ok(PlaneRef::Custom { plane: pl.ok_or_else(|| bad(cmd, "plane needs x_dir and y_dir, or normal"))? })
+            let plane = pl.ok_or_else(|| bad(cmd, "plane needs x_dir and y_dir, or normal"))?;
+            if origin.iter().all(|e| solidcraft_doc::expr::is_literal(e)) {
+                return Ok(PlaneRef::Custom { plane });
+            }
+            Ok(PlaneRef::Placed { origin, x_dir: plane.x, y_dir: plane.y })
         }
         _ => Err(bad(cmd, format!("`plane` must be {WANT}"))),
     }
@@ -1880,3 +1889,6 @@ mod thin_extrude_tests;
 #[cfg(test)]
 #[path = "extrude_convention_tests.rs"]
 mod extrude_convention_tests;
+#[cfg(test)]
+#[path = "fillet_connected_rounds_tests.rs"]
+mod fillet_connected_rounds_tests;

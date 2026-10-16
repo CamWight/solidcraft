@@ -262,6 +262,12 @@ and a fresh CI run:
 4. Reference the issue (`Fixes #12`). In the PR, say what you tested and how. For geometry work, include the measured numbers (and
    the expected ones).
 
+Comment `/claim` on an issue to take it: you are assigned, it gets the `in progress` label, and
+the bot replies with the deadline. Open a draft PR referencing the issue within 72 hours, or the
+claim lapses and the issue is freed again; a claim with a PR is freed after 14 days without
+pushes. `/unclaim` releases it early (only you or a maintainer can). Issues a maintainer has
+taken are never freed automatically.
+
 Help reviewers see what the words mean. For observable CAD, UI or model behavior, please
 include actual descriptive screenshots or a short recording in the issue or PR. This evidence
 is required for changes or bugs that can be demonstrated in the app, including kernel,

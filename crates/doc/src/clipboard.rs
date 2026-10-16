@@ -223,7 +223,7 @@ impl crate::Feature {
         for (_, e, _) in self.kind.inputs_mut() {
             *e = clone_expression(e, parameters);
         }
-        for e in self.kind.point_expr_mut().into_iter().flatten() {
+        for e in self.kind.placement_exprs_mut() {
             *e = clone_expression(e, parameters);
         }
         self.kind.remap_bodies(bodies);

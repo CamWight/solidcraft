@@ -218,8 +218,13 @@ pub fn runnable_sibling(program: &Path) -> Option<PathBuf> {
     names_for(name, true).into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
 }
 
-/// `program --version`'s first line, or `None` after `limit` (the probe is then stopped).
-fn version(program: &Path, limit: Duration) -> Option<String> {
+/// Start probes and sessions with the same PATH used for discovery. Desktop launchers often
+/// omit Node's install folder even when we found an adapter with a `#!/usr/bin/env node` shebang.
+/// Only the child's environment changes; inherited absolute PATH entries keep precedence.
+pub(super) fn command_for(program: &Path) -> Command {
+    // Older saved Windows commands may name npm's bare Unix script rather than its .cmd shim.
+    let shim = if cfg!(windows) { runnable_sibling(program) } else { None };
+    let program = shim.as_deref().unwrap_or(program);
     let mut cmd = if cfg!(windows) && program.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat")) {
         let mut c = Command::new("cmd");
         c.arg("/C").arg(program);
@@ -227,6 +232,15 @@ fn version(program: &Path, limit: Duration) -> Option<String> {
     } else {
         Command::new(program)
     };
+    if let Ok(path) = std::env::join_paths(search_dirs()) {
+        cmd.env("PATH", path);
+    }
+    cmd
+}
+
+/// `program --version`'s first line, or `None` after `limit` (the probe is then stopped).
+fn version(program: &Path, limit: Duration) -> Option<String> {
+    let mut cmd = command_for(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -375,5 +389,54 @@ mod tests {
             assert!(!k.programs.is_empty() && !k.install.is_empty(), "{}", k.id);
         }
         assert_eq!(KNOWN.first().map(|k| k.id), Some("claude"), "the Claude Code adapter is the default");
+    }
+
+    /// Finder's PATH lacks user-installed runtimes. Discovery, the version probe and a live
+    /// agent must all work with an env shebang whose interpreter is in ~/.local/bin.
+    #[test]
+    #[cfg(unix)]
+    fn desktop_path_can_start_an_agent_and_its_runtime() {
+        use super::super::process::{AgentProcess, FromAgent};
+        use std::os::unix::fs::PermissionsExt;
+
+        const CHILD: &str = "SOLIDCRAFT_AGENT_PATH_TEST";
+        if let Some(root) = std::env::var_os(CHILD) {
+            let root = PathBuf::from(root);
+            let agent = find_in("solidcraft-test-agent", &search_dirs()).unwrap();
+            assert_eq!(version(&agent, Duration::from_secs(3)).as_deref(), Some("1.2.3"));
+            let mut p = AgentProcess::spawn(&[agent.to_string_lossy().into_owned()], &root, &[], || {}).unwrap();
+            let message = serde_json::json!({"id": 1, "method": "initialize"});
+            p.send(&message);
+            let reply = p.from_agent.recv_timeout(Duration::from_secs(5)).unwrap();
+            p.shutdown(true);
+            match reply {
+                FromAgent::Line(line) => assert_eq!(serde_json::from_str::<serde_json::Value>(&line).unwrap(), message),
+                FromAgent::Exited(tail) => panic!("the agent could not start its runtime: {tail:?}"),
+            }
+            return;
+        }
+
+        let root = std::env::temp_dir().join(format!("sc-agent-desktop-path-{}", std::process::id()));
+        let bin = root.join(".local/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        for (name, script) in [
+            ("solidcraft-test-agent", "#!/usr/bin/env solidcraft-test-runtime\n"),
+            ("solidcraft-test-runtime", "#!/bin/sh\nif [ \"$2\" = \"--version\" ]; then printf 'test-agent 1.2.3\\n'; else cat; fi\n"),
+        ] {
+            let path = bin.join(name);
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        // Change only a child process's environment: no global mutation or unsafe set_var.
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "agent_chat::discover::tests::desktop_path_can_start_an_agent_and_its_runtime", "--nocapture"])
+            .env(CHILD, &root)
+            .env("HOME", &root)
+            .env("PATH", "/usr/bin:/bin")
+            .env_remove("NPM_CONFIG_PREFIX")
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+        assert!(output.status.success(), "{}\n{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
     }
 }

@@ -14,6 +14,7 @@ pub mod bspline;
 pub mod compare;
 pub mod env;
 pub mod fill;
+pub mod fill_general;
 mod mesh;
 mod plane;
 mod profile;

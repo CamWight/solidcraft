@@ -655,6 +655,7 @@ impl Sketch {
                 link: Some(id.to_string()),
                 centerline: false,
                 fixed: false,
+                infinite: false,
             });
         }
         for li in &lay.lone {

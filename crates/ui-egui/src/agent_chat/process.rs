@@ -51,21 +51,6 @@ impl ProcessHandle {
     }
 }
 
-/// On Windows, npm installs `.cmd` shims, which only `cmd.exe` runs. A command saved as the bare
-/// npm path (a shell script there) runs the shim beside it.
-fn command_for(program: &str) -> Command {
-    let shim = if cfg!(windows) { super::discover::runnable_sibling(std::path::Path::new(program)) } else { None };
-    let program = shim.as_deref().and_then(|p| p.to_str()).unwrap_or(program);
-    let lower = program.to_ascii_lowercase();
-    if cfg!(windows) && (lower.ends_with(".cmd") || lower.ends_with(".bat")) {
-        let mut c = Command::new("cmd");
-        c.arg("/C").arg(program);
-        c
-    } else {
-        Command::new(program)
-    }
-}
-
 /// Start the agent in a process group of its own (Unix) or without a console window (Windows).
 fn detach_group(cmd: &mut Command) {
     #[cfg(unix)]
@@ -161,7 +146,7 @@ impl AgentProcess {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> Result<AgentProcess, String> {
         let Some((program, args)) = argv.split_first() else { return Err("no agent command".into()) };
-        let mut cmd = command_for(program);
+        let mut cmd = super::discover::command_for(std::path::Path::new(program));
         cmd.args(args).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         for v in env_remove {
             cmd.env_remove(v);

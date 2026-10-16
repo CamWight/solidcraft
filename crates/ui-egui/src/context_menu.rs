@@ -781,6 +781,20 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     if !curves.is_empty() {
         v.push(cmd(app, "sketch.construction", "Normal / Construction").with(json!({ "curves": curves })));
     }
+    // Infinite lines (#1359): the selected lines switch together.
+    let lines: Vec<String> = curves
+        .iter()
+        .filter(|id| {
+            ss.sketch
+                .curve_index(id)
+                .and_then(|i| ss.sketch.curves.get(i))
+                .is_some_and(|c| matches!(c.kind, solidcraft_engine::sketch::CurveKind::Line { .. }))
+        })
+        .cloned()
+        .collect();
+    if !lines.is_empty() {
+        v.push(cmd(app, "sketch.infinite", "Infinite Line").with(json!({ "curves": lines })));
+    }
     if curves.len() == 1 && ss.sketch.freeform_offsets.iter().any(|offset| offset.output == curves[0]) {
         v.push(cmd(app, "sketch.offset.break", "Break Offset Association").with(json!({"curve":curves[0]})));
     }

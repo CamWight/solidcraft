@@ -44,6 +44,30 @@ impl FeatureKind {
         v
     }
 
+    /// The coordinates of the points that place the feature: a primitive's position, an
+    /// explicit plane's origin. They are not inputs (no parameter names), but follow
+    /// parameters as inputs do.
+    pub fn placement_exprs_mut(&mut self) -> Vec<&mut String> {
+        let mut v = Vec::new();
+        self.walk_exprs_mut(&mut |(_, e, _, role)| {
+            if role == ExprRole::Placement {
+                v.push(e);
+            }
+        });
+        v
+    }
+
+    /// Read-only view of [`FeatureKind::placement_exprs_mut`].
+    pub fn placement_exprs(&self) -> Vec<&str> {
+        let mut v = Vec::new();
+        self.walk_exprs(&mut |(_, e, _, role)| {
+            if role == ExprRole::Placement {
+                v.push(e.as_str());
+            }
+        });
+        v
+    }
+
     /// Every expression the feature uses: its inputs, then a primitive's placement coordinates.
     pub fn expressions(&self) -> Vec<&str> {
         let (mut inputs, mut placement) = (Vec::new(), Vec::new());
@@ -575,7 +599,7 @@ impl Document {
                     }
                 }
             }
-            if f.kind.point_expr().is_some_and(|p| p.iter().any(|e| expr::references(e).iter().any(|r| r == name))) {
+            if f.kind.placement_exprs().iter().any(|e| expr::references(e).iter().any(|r| r == name)) {
                 out.push(ParamUser::Feature { feature: f.id, name: f.name.clone(), input: "Position".into() });
             }
             if let FeatureKind::Sketch { sketch, .. } = &f.kind {
@@ -646,7 +670,7 @@ impl Document {
                     *x = new.to_string();
                 }
             }
-            for e in f.kind.point_expr_mut().into_iter().flatten() {
+            for e in f.kind.placement_exprs_mut() {
                 let r = expr::rename_reference(e, old, new);
                 if r != *e {
                     *e = r;

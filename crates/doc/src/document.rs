@@ -42,6 +42,14 @@ pub enum PlaneRef {
     Origin { name: String },
     /// An explicit plane (e.g. picked from a planar face).
     Custom { plane: Plane },
+    /// An explicit plane whose origin is given as length expressions
+    /// (`{origin: ["half", 0, 0], normal: [1, 0, 0]}`), so it follows parameter changes.
+    Placed {
+        #[serde(with = "point_expr")]
+        origin: PointExpr,
+        x_dir: Vec3,
+        y_dir: Vec3,
+    },
     /// Another plane offset along its normal by an expression.
     Offset { base: Box<PlaneRef>, distance: String },
     /// Another plane rotated about a line (in world coordinates) by an angle expression.
@@ -1268,6 +1276,14 @@ pub enum FeatureKind {
         /// exact plane whatever this says).
         #[serde(default, skip_serializing_if = "is_zero")]
         crown: f64,
+        /// How a patch on edges meets the faces beside its loop (G0 everywhere by default, and
+        /// then not saved).
+        #[serde(default, skip_serializing_if = "PatchContinuity::is_g0")]
+        continuity: PatchContinuity,
+        /// Points a patch on edges passes through.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[walk(pos)]
+        points: Vec<Vec3>,
     },
     /// Surface bodies sewn along shared edges into the first one (a solid when they close).
     Stitch {
@@ -1656,6 +1672,45 @@ pub struct BlendSide {
     pub body: String,
     #[walk(pos)]
     pub edges: Vec<Vec3>,
+}
+
+/// How a patch on a loop of edges meets the faces beside the loop: every edge with `all`, but the
+/// edges picked in `edges` with their own.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
+pub struct PatchContinuity {
+    #[serde(default = "patch_g0", skip_serializing_if = "is_g0")]
+    pub all: Continuity,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edges: Vec<EdgeContinuity>,
+}
+
+/// One edge of a patch's loop (a point on it) and how the patch meets the face beside it.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, solidcraft_derive::Walk)]
+pub struct EdgeContinuity {
+    #[walk(pos)]
+    pub edge: Vec3,
+    pub g: Continuity,
+}
+
+impl Default for PatchContinuity {
+    fn default() -> PatchContinuity {
+        PatchContinuity { all: Continuity::G0, edges: Vec::new() }
+    }
+}
+
+impl PatchContinuity {
+    /// G0 everywhere: the patch only meets its edges.
+    pub fn is_g0(&self) -> bool {
+        self.all == Continuity::G0 && self.edges.iter().all(|e| e.g == Continuity::G0)
+    }
+}
+
+fn patch_g0() -> Continuity {
+    Continuity::G0
+}
+
+fn is_g0(g: &Continuity) -> bool {
+    *g == Continuity::G0
 }
 
 /// The continuity a blend repeats by default: the tangent plane on both sides.
@@ -2937,6 +2992,15 @@ impl Document {
             PlaneRef::Origin { name } => Plane::named(name).ok_or_else(|| DocError::Unknown(format!("plane `{name}`"))),
             PlaneRef::Custom { plane } | PlaneRef::Face { plane, .. } => {
                 Plane::new(plane.origin, plane.x, plane.y).ok_or_else(|| DocError::Invalid("degenerate plane".into()))
+            }
+            PlaneRef::Placed { origin, x_dir, y_dir } => {
+                let [x, y, z] = origin;
+                let o =
+                    Vec3::new(Self::eval_in(vals, x, Kind::Length)?, Self::eval_in(vals, y, Kind::Length)?, Self::eval_in(vals, z, Kind::Length)?);
+                if ![o.x, o.y, o.z].iter().all(|c| c.is_finite() && c.abs() < 1e9) {
+                    return Err(DocError::Invalid("the plane's origin is out of range".into()));
+                }
+                Plane::new(o, *x_dir, *y_dir).ok_or_else(|| DocError::Invalid("degenerate plane".into()))
             }
             PlaneRef::Offset { base, distance } => {
                 let b = self.resolve_plane_in(vals, base, depth + 1, st)?;

@@ -36,6 +36,7 @@ pub struct ClipCurve {
     pub construction: bool,
     pub centerline: bool,
     pub reversed: bool,
+    pub infinite: bool,
 }
 
 /// A constraint or dimension of the clipboard, over clipboard points and curves. A dimension
@@ -133,7 +134,7 @@ fn copy(s: &mut Session, p: &Value) -> Result<Value> {
         kind.map_points(&|q| used.iter().find(|(o, _)| *o == q).map_or(q, |(_, n)| *n));
         cmap.insert(c, clip.curves.len());
         // Projected geometry comes in as ordinary geometry.
-        clip.curves.push(ClipCurve { kind, construction: cu.construction, centerline: cu.centerline, reversed: cu.reversed });
+        clip.curves.push(ClipCurve { kind, construction: cu.construction, centerline: cu.centerline, reversed: cu.reversed, infinite: cu.infinite });
     }
     for &q in &ps {
         let known = pmap.contains_key(&q);
@@ -276,6 +277,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
                 cu.construction = c.construction;
                 cu.centerline = c.centerline;
                 cu.reversed = c.reversed;
+                cu.infinite = c.infinite;
             }
             made.push(i);
         }

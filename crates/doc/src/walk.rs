@@ -264,8 +264,9 @@ impl<F: Fn(usize, usize) -> &'static str> Label for F {
     }
 }
 
-/// The offsets and angles of a plane, outermost first (nesting is capped like every walk over a
-/// plane), the construction plane it is built on, and the plane itself.
+/// The offsets and angles of a plane, outermost first, and an explicit origin's coordinates
+/// (nesting is capped like every walk over a plane), the construction plane it is built on, and
+/// the plane itself.
 impl Walk for PlaneRef {
     fn walk_exprs<'a>(&'a self, f: &mut dyn FnMut(ExprItem<'a>)) {
         let mut p = self;
@@ -280,6 +281,12 @@ impl Walk for PlaneRef {
                     p = base;
                 }
                 PlaneRef::AlongPath { t, .. } => return f(("Distance (0 to 1)", t, Kind::Unitless, ExprRole::Input)),
+                PlaneRef::Placed { origin, .. } => {
+                    for (label, e) in ["X", "Y", "Z"].into_iter().zip(origin) {
+                        f((label, e, Kind::Length, ExprRole::Placement));
+                    }
+                    return;
+                }
                 _ => return,
             }
         }
@@ -297,6 +304,12 @@ impl Walk for PlaneRef {
                     p = base;
                 }
                 PlaneRef::AlongPath { t, .. } => return f(("Distance (0 to 1)", t, Kind::Unitless, ExprRole::Input)),
+                PlaneRef::Placed { origin, .. } => {
+                    for (label, e) in ["X", "Y", "Z"].into_iter().zip(origin) {
+                        f((label, e, Kind::Length, ExprRole::Placement));
+                    }
+                    return;
+                }
                 _ => return,
             }
         }

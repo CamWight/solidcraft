@@ -807,7 +807,8 @@ fn ground_shadow(sc: &mut GpuScene, app: &SolveApp, st: &std::sync::Arc<solidcra
 /// Sketch line types share the same world-space dash phase in the scene and overlays.
 pub(crate) fn sketch_segments(pts: &[Vec3], mode: u8, unit: f64) -> Vec<(Vec3, Vec3)> {
     match mode {
-        1 => dashes(pts, &[0.3 * unit, 0.2 * unit]),
+        // Construction, and infinite lines (#1359), which are construction too.
+        1 | 3 => dashes(pts, &[0.3 * unit, 0.2 * unit]),
         2 => dashes(pts, &[0.6 * unit, 0.15 * unit, 0.05 * unit, 0.15 * unit]),
         _ => pts.windows(2).map(|w| (w[0], w[1])).collect(),
     }
@@ -2237,6 +2238,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         painter.add(egui_wgpu::Callback::new_paint_callback(rect, cb));
     }
     analysis_legend(app, &painter, rect);
+    crate::frame_rate::paint(app, ui.ctx(), &painter, rect);
 
     // ---- interaction ----
     let add = mods.shift || mods.command || mods.ctrl;
@@ -3747,7 +3749,6 @@ mod tests {
         for style in [0u8, 2] {
             let ctx = egui::Context::default();
             let mut app = SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
-            app.viewport.no_pixels = true;
             app.run("solid.box", json!({"length":200,"width":120,"height":160})).unwrap();
             app.ui.show_origin = false;
             app.ui.visual_style = style;
