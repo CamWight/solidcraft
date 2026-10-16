@@ -538,7 +538,7 @@ fn path_row(ui: &mut egui::Ui, k: &mut Tx, inputs: &mut [SelInput], active: &mut
 }
 
 /// The installed font families, listed once in the background (none on the web).
-fn families(ctx: &egui::Context) -> Option<Arc<Vec<String>>> {
+pub(crate) fn families(ctx: &egui::Context) -> Option<Arc<Vec<String>>> {
     static FAMILIES: OnceLock<Arc<Vec<String>>> = OnceLock::new();
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     if let Some(list) = FAMILIES.get() {

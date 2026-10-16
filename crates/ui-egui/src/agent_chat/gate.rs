@@ -27,8 +27,36 @@ pub enum Verdict {
 /// itself) is the agent's.
 const METHODS: &[&str] = &["engine.commands", "document.inspect", "engine.execute", "engine.batch", "ui.view", "ui.render", "ui.screenshot"];
 
-/// Parameter names that hold a file or folder.
-const PATH_KEYS: &[&str] = &["path", "paths", "file", "files", "dir", "folder", "out", "output", "filename", "source", "target_path"];
+/// Parameter names that hold a file or folder and nothing else.
+const FILE_KEYS: &[&str] = &["file", "files", "dir", "folder", "out", "output", "filename", "target_path"];
+
+/// Parameter names that are a file in some commands and geometry in others (`path`: a sweep's or
+/// pattern's curve ids, an occurrence's ids; `source`: a feature or body). They name a file only
+/// when the value reads like one, or the command is by its nature about files.
+const AMBIGUOUS_KEYS: &[&str] = &["path", "paths", "source"];
+
+/// File extensions that make a bare word a file name.
+const FILE_EXTENSIONS: &[&str] = &[
+    "solidcraft",
+    "json",
+    "csv",
+    "step",
+    "stp",
+    "iges",
+    "igs",
+    "stl",
+    "3mf",
+    "obj",
+    "dxf",
+    "svg",
+    "png",
+    "jpg",
+    "jpeg",
+    "urdf",
+    "txt",
+    "py",
+    "toml",
+];
 
 /// Commands that only read (not counted as changes).
 fn reads_only(id: &str) -> bool {
@@ -39,13 +67,45 @@ fn reads_only(id: &str) -> bool {
         || matches!(id, "edit.checkpoint" | "render.status" | "render.backends" | "render.settings.get" | "file.slicers")
 }
 
-fn names_a_file(params: &Value) -> Option<String> {
+/// Commands that read or write a file by their nature: any string they are given in a path
+/// parameter is a file, whatever it looks like.
+fn is_file_verb(id: &str) -> bool {
+    id.starts_with("library.") || ["export", "import", "save", "open", "insert", "load", "write", "recover"].iter().any(|v| id.contains(v))
+}
+
+/// Whether `s` reads like a file or folder name: a path separator, `~`, a leading dot, or a known
+/// extension. Curve ids (`c1`), edge names (`edge-3`) and the like do not.
+fn looks_like_file(s: &str) -> bool {
+    if s.is_empty() || s.len() > 4096 {
+        return false;
+    }
+    if s.contains('/') || s.contains('\\') || s.starts_with('~') || s.starts_with('.') {
+        return true;
+    }
+    s.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && FILE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+/// The first file or folder a request's parameters name, for the question and the decision.
+/// `id`: the command (empty for methods that are not commands).
+fn names_a_file(id: &str, params: &Value) -> Option<String> {
     let o = params.as_object()?;
-    PATH_KEYS.iter().find_map(|k| match o.get(*k) {
-        Some(Value::String(s)) if !s.is_empty() => Some(s.chars().take(200).collect()),
-        Some(Value::Array(a)) if !a.is_empty() => Some(a.iter().filter_map(Value::as_str).take(3).collect::<Vec<_>>().join(", ")),
-        _ => None,
-    })
+    let shown = |s: &str| s.chars().take(200).collect::<String>();
+    let by_nature = is_file_verb(id);
+    let first = |v: &Value, any: bool| -> Option<String> {
+        match v {
+            Value::String(s) if any && !s.is_empty() => Some(shown(s)),
+            Value::String(s) if looks_like_file(s) => Some(shown(s)),
+            Value::Array(a) => {
+                let names: Vec<&str> = a.iter().filter_map(Value::as_str).filter(|s| (any && !s.is_empty()) || looks_like_file(s)).take(3).collect();
+                (!names.is_empty()).then(|| names.join(", "))
+            }
+            _ => None,
+        }
+    };
+    FILE_KEYS
+        .iter()
+        .find_map(|k| o.get(*k).and_then(|v| first(v, true)))
+        .or_else(|| AMBIGUOUS_KEYS.iter().find_map(|k| o.get(*k).and_then(|v| first(v, by_nature))))
 }
 
 /// One command as the agent would run it. `undo_left`: steps this turn may still undo without
@@ -60,7 +120,7 @@ pub fn command(id: &str, params: &Value, undo_left: usize) -> Verdict {
     }
     // Files, and commands that replace or reload the whole design.
     let file_command = id.starts_with("file.") || id.starts_with("doc.") || matches!(id, "render.export" | "render.start");
-    if let Some(p) = names_a_file(params) {
+    if let Some(p) = names_a_file(id, params) {
         return Verdict::Ask(format!("{id}: {p}"));
     }
     if file_command && !reads_only(id) {
@@ -111,7 +171,7 @@ pub fn request(method: &str, params: &Value, undo_left: usize) -> Verdict {
             }
         }
         // A picture saved to a file names it.
-        "ui.screenshot" | "ui.render" => match names_a_file(params) {
+        "ui.screenshot" | "ui.render" => match names_a_file("ui.render.export", params) {
             Some(_) if is_scratch(params) => Verdict::Run { change: false },
             Some(p) => Verdict::Ask(format!("{method}: {p}")),
             None => Verdict::Run { change: false },
@@ -187,6 +247,60 @@ mod tests {
         assert!(matches!(exec("sketch.import", json!({"file": "a.dxf"})), Verdict::Ask(_)));
         let batch = json!({"commands": [{"command": "solid.box", "params": {}}, {"command": "file.save", "params": {"path": "/etc/x"}}]});
         assert!(matches!(request("engine.batch", &batch, 0), Verdict::Ask(a) if a.contains("/etc/x")));
+    }
+
+    /// `path`, `source` and friends are also geometry (curve ids, edges, occurrence ids): those
+    /// are not files and must not stop a sweep or a pattern with a question.
+    #[test]
+    fn geometry_named_path_is_not_a_file() {
+        assert_eq!(exec("solid.sweep", json!({"profile": "S1", "path_sketch": "S2", "path": ["c1", "c2"]})), Verdict::Run { change: true });
+        assert_eq!(
+            exec("solid.pattern.path", json!({"features": ["F1"], "path_sketch": "S2", "path": ["c1"], "count": 4})),
+            Verdict::Run { change: true }
+        );
+        assert_eq!(exec("construct.plane.along_path", json!({"path": "edge-3", "t": 0.5})), Verdict::Run { change: true });
+        assert_eq!(exec("component.move", json!({"component": 2, "path": [4, 7], "translate": [1, 0, 0]})), Verdict::Run { change: true });
+        assert_eq!(exec("occurrence.move", json!({"occurrence": 3, "path": [1, 2]})), Verdict::Run { change: true });
+        let batch = json!({"commands": [
+            {"command": "solid.box", "params": {}},
+            {"command": "solid.sweep", "params": {"path": ["c1", "c2"], "path_sketch": "S"}},
+        ]});
+        assert_eq!(request("engine.batch", &batch, 0), Verdict::Run { change: true });
+    }
+
+    /// What does name a file still asks, with or without a separator or an extension, and in
+    /// the commands that export, import or save by their nature.
+    #[test]
+    fn real_file_names_still_ask() {
+        for (id, p) in [
+            ("sketch.export_dxf", json!({"path": "/tmp/s.dxf"})),
+            ("sketch.export_dxf", json!({"path": "s"})),
+            ("parameters.export", json!({"path": "params"})),
+            ("parameters.import", json!({"path": "p.csv"})),
+            ("motion.export", json!({"study": "a", "path": "out.csv"})),
+            ("canvas.insert", json!({"file": "pic"})),
+            ("library.apply", json!({"path": "lib"})),
+            ("solid.box", json!({"filename": "x"})),
+            ("solid.box", json!({"path": "../x.step"})),
+            ("solid.box", json!({"paths": ["a/b.step"]})),
+            ("solid.box", json!({"dir": "out"})),
+        ] {
+            assert!(matches!(exec(id, p.clone()), Verdict::Ask(_)), "{id} {p}");
+        }
+    }
+
+    /// Every registered `file.*` and `doc.*` command asks, so a new one cannot slip through by
+    /// name (the read-only ones, `reads_only`, are the listed exceptions).
+    #[test]
+    fn every_registered_file_and_doc_command_asks() {
+        let mut n = 0;
+        for spec in solidcraft_engine::command_specs() {
+            if (spec.id.starts_with("file.") || spec.id.starts_with("doc.")) && !reads_only(spec.id) {
+                n += 1;
+                assert!(matches!(exec(spec.id, json!({})), Verdict::Ask(_)), "{}", spec.id);
+            }
+        }
+        assert!(n >= 8, "found {n}");
     }
 
     #[test]

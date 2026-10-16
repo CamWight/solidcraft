@@ -62,6 +62,7 @@ A slider's value grows as b moves along +z of its origin. Give its two origins t
 - `joint.as_built` takes occurrences, not origins. `at` is the joint's frame (default: b's component origin).
 - `joint.rigid_group` joins every occurrence to the first one with a rigid as-built joint.
 - `joint.motion_link`: b = ratio·a + offset, clamped to b's limits. `ratio` is in b's units per a's: mm per degree when an angle drives a distance (a pinion of pitch radius r moves its rack r·π/180 mm per degree), degrees per mm the other way, and a plain factor between two angles or two distances. `offset` is in b's units: degrees for an angle, mm for a distance, or an expression such as `"10 deg"`. `joint.list` gives each link's `ratio` the same way and its `offset` with its `unit`. `ia`/`ib` pick a value of a multi-value joint (default 0). `joint.delete {"link": n}` removes link n (its index in `joint.list` `links`).
+- `joint.gear {a, b, ra, rb, internal?, reverse?}`, `joint.rack_pinion {a, b, radius, reverse?}` and `joint.screw {joint | a, b; pitch, reverse?}` make a motion link whose ratio comes from its sizes: gears -ra/rb (+ra/rb internal), a rack r mm per radian of its pinion (either joint may be `a`), a screw pitch per turn. Each size is mm, an expression, or `{occurrence, circle: [x,y,z]}`: the radius of the round face there, read again whenever the design changes. The reply gives `link` (its index) and `ratio` as `joint.list` does; `link: n` in the params replaces link n and keeps its offset. A new coupling's offset keeps b where it is. `joint.list` `links` carry the `coupling` and an `error` when it can't be worked out (a picked face gone: the last ratio stays). A value two links would set, or a coupling that would drive its own driver, is refused.
 - `joint.drive`: `values` drives the values it lists, in order (`Spindle` above is cylindrical: 30 degrees, then 5 mm), and `value` the first; values left out keep theirs, or follow in a closed loop. Values are clamped to the limits. The reply gives `values` as `joint.list` does (`{name, value, unit, limits}`), and `moved`; when the joint can move nothing, a `reason`.
 - `motion.study {"study":..., ...}` edits a study; `keys` given replace all keys.
 - `motion.play` sets the joints to the study's values at a step (fractions work) and changes the design. `motion.export` does not change it.
@@ -123,6 +124,8 @@ The same pattern moved the solar wings of the SELENE rover (`Rover-v7.solidcraft
 | A part turns by some other angle when joined | The two origins have different forms or x axes. Use `point` + `z` on both sides, or `joint.as_built`. |
 | `joint.drive` answers `moved: false`, or `motion.play` lists the joint under `unmoved` | Read `reason`. Most often the chain is joined to nothing grounded: `unconnected` names the part, and `joint.list` lists the chain under `floating`, its occurrences with `dof: 6`. Ground it, join it, or `joint.rigid_group` it with the structure. |
 | A drive stops short, `stopped_by_loop` | A loop reached a limit or can't close further; `joint` names the joint that stopped it. Check the limits against your stroke numbers. |
+| A gear, rack or screw turns its partner the wrong way | The joints' axes point opposite ways (or the rack lies on the other side of the pinion). Run the command again with `reverse: true` and `link: n`. |
+| `already follows a motion link` from `joint.gear` | A joint follows one link at most. Make the joint that already follows the driving one (`a`), as in a gear train G1 → G2 → G3. |
 | A linked joint stops following | Its value is clamped to its own limits. Hinge 2 in the example has `[[-60, 0]]`, so a drive of Hinge below 0 leaves it at 0. Give a mirrored joint the mirrored limits. |
 | A drive stops short, `stopped_by_contact` | Two bodies of a contact set touch. `fraction` is how far the move got. |
 | `occurrence.ground` says there is no occurrence `Frame` | It takes occurrence names only: `Frame:1`. |
@@ -140,7 +143,7 @@ The same pattern moved the solar wings of the SELENE rover (`Rover-v7.solidcraft
 | `joint.list` | about 0.5 KB per joint: 16 KB for 29 joints |
 | `motion.play` | about 0.2 KB per occurrence, per step: 9 KB on SELENE |
 | `motion.export` | the same per sample; pass `samples`, or `path` to write it to a file |
-| `joint.create`, `joint.drive`, `joint.motion_link` | the `dof` list of every occurrence again, 40 B each; `quiet: true` leaves it out |
+| `joint.create`, `joint.drive`, `joint.motion_link`, `joint.gear`, `joint.rack_pinion`, `joint.screw` | the `dof` list of every occurrence again, 40 B each; `quiet: true` leaves it out |
 | `occurrence.properties` | under 1 KB per occurrence |
 
 ## Showing it moving

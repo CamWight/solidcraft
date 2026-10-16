@@ -861,30 +861,34 @@ pub(super) fn face_cap(faces: usize) -> usize {
 /// bisection depth of 24; a midpoint that does not evaluate (NaN) counts as flat (truck's
 /// version recursed on it 100 levels deep, which never finishes). A piece within the chord
 /// tolerance is still halved while it turns more than the deflection's angle.
-fn bounded_polyline<C: PolylineableCurve>(curve: &C, range: (f64, f64), d: Deflection) -> PolylineCurve {
+pub(super) fn bounded_polyline<C: PolylineableCurve>(curve: &C, range: (f64, f64), d: Deflection) -> PolylineCurve {
     let (tol, turn2) = (d.chord, d.turn2());
     // A sample that does not evaluate (an intersection curve whose projection fails): an interval
     // end falls back to the curve's approximation so the polyline stays finite; an interior probe
-    // is NaN, which counts as flat.
+    // is NaN, which counts as flat. Each parameter is evaluated once: a piece carries the points
+    // of its ends, and its midpoint, an end of both halves, serves as probe and as end (a point of
+    // an intersection curve costs two grid searches).
     let end = |t: f64| curve.try_subs(t).unwrap_or_else(|| curve.approx_subs(t));
-    let probe = |t: f64| curve.try_subs(t).unwrap_or(Point3::new(f64::NAN, f64::NAN, f64::NAN));
-    let mut out = vec![end(range.0)];
-    let mut stack: Vec<(f64, f64, usize)> = vec![(range.0, range.1, 0)];
-    while let Some((a, b, depth)) = stack.pop() {
-        let (pa, pb) = (end(a), end(b));
+    let nan = Point3::new(f64::NAN, f64::NAN, f64::NAN);
+    let (p0, p1) = (end(range.0), end(range.1));
+    let mut out = vec![p0];
+    let mut stack: Vec<(f64, f64, Point3, Point3, usize)> = vec![(range.0, range.1, p0, p1, 0)];
+    while let Some((a, b, pa, pb, depth)) = stack.pop() {
         let t = a + (b - a) * 0.4729;
         let chord = pa + (pb - pa) * 0.4729;
-        let d2 = probe(t).distance2(chord);
+        let d2 = curve.try_subs(t).unwrap_or(nan).distance2(chord);
         let tm = 0.5 * (a + b);
-        let dm = probe(tm).distance2(pa.midpoint(pb));
+        let sm = curve.try_subs(tm);
+        let dm = sm.unwrap_or(nan).distance2(pa.midpoint(pb));
         let flat = !(d2 >= tol * tol || dm >= tol * tol);
         let flat = flat && !d.turns(turn2, d2.max(dm), pa.distance2(pb));
         if flat || depth >= 24 || out.len() + stack.len() >= MAX_EDGE_POINTS {
             out.push(pb);
         } else {
+            let pm = sm.unwrap_or_else(|| curve.approx_subs(tm));
             // Right half after the left one (stack order).
-            stack.push((tm, b, depth + 1));
-            stack.push((a, tm, depth + 1));
+            stack.push((tm, b, pm, pb, depth + 1));
+            stack.push((a, tm, pa, pm, depth + 1));
         }
     }
     PolylineCurve(out)

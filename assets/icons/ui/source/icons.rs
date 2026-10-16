@@ -21,6 +21,19 @@ fn ellipse(x: f32, y: f32, rx: f32, ry: f32, a0: f32, a1: f32, n: usize) -> Vec<
     (0..=n).map(|i| a0 + (a1 - a0) * i as f32 / n as f32).map(|a| (x + rx * a.cos(), y + ry * a.sin())).collect()
 }
 
+/// A gear's toothed outline about (x, y): `n` teeth from the root radius `root` out to `tip`,
+/// turned by `phase` radians.
+fn teeth(x: f32, y: f32, root: f32, tip: f32, n: usize, phase: f32) -> Vec<(f32, f32)> {
+    let step = std::f32::consts::TAU / n as f32;
+    let at = |a: f32, r: f32| (x + r * a.cos(), y - r * a.sin());
+    (0..n)
+        .flat_map(|k| {
+            let a = phase + step * k as f32;
+            [at(a - 0.3 * step, root), at(a - 0.15 * step, tip), at(a + 0.15 * step, tip), at(a + 0.3 * step, root)]
+        })
+        .collect()
+}
+
 struct Pen<'a> {
     p: &'a Painter,
     r: Rect,
@@ -1255,6 +1268,36 @@ pub(crate) fn paint_with(p: &Painter, r: Rect, name: &str, ink: Color32, fill: C
             pen.line(&[(7.0, 14.0), (17.5, 9.0)], a);
             pen.dot(7.0, 14.0, a);
             pen.dot(17.5, 9.0, a);
+        }
+        // Couplings: the driven part in the accent.
+        "gear" => {
+            pen.circle(9.0, 14.0, 5.2, pen.fill, Color32::TRANSPARENT);
+            pen.closed(&teeth(9.0, 14.0, 5.2, 6.8, 9, 0.0), ink);
+            pen.dot(9.0, 14.0, ink);
+            pen.circle(17.6, 7.4, 3.2, pen.fill, Color32::TRANSPARENT);
+            pen.closed(&teeth(17.6, 7.4, 3.2, 4.6, 6, 0.3), a);
+            pen.dot(17.6, 7.4, a);
+        }
+        "rack_pinion" => {
+            pen.circle(12.0, 7.4, 4.2, pen.fill, Color32::TRANSPARENT);
+            pen.closed(&teeth(12.0, 7.4, 4.2, 5.8, 8, 0.2), ink);
+            pen.dot(12.0, 7.4, ink);
+            let mut rack = vec![(2.0, 18.0)];
+            for k in 0..5 {
+                let x = 2.5 + 4.0 * k as f32;
+                rack.extend([(x, 14.3), (x + 1.0, 12.8), (x + 2.2, 12.8), (x + 3.2, 14.3)]);
+            }
+            rack.extend([(22.0, 14.3), (22.0, 18.0)]);
+            pen.closed(&rack, a);
+            pen.arrow((7.0, 21.5), (17.5, 21.5), a);
+        }
+        "screw" => {
+            pen.poly(&[(9.5, 2.0), (14.5, 2.0), (14.5, 22.0), (9.5, 22.0)], pen.fill, ink);
+            for y in [5.0, 8.0, 17.0, 20.0] {
+                pen.line(&[(9.5, y), (14.5, y - 2.0)], ink);
+            }
+            pen.poly(&[(6.0, 10.0), (18.0, 10.0), (18.0, 15.0), (6.0, 15.0)], pen.fill, a);
+            pen.arrow((21.0, 17.0), (21.0, 6.0), a);
         }
         "interference" => {
             pen.closed(&[(3.0, 5.0), (14.0, 5.0), (14.0, 16.0), (3.0, 16.0)], ink);

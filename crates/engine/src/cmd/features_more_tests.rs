@@ -1058,6 +1058,39 @@ fn a_ring_cut_round_a_hole_takes_in_the_hole_it_is_drawn_round() {
     assert!(if ok { rel(blind, taken) < 1e-3 } else { blind.abs() < 1e-6 }, "{ok} {blind} vs {taken}");
 }
 
+/// #1360: an annulus cut 3 mm into a chamfered disc, its inner circle on a hole's wall. The
+/// boolean can't intersect the two walls lying on each other; its last resort (the tool moved by
+/// a micron) left a face a hair wide that meshes as its whole plane at a fine step, and the part
+/// came back 21000 mm³ larger than before, a square plane across it. A cut may fail there, but it
+/// never gives back more than it was given.
+#[test]
+fn a_cut_flush_with_a_hole_never_grows_the_part() {
+    let mut s = Session::default();
+    for (c, p) in [
+        ("sketch.create", json!({"plane":"XY"})),
+        ("sketch.circle.center", json!({"center":[0,0],"radius":40})),
+        ("sketch.finish", json!({})),
+        ("solid.extrude", json!({"distance":10})),
+        ("solid.hole", json!({"position":[20,0,10],"diameter":6})),
+        ("solid.chamfer", json!({"edges":[[40,0,10]],"distance":1})),
+        ("sketch.create", json!({"plane":{"face":[0,0,10]}})),
+        ("sketch.circle.center", json!({"center":[20,0],"radius":3})),
+        ("sketch.circle.center", json!({"center":[20,0],"radius":6})),
+        ("sketch.finish", json!({})),
+    ] {
+        run(&mut s, c, p);
+    }
+    let before = volume(&mut s);
+    // Profile 2: the annulus between the hole's wall and the larger circle.
+    let r = s.execute("solid.extrude", &json!({"direction":"negative","distance":"3","operation":"cut","profiles":[2]}));
+    let after = volume(&mut s);
+    let ring = std::f64::consts::PI * (36.0 - 9.0) * 3.0;
+    match r {
+        Ok(_) => assert!(rel(before - after, ring) < 1e-2, "{before} -> {after}, want {ring} taken"),
+        Err(_) => assert!(rel(after, before) < 1e-9, "{before} -> {after} after a failed cut"),
+    }
+}
+
 /// A line of text cut into a face: the letters' curves (the font's quadratics) are read
 /// exactly, and the cut is decided in 2D in one boolean, at any depth and where the text runs
 /// off the face. The B-rep boolean failed on many letters at once ("no result" at 3.5 mm, and

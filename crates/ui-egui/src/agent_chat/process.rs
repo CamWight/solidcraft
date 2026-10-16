@@ -51,8 +51,11 @@ impl ProcessHandle {
     }
 }
 
-/// On Windows, npm installs `.cmd` shims, which only `cmd.exe` runs.
+/// On Windows, npm installs `.cmd` shims, which only `cmd.exe` runs. A command saved as the bare
+/// npm path (a shell script there) runs the shim beside it.
 fn command_for(program: &str) -> Command {
+    let shim = if cfg!(windows) { super::discover::runnable_sibling(std::path::Path::new(program)) } else { None };
+    let program = shim.as_deref().and_then(|p| p.to_str()).unwrap_or(program);
     let lower = program.to_ascii_lowercase();
     if cfg!(windows) && (lower.ends_with(".cmd") || lower.ends_with(".bat")) {
         let mut c = Command::new("cmd");

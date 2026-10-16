@@ -460,17 +460,18 @@ fn sketch_entity(app: &SolveApp, hits: &[Hit]) -> Option<(String, bool)> {
 }
 
 /// The two editable curves that meet at sketch point `pi`, in curve order, which is the order
-/// the corner commands resolve them in from a `point` parameter. None unless exactly two meet
-/// there and each is one the command can work on: a line always, an arc only for a fillet.
+/// the corner commands resolve them in from a `point` parameter. Construction curves are
+/// ignored when more than two meet. Each side must be a line, or an arc for a fillet.
 pub(crate) fn corner_curves(sk: &solidcraft_engine::sketch::Sketch, pi: usize, arcs_ok: bool) -> Option<(usize, usize)> {
     use solidcraft_engine::sketch::CurveKind;
-    let curves: Vec<_> = sk
-        .curves
-        .iter()
-        .enumerate()
-        .filter(|(ci, c)| !sk.is_linked_curve(*ci) && c.kind.ends().is_some_and(|(a, b)| a == pi || b == pi))
-        .take(3)
-        .collect();
+    let candidates =
+        sk.curves.iter().enumerate().filter(|(ci, c)| !sk.is_linked_curve(*ci) && c.kind.ends().is_some_and(|(a, b)| a == pi || b == pi));
+    let mut curves: Vec<_> = candidates.clone().take(3).collect();
+    // Center rectangles have construction diagonals at their corners. Match the engine's
+    // corner selection: when more than two curves meet, use the profile sides.
+    if curves.len() > 2 {
+        curves = candidates.filter(|(_, c)| !c.construction).take(3).collect();
+    }
     if curves.iter().any(|(_, c)| !matches!(c.kind, CurveKind::Line { .. }) && !(arcs_ok && matches!(c.kind, CurveKind::Arc { .. }))) {
         return None;
     }

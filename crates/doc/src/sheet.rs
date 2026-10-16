@@ -361,6 +361,15 @@ impl ReliefShape {
     }
 }
 
+/// The corner relief an edge flange feature asks for in place of the rule's. A value left out
+/// follows the rule.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ReliefOverride {
+    pub shape: Option<ReliefShape>,
+    /// How far across the relief is (mm).
+    pub size: Option<f64>,
+}
+
 /// A rule's values (mm, unit-less K).
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
 pub struct RuleValues {
@@ -2151,7 +2160,7 @@ impl SheetBody {
         flip: bool,
     ) -> Result<(Vec<usize>, Vec<String>)> {
         let each: Vec<EdgeFlange> = picks.iter().map(|&pick| EdgeFlange { pick, height, angle }).collect();
-        self.add_flanges_each(&each, radius, position, flip)
+        self.add_flanges_each(&each, radius, position, flip, ReliefOverride::default())
     }
 
     /// Edge flanges that each have their own height and angle, in one go: every edge is trimmed
@@ -2164,8 +2173,16 @@ impl SheetBody {
     /// the base that ends beside more of the base gets the rule's bend relief there
     /// (`relieve_bend_ends`). Where cut-outs have taken part of a picked edge away, the flange
     /// runs along the stretch they leave nearest the pick and takes its setback off that stretch
-    /// only; an edge they took whole is refused.
-    pub fn add_flanges_each(&mut self, edges: &[EdgeFlange], radius: f64, position: &str, flip: bool) -> Result<(Vec<usize>, Vec<String>)> {
+    /// only; an edge they took whole is refused. The corners between these flanges are relieved
+    /// as the rule says, except where `relief` names another shape or size.
+    pub fn add_flanges_each(
+        &mut self,
+        edges: &[EdgeFlange],
+        radius: f64,
+        position: &str,
+        flip: bool,
+        relief: ReliefOverride,
+    ) -> Result<(Vec<usize>, Vec<String>)> {
         if edges.is_empty() || edges.len() > 1000 {
             return Err(DocError::Invalid("pick 1…1000 edges".into()));
         }
@@ -2293,7 +2310,7 @@ impl SheetBody {
         for (&i, &free) in made.iter().zip(&freed) {
             notes.extend(self.relieve_bend_ends(i, free));
         }
-        notes.extend(self.close_corners(&made));
+        notes.extend(self.close_corners(&made, relief));
         notes.extend(self.close_return_corners(&made));
         Ok((made, notes))
     }
@@ -2711,9 +2728,10 @@ impl SheetBody {
         out
     }
 
-    /// Close the corners the new flanges make, then cut the rule's relief at each (or tear it).
-    /// Returns a note for every corner left open, without its relief or not torn.
-    fn close_corners(&mut self, made: &[usize]) -> Vec<String> {
+    /// Close the corners the new flanges make, then cut the relief at each (or tear it): the
+    /// rule's, but for the shape or size `relief` names. Returns a note for every corner left
+    /// open, without its relief or not torn.
+    fn close_corners(&mut self, made: &[usize], relief: ReliefOverride) -> Vec<String> {
         let corners = self.corners(made);
         let mut notes = Vec::new();
         let mut closed = Vec::with_capacity(corners.len());
@@ -2723,7 +2741,7 @@ impl SheetBody {
                 Err(why) => notes.push(format!("the flanges at {} are left open: {why}", self.shown(k.c))),
             }
         }
-        notes.extend(self.relieve_corners(&corners, &closed));
+        notes.extend(self.relieve_corners(&corners, &closed, relief));
         notes
     }
 
@@ -2733,16 +2751,18 @@ impl SheetBody {
         format!("({:.3}, {:.3}, {:.3})", w.x, w.y, w.z)
     }
 
-    /// Cut the rule's relief at each of `corners`, or tear those of them that are `closed`.
-    /// Returns a note for every corner without its relief or not torn.
-    fn relieve_corners(&mut self, corners: &[Corner], closed: &[Corner]) -> Vec<String> {
+    /// Cut the relief at each of `corners`, or tear those of them that are `closed`: the rule's,
+    /// but for the shape or size `relief` names. Returns a note for every corner without its
+    /// relief or not torn.
+    fn relieve_corners(&mut self, corners: &[Corner], closed: &[Corner], relief: ReliefOverride) -> Vec<String> {
         let mut notes = Vec::new();
-        match self.relief {
+        let (shape, size) = (relief.shape.unwrap_or(self.relief), relief.size.unwrap_or(self.relief_size));
+        match shape {
             ReliefShape::Notch => {}
             // The reliefs come last: they move the bends' ends, which is how the corners were found.
             ReliefShape::Round | ReliefShape::Rectangular => {
                 for k in corners {
-                    if let Err(why) = self.relieve_corner(k, corners) {
+                    if let Err(why) = self.relieve_corner(k, corners, shape, size) {
                         notes.push(format!("no corner relief at {}: {why}", self.shown(k.c)));
                     }
                 }
@@ -2918,7 +2938,7 @@ impl SheetBody {
         Ok(())
     }
 
-    /// Cut the rule's relief where two bends meet at a corner of the base, `relief_size / 2`
+    /// Cut a relief `size` across where two bends meet at a corner of the base, `size / 2`
     /// from the corner along both edges: a round about the corner through the angle the base
     /// fills there, or the square with that side (a kite where the corner isn't square, its
     /// cuts square to the two edges). The base's edges then start that far from the corner, so
@@ -2928,8 +2948,7 @@ impl SheetBody {
     /// that would leave nothing of an edge it starts on (with the relief at that edge's other
     /// end, where there is one), or one reaching as far from the corner as another edge of the
     /// base is, is refused with the reason.
-    fn relieve_corner(&mut self, k: &Corner, corners: &[Corner]) -> std::result::Result<(), String> {
-        let size = self.relief_size;
+    fn relieve_corner(&mut self, k: &Corner, corners: &[Corner], shape: ReliefShape, size: f64) -> std::result::Result<(), String> {
         if !(size >= MIN_CORNER_RELIEF) {
             return Err(format!("the relief size {size:.4} mm is below {MIN_CORNER_RELIEF} mm"));
         }
@@ -2961,7 +2980,7 @@ impl SheetBody {
         }
         // The relief from the edge that ends at the corner to the one that starts there, and
         // how far from the corner it reaches.
-        let (relief, reach) = match self.relief {
+        let (relief, reach) = match shape {
             ReliefShape::Notch | ReliefShape::Tear => return Ok(()),
             ReliefShape::Round => (vec![Seg2::Arc { center: c, radius: r, start: da.angle(), sweep: -alpha }], r),
             ReliefShape::Rectangular => {
@@ -6075,7 +6094,7 @@ mod tests {
     /// sheet and the notes on corners left open.
     fn flanges_each(base: Region2, rv: &RuleValues, each: &[EdgeFlange]) -> (SheetBody, Vec<String>) {
         let mut s = base_flange("Body1", "AL2", rv, Plane::XY, base);
-        let notes = s.add_flanges_each(each, rv.bend_radius, "inside", false).unwrap().1;
+        let notes = s.add_flanges_each(each, rv.bend_radius, "inside", false, ReliefOverride::default()).unwrap().1;
         (s, notes)
     }
 
@@ -6630,7 +6649,7 @@ mod tests {
         let (mut s, _) = tray(&rv, 90.0, 20.0);
         let each: Vec<EdgeFlange> =
             (0..4).map(|i| EdgeFlange { pick: far_edge_pick(&s, i, true), height: 12.0, angle: [90f64, 70.0][i % 2].to_radians() }).collect();
-        let (made, notes) = s.add_flanges_each(&each, 1.0, "inside", false).unwrap();
+        let (made, notes) = s.add_flanges_each(&each, 1.0, "inside", false, ReliefOverride::default()).unwrap();
         assert!(notes.is_empty() && made == [4, 5, 6, 7], "{made:?} {notes:?}");
         for (a, a_end, b, b_end) in TRAY_RETURNS {
             let (fa, fb) = (&s.flanges[a], &s.flanges[b]);
@@ -6803,7 +6822,7 @@ mod tests {
                     EdgeFlange { pick: far_edge_pick(&s, i, true), height: 12.0, angle: deg.to_radians() }
                 })
                 .collect();
-            let (_, notes) = s.add_flanges_each(&each, 1.0, "inside", false).unwrap();
+            let (_, notes) = s.add_flanges_each(&each, 1.0, "inside", false, ReliefOverride::default()).unwrap();
             assert!(notes.is_empty(), "{what}: {notes:?}");
             returns_keep_out_of_the_walls(&s, &what);
             holds_the_flat_material(&s, &what);

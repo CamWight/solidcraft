@@ -243,7 +243,8 @@ sheet_flange
     Edge angle = flange.e1_angle (Angle)
     Edge height = flange.e1_height (Length)
     Edge height = flange.e2_height (Length)
-  expressions: flange.height, flange.angle, flange.radius, flange.e1_angle, flange.e1_height, flange.e2_height
+    Corner relief = flange.relief (Length)
+  expressions: flange.height, flange.angle, flange.radius, flange.e1_angle, flange.e1_height, flange.e2_height, flange.relief
 sheet_hem
   inputs:
     Length = hem.length (Length)

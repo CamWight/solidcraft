@@ -448,6 +448,10 @@ fn file_menu(app: &mut SolveApp, ctx: &egui::Context) {
                     export(app, "step");
                     close = true;
                 }
+                if item_if(ui, app.tr_label("Export Current View as DXF…"), "", shown) {
+                    app.start("file.export_view_dxf");
+                    close = true;
+                }
                 if item_if(ui, "Export OBJ…", "", shown) {
                     export(app, "obj");
                     close = true;
@@ -578,7 +582,7 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
         caret(&painter, pos2(ws.center().x + 27.0, ws.top() + 52.0), t.text);
         painter.text(pos2(ws.center().x, ws.top() + 69.0), Align2::CENTER_CENTER, app.tr("ui.workspace"), FontId::proportional(10.0), t.text_dim);
         if wresp.on_hover_text(app.tr("ui.change_workspace")).clicked() {
-            crate::context_menu::open_for(app, ws.left_bottom(), crate::context_menu::Target::Workspace);
+            crate::context_menu::toggle_for(app, ws, ws.left_bottom(), crate::context_menu::Target::Workspace);
         }
         crate::scenario::publish_rect("toolbar", r);
         crate::scenario::publish_rect("workspace_switcher", ws);
@@ -826,8 +830,16 @@ pub fn toolbar(app: &mut SolveApp, ui: &mut egui::Ui) {
             let gy = lr.center().y - g.size().y / 2.0;
             painter.galley(pos2(gx, gy), g, lc);
             caret(&painter, pos2(gx + gw / 2.0 + 6.0, lr.center().y), lc);
+            // The label toggles its drop-down (#1522).
             if lresp.clicked() {
-                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("sc_panel_open"), popup_id));
+                ui.ctx().data_mut(|d| {
+                    let key = egui::Id::new("sc_panel_open");
+                    if d.get_temp::<egui::Id>(key) == Some(popup_id) {
+                        d.remove::<egui::Id>(key);
+                    } else {
+                        d.insert_temp(key, popup_id);
+                    }
+                });
             }
             // Labels, gaps and margins append; actual buttons keep their insert-before target.
             // Respect the current layer so a dropdown covering the panel is not a drop target.
@@ -1807,5 +1819,35 @@ mod icon_accent_tests {
             let seen = solidcraft_engine::find_command(id).map(|c| (c.tab, c.panel, c.icon));
             assert_eq!(seen, Some(("SKETCH", "CREATE", icon)), "{id} must be on the SKETCH CREATE panel");
         }
+    }
+}
+
+#[cfg(test)]
+mod dropdown_toggle_tests {
+    use crate::scenario::{Harness, rect_of};
+    use serde_json::json;
+
+    /// A second click on the button that opened a drop-down closes it (#1522): the workspace
+    /// switcher's menu, and a panel's command list.
+    #[test]
+    fn a_second_click_on_its_button_closes_a_drop_down() {
+        let mut h = Harness::new();
+        h.frames(3);
+        let ws = rect_of("workspace_switcher").unwrap().center();
+        h.step(&json!({"click": [ws.x, ws.y]})).unwrap();
+        assert!(h.app.viewport.context_menu.is_some(), "the first click opens the workspace menu");
+        h.step(&json!({"click": [ws.x, ws.y]})).unwrap();
+        h.frames(2);
+        assert!(h.app.viewport.context_menu.is_none(), "the second click closes it instead of reopening it");
+        h.step(&json!({"click": [ws.x, ws.y]})).unwrap();
+        assert!(h.app.viewport.context_menu.is_some(), "and a third opens it again");
+        h.step(&json!({"key": "Escape"})).unwrap();
+
+        h.step(&json!({"click": {"handle": "panel:SOLID:CREATE"}})).unwrap();
+        h.frames(2);
+        assert!(rect_of("toolbar_dropdown").is_some(), "the first click opens the panel's list");
+        h.step(&json!({"click": {"handle": "panel:SOLID:CREATE"}})).unwrap();
+        h.frames(2);
+        assert!(rect_of("toolbar_dropdown").is_none(), "the second click closes it");
     }
 }

@@ -30,6 +30,8 @@ mod clearance;
 mod coplanar;
 mod curveblend;
 mod delete_face;
+#[cfg(test)]
+mod edge_polyline_tests;
 mod emboss;
 mod face_params;
 #[cfg(test)]

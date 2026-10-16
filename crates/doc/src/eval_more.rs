@@ -449,7 +449,7 @@ pub(super) fn sheet_eval(
             st.sheets.push(sh);
             Ok(())
         }
-        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body } => {
+        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body, corner_relief_shape, corner_relief } => {
             let i = sheet_for(st, body, edges.first().map(|e| e.point))?;
             let (h, a) = (val(vals, height, Kind::Length)?, val(vals, angle, Kind::Angle)?);
             // Each edge's own height and angle, else the feature's.
@@ -472,6 +472,20 @@ pub(super) fn sheet_eval(
                     doc.rule_values(vals, &doc.sheet_rule(Some(&rule)))?.bend_radius
                 }
             };
+            // The corner relief these flanges ask for in place of the rule's.
+            let relief = sheet::ReliefOverride {
+                shape: match corner_relief_shape {
+                    Some(name) => Some(
+                        sheet::ReliefShape::parse(name)
+                            .ok_or_else(|| DocError::Invalid(format!("unknown corner relief shape `{name}` (notch, round, rectangular or tear)")))?,
+                    ),
+                    None => None,
+                },
+                size: match corner_relief {
+                    Some(e) => Some(val(vals, e, Kind::Length)?),
+                    None => None,
+                },
+            };
             let sh = st.sheets.get_mut(i).ok_or_else(|| DocError::Invalid("sheet".into()))?;
             if sh.flat {
                 return Err(DocError::Invalid("refold the sheet before adding flanges".into()));
@@ -483,7 +497,7 @@ pub(super) fn sheet_eval(
                 .map(|(pick, (height, angle))| sheet::EdgeFlange { pick, height, angle })
                 .collect();
             let n0 = sh.flanges.len();
-            let (_, notes) = sh.add_flanges_each(&each, rr, position, *flip)?;
+            let (_, notes) = sh.add_flanges_each(&each, rr, position, *flip, relief)?;
             if !notes.is_empty() {
                 let notes = notes.join("; ");
                 *warning = Some(match warning.take() {

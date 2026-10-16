@@ -1202,3 +1202,42 @@ fn large_imports_are_freed_with_their_last_user() {
     drop((first, again));
     assert!(weak.upgrade().is_none(), "the cache must not keep a large import alive after its design is gone");
 }
+
+/// A three-quarter turn of a rectangle about Z: planar end caps, revolved cylinders and annuli.
+fn three_quarter_ring() -> Body {
+    let rect =
+        Region2 { outer: Loop2::polygon(&[Vec2::new(5.0, 0.0), Vec2::new(25.0, 0.0), Vec2::new(25.0, 5.0), Vec2::new(5.0, 5.0)]), holes: vec![] };
+    revolve(&Plane::XZ, &[rect], Vec2::ZERO, Vec2::Y, 1.5 * std::f64::consts::PI).unwrap().pop().unwrap()
+}
+
+fn scaled(b: &Body, x: f64, y: f64, z: f64) -> Body {
+    crate::transform_matrix(b, [[x, 0.0, 0.0, 0.0], [0.0, y, 0.0, 0.0], [0.0, 0.0, z, 0.0], [0.0, 0.0, 0.0, 1.0]]).unwrap()
+}
+
+/// A scale across the revolution axis that differs from the scale along it (how a shell or an
+/// offset moves a revolved face) keeps the faces surfaces of revolution. The writer refused it
+/// ("non-uniform scale"), and the refusal surfaced as a panic in export (robustness seeds 19, 24).
+#[test]
+fn revolved_faces_scaled_across_the_axis_round_trip() {
+    let ring = three_quarter_ring();
+    let v0 = measure(&ring).unwrap().volume;
+    let b = scaled(&ring, 1.5, 1.5, 0.5);
+    assert!(rel(measure(&b).unwrap().volume, v0 * 1.5 * 1.5 * 0.5) < 1e-3);
+    round_trip(&b);
+}
+
+/// A transform that does not keep the faces surfaces of revolution: export may refuse the body,
+/// but with an error, never a panic (the browser build aborts on any panic), and anything it does
+/// write must read back as the same solid.
+#[test]
+fn revolved_faces_skewed_never_panic_on_export() {
+    let b = scaled(&three_quarter_ring(), 1.5, 1.0, 1.0);
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| step_export(&[&b], "t")));
+    let Ok(r) = r else { panic!("STEP export panicked") };
+    match r {
+        Err(e) => assert!(e.to_string().contains("not supported yet"), "{e}"),
+        Ok(_) => {
+            round_trip(&b);
+        }
+    }
+}

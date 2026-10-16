@@ -11,7 +11,7 @@ use solidcraft_engine::render::{
     ScratchLayout,
 };
 
-use crate::gpu::{GpuScene, SceneSlot, ViewportCallback};
+use crate::gpu::{Frame, GpuScene, SceneSlot, ViewportCallback};
 use crate::{SolveApp, theme::Tokens};
 
 const MAX_GEOMETRY_BYTES: usize = 128 * 1024 * 1024;
@@ -518,7 +518,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         let radius = scene.bounds.diagonal().max(10.0) + scene.bounds.center().dist(camera.target);
         let eye = camera.eye();
         let slot = app.render_workspace.slot.clone();
-        let callback = ViewportCallback {
+        let callback = ViewportCallback(Frame {
             product: true,
             key,
             slot: slot.clone(),
@@ -540,7 +540,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             outline: false,
             eye: [eye.x as f32, eye.y as f32, eye.z as f32, if camera.fov > 0.0 { 1.0 } else { 0.0 }],
             ssaa: if width < full.0 { width as f32 / full.0 as f32 } else { 1.0 },
-        };
+        });
         ui.painter().add(egui_wgpu::Callback::new_paint_callback(rect, callback));
         Ok(())
     })();

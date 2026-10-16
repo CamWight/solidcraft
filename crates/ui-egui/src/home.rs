@@ -69,8 +69,9 @@ pub fn thumbnail(s: &Session) -> Option<egui::ColorImage> {
     // Fill the card: the fit leaves room for a whole window's margins.
     cam.distance *= 0.7;
     let scene = solidcraft_engine::view::scene(s, &cam);
-    let c = solidcraft_engine::render::render(&scene, &cam, THUMB[0], THUMB[1]);
-    (c.rgba.len() == c.w * c.h * 4).then(|| egui::ColorImage::from_rgba_unmultiplied([c.w, c.h], &c.rgba))
+    // Drawn on the GPU by the renderer the app installs; none (a browser): no picture.
+    let picture = solidcraft_engine::capture::rgba(&scene, &cam, THUMB[0] as u32, THUMB[1] as u32).ok()?;
+    Some(egui::ColorImage::from_rgba_unmultiplied(THUMB, &picture.rgba))
 }
 
 /// File identity, not just its path: saving or replacing a design invalidates its picture.
@@ -570,6 +571,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn cached_recent_uses_a_separate_png_without_reading_or_changing_design_json() {
+        if !crate::gpu::test_picture_renderer() {
+            return;
+        }
         let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let path = std::env::temp_dir().join(format!("solidcraft-thumb-{}-{nonce}.solidcraft", std::process::id()));
         // Deliberately invalid design: a cached recent must not parse/evaluate it.
@@ -594,6 +598,9 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn portable_thumbnail_loads_without_a_local_picture_or_model_rebuild() {
+        if !crate::gpu::test_picture_renderer() {
+            return;
+        }
         let mut session = Session::default();
         session.execute("solid.box", &serde_json::json!({"length":10,"width":20,"height":30})).unwrap();
         for body in &session.world_state().bodies {
@@ -630,8 +637,12 @@ mod tests {
     }
 
     /// Samples build in the background and make a picture; picking one opens its design.
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn sample_card_makes_a_picture_and_opens() {
+        if !crate::gpu::test_picture_renderer() {
+            return;
+        }
         let (key, img, session) = make("sample:0");
         assert_eq!(key, "sample:0");
         let img = img.unwrap();

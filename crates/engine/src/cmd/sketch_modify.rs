@@ -569,6 +569,44 @@ fn reattach(sk: &mut Sketch, l: usize, corner: usize, np: usize) {
     }
 }
 
+/// Equal lengths and midpoints describe the original side, not its shortened tangent
+/// segment. Keep that side as construction geometry sharing the original corner points.
+/// Later corner cuts retain those points through `keep_corner`, so this also works when
+/// the other end is rounded in a separate command.
+fn keep_side_relations(sk: &mut Sketch, line: usize) -> Result<Vec<String>> {
+    let affected = |k: &ConstraintKind| {
+        matches!(*k, ConstraintKind::Equal { a, b } if a == line || b == line) || matches!(*k, ConstraintKind::Midpoint { l, .. } if l == line)
+    };
+    if !sk.constraints.iter().any(|k| affected(&k.kind)) {
+        return Ok(Vec::new());
+    }
+    let Some(CurveKind::Line { a, b }) = sk.curves.get(line).map(|c| c.kind.clone()) else { return Ok(Vec::new()) };
+    let support = sk.add_line_pts(a, b, None)?;
+    if let Some(c) = sk.curves.get_mut(support) {
+        c.construction = true;
+    }
+    let mut moved = Vec::new();
+    for k in &mut sk.constraints {
+        if !affected(&k.kind) {
+            continue;
+        }
+        match &mut k.kind {
+            ConstraintKind::Equal { a, b } => {
+                if *a == line {
+                    *a = support;
+                }
+                if *b == line {
+                    *b = support;
+                }
+            }
+            ConstraintKind::Midpoint { l, .. } => *l = support,
+            _ => {}
+        }
+        moved.push(k.id.clone());
+    }
+    Ok(moved)
+}
+
 /// What became of a rounded or cut corner's point: kept as a virtual sharp corner (its id),
 /// and the constraints and dimensions that now measure to it.
 #[derive(Default)]
@@ -642,9 +680,14 @@ fn cut_corner(
     let v = (pb - pc).normalized().ok_or_else(|| bad(cmd, "degenerate line"))?;
     let ta = sk.add_point(pc + u * da, None)?;
     let tb = sk.add_point(pc + v * db, None)?;
+    let mut moved = keep_side_relations(sk, la)?;
+    moved.extend(keep_side_relations(sk, lb)?);
     reattach(sk, la, c, ta);
     reattach(sk, lb, c, tb);
-    let kept = keep_corner(sk, c, [(la, ta), (lb, tb)])?;
+    let mut kept = keep_corner(sk, c, [(la, ta), (lb, tb)])?;
+    if let Some(k) = &mut kept {
+        k.moved.extend(moved);
+    }
     let removed = kept.is_none();
     if removed {
         sk.remove_points(&[c]);

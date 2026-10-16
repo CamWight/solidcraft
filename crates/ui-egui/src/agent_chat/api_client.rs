@@ -225,10 +225,8 @@ impl Worker {
             for (i, c) in calls.iter().enumerate().take(32) {
                 let id = c.get("id").and_then(Value::as_str).map_or_else(|| format!("call-{i}"), str::to_string);
                 let name = c.pointer("/function/name").and_then(Value::as_str).unwrap_or("").to_string();
-                let args: Value = c
-                    .pointer("/function/arguments")
-                    .and_then(|a| if let Some(s) = a.as_str() { serde_json::from_str(s).ok() } else { Some(a.clone()) })
-                    .unwrap_or(json!({}));
+                let parsed = tool_arguments(c.pointer("/function/arguments"));
+                let args = parsed.clone().unwrap_or_else(|_| json!({}));
                 let title = tool_title(&name, &args);
                 let tool_id = format!("{id}-{}", self.next);
                 self.emit(Event::Tool {
@@ -240,6 +238,9 @@ impl Worker {
                 });
                 let (text, failed) = if self.cancel.load(Ordering::Relaxed) {
                     ("cancelled by the user".to_string(), true)
+                } else if let Err(e) = &parsed {
+                    // A call whose arguments do not parse is answered, never run with `{}`.
+                    (format!("Not run: {e}"), true)
                 } else if HIDDEN_TOOLS.contains(&name.as_str())
                     || !self.tools.iter().any(|t| t.pointer("/function/name").and_then(Value::as_str) == Some(name.as_str()))
                 {
@@ -305,6 +306,25 @@ pub fn http_error(status: u16, body: &Value) -> String {
         if what.is_empty() { String::new() } else { format!(": {what}") },
         if detail.is_empty() { String::new() } else { format!(" ({detail})") }
     )
+}
+
+/// A tool call's arguments as an object: the JSON text a model sends (or an object, for servers
+/// that send one), or why they cannot be used. Missing or empty arguments are an empty object.
+fn tool_arguments(raw: Option<&Value>) -> Result<Value, String> {
+    let text = match raw {
+        None | Some(Value::Null) => return Ok(json!({})),
+        Some(v @ Value::Object(_)) => return Ok(v.clone()),
+        Some(Value::String(s)) => s.trim(),
+        Some(_) => return Err("the tool arguments must be a JSON object".into()),
+    };
+    if text.is_empty() {
+        return Ok(json!({}));
+    }
+    match serde_json::from_str::<Value>(text) {
+        Ok(v @ Value::Object(_)) => Ok(v),
+        Ok(_) => Err("the tool arguments must be a JSON object".into()),
+        Err(e) => Err(format!("the tool arguments were not valid JSON ({e}); send the call again with a JSON object")),
+    }
 }
 
 /// The message for what the user typed (and the view, as a data URL).
@@ -471,6 +491,52 @@ mod tests {
         let sent = seen.lock().unwrap();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[1]["messages"].as_array().unwrap().last().unwrap()["role"], "tool");
+        b.shutdown(true);
+    }
+
+    #[test]
+    fn tool_arguments_are_an_object_or_an_error() {
+        assert_eq!(tool_arguments(None), Ok(json!({})));
+        assert_eq!(tool_arguments(Some(&json!(""))), Ok(json!({})));
+        assert_eq!(tool_arguments(Some(&json!("{\"a\": 1}"))), Ok(json!({"a": 1})));
+        assert_eq!(tool_arguments(Some(&json!({"a": 1}))), Ok(json!({"a": 1})));
+        for bad in [json!("{command: solid.box"), json!("[1]"), json!("7"), json!(7), json!([1])] {
+            assert!(tool_arguments(Some(&bad)).is_err(), "{bad}");
+        }
+    }
+
+    /// A call with arguments that are not JSON is answered with the reason, not run with `{}`.
+    #[test]
+    fn a_call_with_broken_arguments_is_not_run() {
+        let answers = std::sync::Mutex::new(vec![
+            json!({"choices": [{"message": {"role": "assistant", "content": "Sorry."}}]}),
+            json!({"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "batch", "arguments": "{commands: [oops"}}]}}]}),
+        ]);
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let log = seen.clone();
+        let http: HttpFn = Arc::new(move |r: &HttpRequest| {
+            log.lock().unwrap().push(serde_json::from_slice(r.body.as_deref().unwrap_or(b"null")).unwrap());
+            Ok((200, answers.lock().unwrap().pop().unwrap_or(json!({})).to_string().into_bytes()))
+        });
+        let cfg = ApiConfig { name: "Test".into(), base_url: "http://localhost:1/v1".into(), model: "m".into(), key: None, http };
+        let ctx = StartContext { cwd: std::env::temp_dir(), bridge: None, tools: None, wake: Box::new(|| {}) };
+        let mut b = ApiBackend::start(cfg, ctx).unwrap();
+        b.prompt(&[PromptPart::Text("go".into())]);
+        let mut events = Vec::new();
+        let start = std::time::Instant::now();
+        while !events.iter().any(|e| matches!(e, Event::TurnEnded { .. })) && start.elapsed() < Duration::from_secs(10) {
+            events.extend(b.poll());
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let failed = events.iter().find_map(|e| match e {
+            Event::Tool { status: Some(ToolStatus::Failed), output: Some(o), .. } => Some(o.clone()),
+            _ => None,
+        });
+        assert!(failed.is_some_and(|o| o.contains("Not run") && o.contains("not valid JSON")), "{events:?}");
+        // The model was told, in the next request.
+        let sent = seen.lock().unwrap();
+        let last = sent[1]["messages"].as_array().unwrap().last().unwrap().clone();
+        assert!(last["content"].as_str().unwrap_or("").contains("not valid JSON"), "{last}");
         b.shutdown(true);
     }
 

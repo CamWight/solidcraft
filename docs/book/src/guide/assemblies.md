@@ -28,6 +28,33 @@ made. Contact sets stop motion where bodies would pass through each other,
 **Motion Study** keys joint values along a timeline, and **Interference** shows overlapping
 volumes in red.
 
+**Gear**, **Rack and Pinion** and **Screw** (on the **ASSEMBLE** panel) are motion links whose
+ratio comes from the parts rather than a typed number:
+
+- **Gear** (`joint.gear {a, b, ra, rb}`) couples two joints that turn. Joint 2 turns ra/rb as far
+  as joint 1, the other way round; **Internal gear** (one of them is a ring gear) turns both the
+  same way. Pick the round face of each gear, such as its pitch cylinder, or type the radii. Tooth
+  counts work as well as radii, since only their proportion counts. Picking a gear's face also
+  chooses the joint that gear turns on.
+- **Rack and Pinion** (`joint.rack_pinion {a, b, radius}`) couples a joint that turns with one
+  that slides: the rack travels the pinion's pitch radius times its turn in radians (r·θ). Either
+  joint may drive the other. In `joint.list` the ratio is given per degree, as for any link between
+  an angle and a distance.
+- **Screw** (`joint.screw {joint, pitch}`, or `{a, b, pitch}` for a revolute joint and a slider)
+  advances `pitch` per turn. A cylindrical joint is a screw on its own: its turn drives its travel.
+  The thread is right-handed; **Reverse** makes it left-handed.
+
+A radius or pitch may be an expression of the design's parameters, and a picked face is found
+again whenever the design changes. Change the parameter or the gear's diameter, and the ratio
+follows. The new link leaves the driven joint where it is, so teeth modelled in mesh stay in mesh.
+**Reverse** turns the driven joint the other way, for joints whose axes point opposite ways. These
+couplings are motion links, so they work in closed loops, with contact sets and in motion studies:
+a rack can push the piston of a slider-crank, or a pinion can steer through a rack and its tie
+rods. Drive the joint that drives the coupling (joint 1, the pinion, or the screw's turn), not the
+driven one. A joint follows one link at most, and a coupling that would drive its own driver is
+refused. `joint.list` lists each coupling's definition under `links` with an `error` when it can't
+be worked out (the picked face is gone); the link then keeps its last ratio.
+
 A joint moves one component against another, so its two picks must be on different components.
 A STEP file with several parts often comes in as bodies of one component, and picks on two of
 those bodies make no joint. The Joint and As-built Joint dialogs say so under the picks and offer

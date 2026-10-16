@@ -243,6 +243,11 @@ retain trailing zeros. Component/canvas distance controls and inspection, parts-
 and flat-pattern measurements follow design units too; parameter expressions and metric
 standard names retain their explicit authored units.
 
+Measure shows the currently selected distance (centre, minimum or maximum) and separate X, Y and Z
+distances on the canvas. The component dimensions follow the world axes and remain visible
+until the Measure dialog closes. To hide these extra lines and labels, turn off
+**Preferences > Graphics > Show X/Y/Z distances**. The choice is saved between runs.
+
 ### Reviewing mirror, pattern, and offset results
 
 Mirror, rectangular/circular Pattern, and Offset show the active selection step in their

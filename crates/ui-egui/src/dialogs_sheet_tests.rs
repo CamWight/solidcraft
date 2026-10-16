@@ -365,6 +365,78 @@ fn rules_dialog_picks_the_corner_relief_shape() {
     assert_eq!((rounds(&h.app), torn), (Some(0), Some(4)));
 }
 
+/// The Flange dialog's relief rows: Rule (the default) and an empty size leave the relief to the rule,
+/// a shape and a size reach the feature, Edit Feature shows them again, and Rule takes them back.
+#[test]
+fn flange_dialog_picks_a_corner_relief_of_its_own() {
+    let mut h = crate::scenario::Harness::new();
+    h.app
+        .run(
+            "sheet.manage_rules",
+            json!({"name": "AL2", "thickness": "2 mm", "k_factor": 0.5, "bend_radius": "1 mm", "gap": "0.5 mm", "active": true}),
+        )
+        .unwrap();
+    h.app.run("sketch.create", json!({"plane": "XY", "name": "Base"})).unwrap();
+    h.app.run("sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [120, 90]})).unwrap();
+    h.app.run("sketch.finish", json!({})).unwrap();
+    h.app.run("sheet.flange", json!({"sketch": "Base"})).unwrap();
+    let edges: Vec<Sel> = [[60.0, 0.0, 2.0], [0.0, 45.0, 2.0]].iter().filter_map(|p| edge_sel(&h.app.session, Vec3::new(p[0], p[1], p[2]))).collect();
+    assert_eq!(edges.len(), 2);
+    h.app.session.selection = edges;
+    h.app.start("sheet.flange");
+    h.frames(3);
+    let shown = |app: &SolveApp| match app.dialog.as_ref().map(|d| &d.kind) {
+        Some(Kind::Sheet(Sm::Flange { relief, relief_size, .. })) => Some((*relief, relief_size.clone())),
+        _ => None,
+    };
+    let relief = |app: &SolveApp| match &app.session.doc.features.last().map(|f| &f.kind) {
+        Some(FeatureKind::SheetFlange { corner_relief_shape, corner_relief, .. }) => Some((corner_relief_shape.clone(), corner_relief.clone())),
+        _ => None,
+    };
+    // Untouched, the dialog asks for nothing: the rule's relief.
+    assert_eq!(shown(&h.app), Some((0, String::new())));
+    let d = h.app.dialog.clone().unwrap();
+    let c = apply_commands(&h.app, &d).unwrap();
+    assert!(c[0].1.get("corner_relief_shape").is_none() && c[0].1.get("corner_relief").is_none(), "{}", c[0].1);
+    // Round from the selector, 6 mm in the size row.
+    h.step(&json!({"click": {"handle": "dialog:Corner Relief Shape"}})).unwrap();
+    h.step(&json!({"click": {"handle": "dialog:Corner Relief Shape:Round"}})).unwrap();
+    assert_eq!(shown(&h.app), Some((2, String::new())));
+    if let Some(Kind::Sheet(Sm::Flange { relief_size, .. })) = h.app.dialog.as_mut().map(|d| &mut d.kind) {
+        *relief_size = "6 mm".into();
+    }
+    let d = h.app.dialog.clone().unwrap();
+    let c = apply_commands(&h.app, &d).unwrap();
+    assert_eq!((&c[0].1["corner_relief_shape"], &c[0].1["corner_relief"]), (&json!("round"), &json!("6 mm")));
+    h.step(&json!({"widget": "OK"})).unwrap();
+    assert!(h.app.dialog.is_none(), "{:?}", h.app.dialog);
+    assert_eq!(relief(&h.app), Some((Some("round".into()), Some("6 mm".into()))));
+    assert!(h.app.session.model.results.iter().all(|r| r.error.is_none() && r.warning.is_none()), "{:?}", h.app.session.model.results);
+    let arcs = |app: &SolveApp| {
+        app.session
+            .model
+            .state()
+            .sheets
+            .last()
+            .map(|s| s.base.outer.segs.iter().filter(|g| matches!(g, solidcraft_engine::geom::Seg2::Arc { .. })).count())
+    };
+    assert_eq!(arcs(&h.app), Some(1), "the round is cut at the one corner the two flanges make");
+    // Edit Feature shows both again; Rule and an empty size take the feature back to the rule's relief.
+    let id = h.app.session.doc.features.last().map(|f| f.id).unwrap();
+    let mut e = edit_dialog(&h.app, id, None).unwrap();
+    assert!(matches!(&e.kind, Kind::Sheet(Sm::Flange { relief: 2, relief_size, .. }) if relief_size == "6 mm"));
+    let c = apply_commands(&h.app, &e).unwrap();
+    assert_eq!((&c[0].1["params"]["corner_relief_shape"], &c[0].1["params"]["corner_relief"]), (&json!("round"), &json!("6 mm")));
+    if let Kind::Sheet(Sm::Flange { relief, relief_size, .. }) = &mut e.kind {
+        *relief = 0;
+        relief_size.clear();
+    }
+    let commands = apply_commands(&h.app, &e).unwrap();
+    run_all(&mut h.app, commands);
+    assert_eq!(relief(&h.app), Some((None, None)));
+    assert_eq!(arcs(&h.app), Some(0));
+}
+
 #[test]
 fn pocket_depth_labels_follow_inches_without_changing_flat_data() {
     let mut app = plate();
@@ -482,7 +554,6 @@ fn flat_app(preset: &str) -> SolveApp {
     app.start("sheet.flat_pattern");
     let Some(Kind::Sheet(Sm::FlatPattern { data, .. })) = app.dialog.as_mut().map(|d| &mut d.kind) else { panic!("flat dialog") };
     *data = Some(Ok(flat));
-    app.viewport.no_pixels = true;
     app.preferences.nav = preset.into();
     app.preferences.zoom_to_cursor = true;
     app

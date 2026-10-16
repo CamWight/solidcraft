@@ -1013,6 +1013,15 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[walk(body)]
         body: Option<String>,
+        /// The relief cut where two of this feature's bends meet at a corner of the base, in place
+        /// of the rule's: `corner_relief_shape` (notch | round | rectangular | tear) and
+        /// `corner_relief`, the size across. Either one left out follows the rule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        corner_relief_shape: Option<String>,
+        /// Walked last, after the edges' values, so the inputs before it keep their names.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[walk(length = "Corner relief")]
+        corner_relief: Option<String>,
     },
     /// Flat hems on sheet edges.
     SheetHem {
@@ -2124,6 +2133,10 @@ pub struct Document {
     pub render: std::sync::Arc<crate::render_settings::RenderSettings>,
     #[serde(default = "default_format")]
     pub format: String,
+    /// The changes of `format` this design has while they are pending (no release has fixed
+    /// that number yet; `crate::format::pending_names`). Empty, and not saved, otherwise.
+    #[serde(default = "crate::format::pending_names", skip_serializing_if = "Vec::is_empty")]
+    pub format_pending: Vec<String>,
     pub name: String,
     #[serde(default = "default_units")]
     pub units: String,
@@ -2341,6 +2354,7 @@ impl Document {
         Document {
             render: Default::default(),
             format: default_format(),
+            format_pending: crate::format::pending_names(),
             name: name.into(),
             units: default_units(),
             metadata: Default::default(),

@@ -2938,7 +2938,10 @@ fn feature_tools_with_constructor(
             // certified as a new body's are (see `Body::with_preserved_union_planar_sources`).
             if matches!(operation, Operation::NewBody | Operation::Join) && extent.taper.is_none() {
                 let bodies: Vec<Body> = tools.iter().map(|t| t.body.clone()).collect();
-                let cap_bindings = crate::config::extrude_cap_bindings(&ss, &bodies, 10_000_000);
+                let cap_bindings = match thin {
+                    Some(thin) => Some(crate::config::thin_extrude_cap_bindings(&thin.curves, regions.len(), &bodies)),
+                    None => crate::config::extrude_cap_bindings(&ss, &bodies, 10_000_000),
+                };
                 let source_curves = cap_bindings.as_ref().map(|_| crate::config::ExactSketchCurves::new(&ss));
                 tools = tools
                     .into_iter()

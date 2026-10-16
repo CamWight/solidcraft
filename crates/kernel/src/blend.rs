@@ -1121,7 +1121,7 @@ pub fn fillet_g2(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
         let (made, rec) = guard("G2 fillet", || blend_one(&solid, &edge, size, radius, Shape::Curvature))?;
         cur = record::after(record::rebuilt(made, &[&solid], &rec)?, &cur, &counts);
     }
-    closed(cur)
+    closed(body, cur)
 }
 
 /// Most edges whose other orders are tried when the order given is refused.
@@ -1804,9 +1804,16 @@ fn loop_split(cur: &Body, pts: &[Vec3]) -> Result<Option<(Vec<Vec<Vec3>>, Vec<Ve
 /// A fillet's result, refused when a face's boundary crosses itself (#871): rounds that
 /// overlap where a wall is thinner than both leave such faces, which the topology checks
 /// don't see but which show as holes in the model. A fillet either closes the solid or is
-/// refused.
-fn closed(b: Body) -> Result<Body> {
-    match b.crossed_face_loops()? {
+/// refused. Faces of `input` that crossed already and that the fillet carried over unchanged
+/// (a sliver an earlier boolean left far from the rounds, #1488) are not the fillet's doing.
+fn closed(input: &Body, b: Body) -> Result<Body> {
+    let after = b.crossed_faces()?;
+    if after.is_empty() {
+        return Ok(b);
+    }
+    let before = input.crossed_faces()?;
+    let tol = (input.size().max(b.size()) * 1e-6).max(1e-9);
+    match after.iter().filter(|p| !before.iter().any(|q| q.dist(**p) <= tol)).count() {
         0 => Ok(b),
         _ => Err(KernelError::Failed(
             "fillet: the rounds would leave openings in the surface (they overlap where a wall or a face is narrower than both)".into(),
@@ -1832,17 +1839,17 @@ pub fn fillet(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
 fn fillet_built(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
     // Corners the local blends refuse (an earlier round at an edge's end): radius per edge.
     blend(body, edges, radius, Shape::Round, "fillet")
-        .and_then(closed)
+        .and_then(|b| closed(body, b))
         .or_else(|e| {
             let sel: Vec<(Vec3, f64)> = edges.iter().map(|p| (*p, radius)).collect();
             // The local blend's refusal, unless only the corner build found the radius too large.
             crate::blend_corner::fillet_radii(body, &sel)
-                .and_then(closed)
+                .and_then(|b| closed(body, b))
                 .map_err(|e2| keep_size(e, e2))
                 // Three edges at a vertex of any faces end in a sphere.
                 .or_else(|e| {
                     if edges.len() >= 3 {
-                        crate::blend_vertex::fillet_ball_vertices(body, edges, radius).and_then(closed).map_err(|_| e)
+                        crate::blend_vertex::fillet_ball_vertices(body, edges, radius).and_then(|b| closed(body, b)).map_err(|_| e)
                     } else {
                         Err(e)
                     }
@@ -1850,9 +1857,9 @@ fn fillet_built(body: &Body, edges: &[Vec3], radius: f64) -> Result<Body> {
         })
         // Straight edges ending at a curved face that isn't an earlier round's: a rolling ball
         // trimmed by the face. Refused, the refusal above stands.
-        .or_else(|e| blend_with(body, edges, radius, Shape::Round, "fillet", true).and_then(closed).map_err(|_| e))
+        .or_else(|e| blend_with(body, edges, radius, Shape::Round, "fillet", true).and_then(|b| closed(body, b)).map_err(|_| e))
         // Blends meeting at corners on curved faces: all at once.
-        .or_else(|e| corners(body, edges, radius, Shape::Round, "fillet").and_then(closed).map_err(|e2| keep_size(e, e2)))
+        .or_else(|e| corners(body, edges, radius, Shape::Round, "fillet").and_then(|b| closed(body, b)).map_err(|e2| keep_size(e, e2)))
 }
 
 /// The first refusal, unless only the second found the blend too large (a smaller one may fit).
@@ -1970,7 +1977,7 @@ pub fn fillet_each(body: &Body, edges: &[Vec3], radii: &[f64]) -> Result<Body> {
         }
         Ok(b)
     };
-    if let Ok(b) = crate::blend_corner::fillet_radii(body, &sel).and_then(closed).and_then(fit) {
+    if let Ok(b) = crate::blend_corner::fillet_radii(body, &sel).and_then(|b| closed(body, b)).and_then(fit) {
         return Ok(b);
     }
     let mut by_radius: Vec<(f64, Vec<Vec3>)> = Vec::new();

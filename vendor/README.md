@@ -53,6 +53,12 @@ Changes:
   mirrored revolutions (ISO 10303-42 parameterises them by angle then profile, so their normal
   is the opposite of truck's; a mirroring transform reverses it again), and the modeling-surface
   wrapper passes the revolution's sense through instead of always `true`.
+- `out/geometry.rs`: a surface of revolution under a transform that commutes with turning about
+  its axis (a scale across the axis that differs from the scale along it, as a shell or offset
+  makes of a revolved face) is written as the transformed profile revolved about the
+  transformed axis. Only uniform scales were taken. Other transforms are still refused: the
+  writer stops with a formatting error, which SolidCraft's `step.rs` now reports as an export
+  error (`to_string` panicked on it).
 - `lib.rs`: compiler warnings no longer fail the build. Example and test targets are dropped
   (their sources are not vendored).
 
@@ -102,6 +108,11 @@ Changes:
   point that does not evaluate counts as flat instead of recursing). Surface grids refine only
   the direction that bends, and a ruling left undivided gets cells comparable to the other
   direction (long triangles from a trim loop to the grid's far ends cut through cylinders).
+- `tessellation/triangulation.rs`: an edge's division evaluates each parameter once. A piece
+  carries the points of its ends and its midpoint is an end of both halves: 2 evaluations per
+  piece instead of 4, and the same polyline (a point of an intersection curve costs two grid
+  searches of its surfaces). `bounded_polyline` and `Deflection::turn2`/`turns` are public but
+  hidden, for the kernel's regression against the old division.
 - `tessellation/mod.rs`, `tessellation/triangulation.rs`, for display: a `Deflection` is the
   chord tolerance plus an optional bound on the angle one facet spans, and
   `RoundMeshableShape::robust_triangulation_within` divides by it: an edge or a grid direction

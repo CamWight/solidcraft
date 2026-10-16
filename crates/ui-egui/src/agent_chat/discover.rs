@@ -69,6 +69,16 @@ pub const KNOWN: &[Known] = &[
         key_vars: &[],
     },
     Known {
+        id: "grok",
+        name: "XAI Grok",
+        programs: &["grok"],
+        args: &["agent", "stdio"],
+        install: "see https://docs.x.ai/build/overview (Grok Build installer); then run grok login",
+        credentials: Some(".grok/auth.json"),
+        config_dir_var: None,
+        key_vars: &["XAI_API_KEY"],
+    },
+    Known {
         id: "copilot",
         name: "GitHub Copilot CLI",
         programs: &["copilot"],
@@ -153,14 +163,14 @@ fn home() -> Option<PathBuf> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
-/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun and pipx put commands.
+/// PATH, then the usual places npm, Homebrew, nvm, Volta, bun, pipx and Grok put commands.
 pub fn search_dirs() -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     if let Some(prefix) = std::env::var_os("NPM_CONFIG_PREFIX").map(PathBuf::from) {
         dirs.push(if cfg!(windows) { prefix.clone() } else { prefix.join("bin") });
     }
     if let Some(h) = home() {
-        for d in [".local/bin", ".npm-global/bin", ".npm-packages/bin", ".volta/bin", ".bun/bin", ".cargo/bin", "bin"] {
+        for d in [".local/bin", ".npm-global/bin", ".npm-packages/bin", ".volta/bin", ".bun/bin", ".cargo/bin", ".grok/bin", "bin"] {
             dirs.push(h.join(d));
         }
         // nvm: every installed Node version's bin.
@@ -184,11 +194,28 @@ pub fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// The first `program` in `dirs` (on Windows also with `.exe`/`.cmd`).
+/// The first `program` in `dirs` (on Windows with `.exe`/`.cmd`/`.bat`).
 pub fn find_in(program: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
-    let names: Vec<String> =
-        if cfg!(windows) { ["", ".exe", ".cmd", ".bat"].iter().map(|e| format!("{program}{e}")).collect() } else { vec![program.to_string()] };
+    let names = names_for(program, cfg!(windows));
     dirs.iter().flat_map(|d| names.iter().map(move |n| d.join(n))).find(|p| p.is_file())
+}
+
+/// The file names `program` can have. On Windows only ones it can run: npm puts a Unix shell
+/// script with the bare name next to the `.cmd` shim, and starting that fails with "not a valid
+/// Win32 application".
+fn names_for(program: &str, windows: bool) -> Vec<String> {
+    if windows { [".exe", ".cmd", ".bat"].iter().map(|e| format!("{program}{e}")).collect() } else { vec![program.to_string()] }
+}
+
+/// A Windows command saved without an extension (`…\npm\codex-acp`, from an older version's
+/// lookup): the `.exe`/`.cmd`/`.bat` beside it, if there is one.
+pub fn runnable_sibling(program: &Path) -> Option<PathBuf> {
+    if program.extension().is_some() {
+        return None;
+    }
+    let dir = program.parent()?;
+    let name = program.file_name()?.to_str()?;
+    names_for(name, true).into_iter().map(|n| dir.join(n)).find(|p| p.is_file())
 }
 
 /// `program --version`'s first line, or `None` after `limit` (the probe is then stopped).
@@ -200,6 +227,12 @@ fn version(program: &Path, limit: Duration) -> Option<String> {
     } else {
         Command::new(program)
     };
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: probing a console agent doesn't flash a terminal window.
+        cmd.creation_flags(0x0800_0000);
+    }
     let mut child = cmd.arg("--version").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
     let start = Instant::now();
     loop {
@@ -273,9 +306,30 @@ mod tests {
         let (a, b) = (root.join("a"), root.join("b"));
         std::fs::create_dir_all(&a).unwrap();
         std::fs::create_dir_all(&b).unwrap();
-        std::fs::write(b.join("codex-acp"), "").unwrap();
-        assert_eq!(find_in("codex-acp", &[a.clone(), b.clone()]), Some(b.join("codex-acp")));
+        // A name this platform runs: Windows looks only for `.exe`/`.cmd`/`.bat` (#1554).
+        let name = names_for("codex-acp", cfg!(windows)).remove(0);
+        std::fs::write(b.join(&name), "").unwrap();
+        assert_eq!(find_in("codex-acp", &[a.clone(), b.clone()]), Some(b.join(name)));
         assert_eq!(find_in("gemini", &[a, b]), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn on_windows_only_runnable_shims_are_candidates() {
+        // npm's bare `codex-acp` is a shell script; Windows can't start it (os error 193).
+        assert_eq!(names_for("codex-acp", true), ["codex-acp.exe", "codex-acp.cmd", "codex-acp.bat"]);
+        assert_eq!(names_for("codex-acp", false), ["codex-acp"]);
+    }
+
+    #[test]
+    fn a_saved_bare_npm_path_runs_its_cmd_shim() {
+        let root = std::env::temp_dir().join(format!("sc-agent-shim-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("codex-acp"), "#!/bin/sh").unwrap();
+        std::fs::write(root.join("codex-acp.cmd"), "@echo off").unwrap();
+        assert_eq!(runnable_sibling(&root.join("codex-acp")), Some(root.join("codex-acp.cmd")));
+        assert_eq!(runnable_sibling(&root.join("codex-acp.cmd")), None);
+        assert_eq!(runnable_sibling(&root.join("gemini")), None);
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -284,6 +338,7 @@ mod tests {
         assert_eq!(version_of("@agentclientprotocol/codex-acp 2.2.2"), "2.2.2");
         assert_eq!(version_of("2.1.295 (Claude Code)"), "2.1.295");
         assert_eq!(version_of("goose v1.9.0"), "v1.9.0");
+        assert_eq!(version_of("grok 1.0.58 (26283d10dd58) [alpha]"), "1.0.58");
         assert_eq!(version_of("dev build"), "dev build");
     }
 
@@ -294,6 +349,7 @@ mod tests {
         let gemini = KNOWN.iter().find(|k| k.id == "gemini").unwrap();
         let qwen = KNOWN.iter().find(|k| k.id == "qwen").unwrap();
         let goose = KNOWN.iter().find(|k| k.id == "goose").unwrap();
+        let grok = KNOWN.iter().find(|k| k.id == "grok").unwrap();
         if std::env::var_os("GEMINI_API_KEY").is_none() && std::env::var_os("GOOGLE_API_KEY").is_none() {
             assert_eq!(login_of(gemini, Some(&home)), Login::NotLoggedIn);
         }
@@ -303,6 +359,13 @@ mod tests {
             assert_eq!(login_of(qwen, Some(&home)), Login::NotLoggedIn);
         }
         assert_eq!(login_of(goose, Some(&home)), Login::Unknown, "keeps no file we know");
+        if std::env::var_os("XAI_API_KEY").is_none() {
+            assert_eq!(login_of(grok, Some(&home)), Login::NotLoggedIn);
+        }
+        std::fs::create_dir_all(home.join(".grok")).unwrap();
+        // Discovery checks only for the file; it never needs to parse the user's tokens.
+        std::fs::write(home.join(".grok/auth.json"), "not credential data").unwrap();
+        assert_eq!(login_of(grok, Some(&home)), Login::LooksLoggedIn);
         let _ = std::fs::remove_dir_all(home);
     }
 

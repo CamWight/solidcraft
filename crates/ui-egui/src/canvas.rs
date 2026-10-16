@@ -769,7 +769,13 @@ fn radius_spline_handles(app: &SolveApp, ui: &mut egui::Ui, painter: &egui::Pain
 fn measure_line(app: &SolveApp, painter: &egui::Painter, proj: &Proj, r: &serde_json::Value, show: Option<crate::dialogs::Shown>) {
     let t = Tokens::get();
     let Some((_, d, a, b)) = crate::dialogs::shown_distance(r, show) else { return };
+    if !a.is_finite() || !b.is_finite() || !d.is_finite() {
+        return;
+    }
     let (Some(sa), Some(sb)) = (proj.to_screen(a), proj.to_screen(b)) else { return };
+    if !sa.is_finite() || !sb.is_finite() {
+        return;
+    }
     painter.line_segment([sa, sb], Stroke::new(2.0, t.manipulator));
     for s in [sa, sb] {
         painter.circle(s, 3.5, t.manipulator, Stroke::new(1.0, Color32::WHITE));
@@ -777,8 +783,78 @@ fn measure_line(app: &SolveApp, painter: &egui::Painter, proj: &Proj, r: &serde_
     let mid = sa + (sb - sa) * 0.5 + vec2(10.0, -14.0);
     let galley = painter.layout_no_wrap(crate::prefs::show_mm(app, d, 1), egui::FontId::proportional(12.5), t.text);
     let rect = egui::Rect::from_min_size(mid, galley.size() + vec2(10.0, 6.0));
+    crate::scenario::publish_handle("measure:label", rect.center());
+    crate::scenario::publish_rect("measure:label", rect);
+    if app.preferences.measure_axis_distances {
+        measure_components(app, painter, proj, a, b, rect);
+    }
     painter.rect(rect, 3.0, t.overlay, Stroke::new(1.0, t.border), egui::StrokeKind::Inside);
     painter.galley(rect.min + vec2(5.0, 3.0), galley, t.text);
+}
+
+/// A world-axis-aligned chain between the same two measured points. Zero-length and
+/// view-aligned legs still get a label; labels move apart when their projections coincide.
+fn measure_components(app: &SolveApp, painter: &egui::Painter, proj: &Proj, a: Vec3, b: Vec3, total: egui::Rect) {
+    let t = Tokens::get();
+    let x = Vec3::new(b.x, a.y, a.z);
+    let y = Vec3::new(b.x, b.y, a.z);
+    let mut occupied = vec![total];
+    for (axis, start, end, color) in [("x", a, x, t.axis_x), ("y", x, y, t.axis_y), ("z", y, b, t.axis_z)] {
+        let color = color.lerp_to_gamma(t.text, 0.25);
+        let distance = start.dist(end);
+        if !distance.is_finite() {
+            continue;
+        }
+        let screen =
+            proj.to_screen(start).zip(proj.to_screen(end)).filter(|(sa, sb)| sa.is_finite() && sb.is_finite() && (*sb - *sa).length_sq().is_finite());
+        let (at, offset) = if let Some((sa, sb)) = screen {
+            let leg = sb - sa;
+            if leg.length_sq() > 1.0 {
+                painter.add(egui::Shape::dashed_line(&[sa, sb], Stroke::new(1.5, color), 5.0, 3.0));
+                let normal = vec2(-leg.y, leg.x).normalized();
+                for p in [sa, sb] {
+                    painter.line_segment([p - normal * 3.0, p + normal * 3.0], Stroke::new(1.0, color));
+                }
+                (sa + leg * 0.5, normal * 20.0)
+            } else {
+                (sa, vec2(20.0, 20.0))
+            }
+        } else {
+            (total.center(), vec2(20.0, 20.0))
+        };
+        let text = format!("{}: {}", axis.to_uppercase(), crate::prefs::show_mm(app, distance, 1));
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(12.5), t.text);
+        let size = galley.size() + vec2(10.0, 6.0);
+        let bounds = proj.rect.shrink(4.0);
+        let clamp = |rect: egui::Rect| {
+            egui::Rect::from_min_size(
+                egui::pos2(
+                    rect.left().clamp(bounds.left(), (bounds.right() - size.x).max(bounds.left())),
+                    rect.top().clamp(bounds.top(), (bounds.bottom() - size.y).max(bounds.top())),
+                ),
+                size,
+            )
+        };
+        let preferred = clamp(egui::Rect::from_center_size(at + offset, size));
+        let mut rect = preferred;
+        // Four labels at most. Search both sides of the anchor, including at viewport edges.
+        'place: for row in 0..12 {
+            for side in [1.0, -1.0] {
+                let candidate = clamp(preferred.translate(vec2(0.0, side * row as f32 * (size.y + 4.0))));
+                if occupied.iter().all(|other| !other.expand(3.0).intersects(candidate)) {
+                    rect = candidate;
+                    break 'place;
+                }
+            }
+        }
+        painter.line_segment([at, rect.center()], Stroke::new(0.8, color));
+        painter.rect(rect, 3.0, t.overlay, Stroke::new(1.0, color), egui::StrokeKind::Inside);
+        painter.galley(rect.min + vec2(5.0, 3.0), galley, t.text);
+        let handle = format!("measure:label:{axis}");
+        crate::scenario::publish_handle(&handle, rect.center());
+        crate::scenario::publish_rect(&handle, rect);
+        occupied.push(rect);
+    }
 }
 
 /// The taper handle: a line from `foot` along the extrude (`span`) leaning by `angle` towards

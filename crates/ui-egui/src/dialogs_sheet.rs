@@ -35,6 +35,9 @@ const RULE_FIELDS: [(&str, &str); 8] = [
 /// The corner relief shapes the manager offers (the rule's `corner_relief_shape`) and their labels.
 const RELIEF_SHAPES: [&str; 4] = ["notch", "round", "rectangular", "tear"];
 const RELIEF_SHAPE_LABELS: [&str; 4] = ["Notch", "Round", "Rectangular", "Tear"];
+/// The corner relief shapes an edge flange offers: the rule's (index 0, nothing of its own), then
+/// the shapes of `RELIEF_SHAPES` in order.
+const FLANGE_RELIEF_LABELS: [&str; 5] = ["Rule", "Notch", "Round", "Rectangular", "Tear"];
 
 #[derive(Clone, Debug)]
 pub enum Sm {
@@ -52,6 +55,10 @@ pub enum Sm {
         /// Edge flanges: the edges with an angle and/or a height of their own (the picked point,
         /// angle, height; an empty text means the dialog's), from the rows per edge.
         own: Vec<(Vec3, String, String)>,
+        /// Edge flanges: the corner relief shape of their own (index into `FLANGE_RELIEF_LABELS`;
+        /// 0 is the rule's) and its size (empty: the rule's).
+        relief: usize,
+        relief_size: String,
     },
     Hem {
         length: String,
@@ -134,6 +141,8 @@ fn new_flange(ty: usize) -> Sm {
         reverse: false,
         rule: 0,
         own: Vec::new(),
+        relief: 0,
+        relief_size: String::new(),
     }
 }
 
@@ -199,7 +208,7 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
     let t = Tokens::get();
     let mut enter = false;
     match k {
-        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own } => {
+        Sm::Flange { ty, height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size } => {
             *ty = flange_type(inputs);
             row_label(ui, "Type");
             ui.label(FLANGE_TYPES.get(*ty).copied().unwrap_or(""));
@@ -218,6 +227,15 @@ pub fn rows(app: &mut SolveApp, ui: &mut egui::Ui, k: &mut Sm, inputs: &mut [Sel
                     row_label(ui, "Bend Radius");
                     let r = ui.add(egui::TextEdit::singleline(radius).hint_text(crate::i18n::tr_label("from the rule")));
                     crate::params_dialog::complete(ui, &r, radius);
+                    enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    ui.end_row();
+                    // The relief at the corners these flanges make: the rule's unless set here.
+                    row_label(ui, "Corner Relief Shape");
+                    combo(ui, "sm_flange_relief", &FLANGE_RELIEF_LABELS, relief);
+                    ui.end_row();
+                    row_label(ui, "Corner Relief");
+                    let r = ui.add(egui::TextEdit::singleline(relief_size).hint_text(crate::i18n::tr_label("from the rule")));
+                    crate::params_dialog::complete(ui, &r, relief_size);
                     enter |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     ui.end_row();
                     // With several edges, a row for each: an angle and a height of its own, left
@@ -514,13 +532,19 @@ fn flange_edges(inputs: &[SelInput], own: &[(Vec3, String, String)]) -> Vec<Valu
 pub fn commands(app: &SolveApp, k: &Sm, inputs: &[SelInput], extra: &Map<String, Value>) -> Result<Vec<(String, Value)>, String> {
     let s = &app.session;
     let (cmd, mut p): (&str, Value) = match k {
-        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, .. } => {
+        Sm::Flange { height, angle, radius, position, flip, distance, reverse, rule, own, relief, relief_size, .. } => {
             let mut p = match flange_type(inputs) {
                 1 => {
                     let mut p = json!({"type": "edge", "edges": flange_edges(inputs, own), "height": height, "angle": angle,
                         "position": POSITIONS.get(*position).copied().unwrap_or("inside")});
                     if !radius.trim().is_empty() {
                         p["radius"] = json!(radius);
+                    }
+                    if let Some(shape) = relief.checked_sub(1).and_then(|i| RELIEF_SHAPES.get(i)) {
+                        p["corner_relief_shape"] = json!(shape);
+                    }
+                    if !relief_size.trim().is_empty() {
+                        p["corner_relief"] = json!(relief_size);
                     }
                     p
                 }
@@ -667,7 +691,7 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
             }
             (f, curves.iter().map(|id| Sel::SketchCurve { id: id.clone() }).collect())
         }
-        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body } => {
+        FeatureKind::SheetFlange { edges, height, angle, radius, position, flip, body, corner_relief_shape, corner_relief } => {
             if let Some(b) = body {
                 extra.insert("body".into(), json!(b));
             }
@@ -692,6 +716,11 @@ pub fn for_feature(app: &SolveApp, kind: &FeatureKind) -> Option<(Kind, Vec<SelI
                 reverse: false,
                 rule: 0,
                 own,
+                relief: corner_relief_shape
+                    .as_deref()
+                    .and_then(|name| RELIEF_SHAPES.iter().position(|s| s.eq_ignore_ascii_case(name.trim())))
+                    .map_or(0, |i| i + 1),
+                relief_size: corner_relief.clone().unwrap_or_default(),
             };
             (f, picked)
         }

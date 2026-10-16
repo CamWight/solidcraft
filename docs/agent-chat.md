@@ -1,7 +1,7 @@
 # Agent chat
 
 Agent chat is a side panel where you talk to a coding agent you already use (Claude Code,
-Codex, Gemini CLI, OpenCode and others), or to a model behind an OpenAI-compatible endpoint you
+Codex, Gemini CLI, OpenCode, Grok Build and others), or to a model behind an OpenAI-compatible endpoint you
 choose (Ollama or LM Studio on your computer, OpenAI, any other URL), and have it work on the
 design that's open. A coding agent runs on your computer under **your own account** with that
 agent: SolidCraft doesn't sell or proxy a model and needs no key for it. An endpoint's key, if
@@ -53,7 +53,7 @@ conversation starts with), its own permission setting, and **Remove** for the on
 
 SolidCraft looks for agents that speak the [Agent Client Protocol](https://agentclientprotocol.com)
 on your `PATH` and in the usual install folders a desktop app's `PATH` often misses (npm's
-global folder, nvm, Volta, bun, `~/.local/bin`, Homebrew, `%APPDATA%\npm`). For each one it
+global folder, nvm, Volta, bun, `~/.local/bin`, `~/.grok/bin`, Homebrew, `%APPDATA%\npm`). For each one it
 shows its **version** (from `--version`, given three seconds) and whether it looks **signed in**.
 SolidCraft only checks whether the agent's own login file (`~/.claude/.credentials.json`,
 `~/.codex/auth.json`, `~/.gemini/oauth_creds.json`, …) or one of its key variables exists. It never
@@ -66,11 +66,25 @@ the keychain, so SolidCraft doesn't guess there.
 | Codex | `npm install -g @agentclientprotocol/codex-acp` |
 | Gemini CLI | `npm install -g @google/gemini-cli` (it speaks ACP itself: `gemini --acp`) |
 | OpenCode | `npm install -g opencode-ai` (`opencode acp`) |
+| XAI Grok | [Grok Build installer](https://docs.x.ai/build/overview), then `grok login` (`grok agent stdio` speaks ACP) |
 | GitHub Copilot CLI, Qwen Code, goose | listed with their install command when missing |
 
 The panel lists agents that aren't installed with their install command and a **Copy** button.
 **Refresh** looks again after you install one. **Test** starts an agent briefly, asks it for a
 session and ends it again.
+
+### XAI Grok
+
+Install **Grok Build** and run `grok login` in a terminal to sign in with your Grok account.
+In SolidCraft, open **AI → Refresh**, select
+**XAI Grok**, then **Connect**. You can make it the default under
+**Preferences → AI → Agents**.
+
+SolidCraft reuses Grok Build's sign-in in `~/.grok/auth.json`; it checks only whether that file
+exists and does not read or copy its tokens. If sign-in is needed, the panel offers Grok's own
+sign-in methods. You can also run `grok login` again and reconnect. Grok controls model access
+and usage limits for your account. This connection does not require an API key in SolidCraft.
+Grok Build also supports `XAI_API_KEY` for users who choose API authentication.
 
 ### Add agent…
 
@@ -135,6 +149,12 @@ follow the agent's own mode, which you pick in the panel's header. When an agent
 using one of SolidCraft's tools, SolidCraft answers for you, since its own gate checks the call,
 and notes it in the chat as *Auto-allowed*. With **Allow everything**, or after **Always allow**,
 the agent's other questions are answered the same way and noted too.
+
+What counts as "a command given a file name": a parameter that holds a file or folder (`file`,
+`dir`, `output`, …), or `path` and `source` when the value reads like a file name (a separator, `~`,
+a leading dot or a known extension), or any value of those in a command that exports, imports,
+saves, opens or inserts. A sweep's or pattern's `path` (curve ids) and an occurrence's `path`
+(ids) are geometry and run without a question.
 
 ## What it can't do
 

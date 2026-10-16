@@ -17,8 +17,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         "base: sketch + profiles? (rule?, flip?) | contour: sketch + curves (open chain of lines) + distance (rule?, flip?, reverse?) | \
          edge: edges: [[x,y,z] on top/bottom edges, or {point: [x,y,z], angle?, height?} for an edge with its own angle and height] + \
          height (to the outer face), angle? (default 90 deg), radius? (default: rule), \
-         position?: inside|outside|middle, flip?, body?; type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
-         Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused",
+         position?: inside|outside|middle, flip?, body?, corner_relief_shape?: notch|round|rectangular|tear and corner_relief? (size across): \
+         the relief at the corners these flanges make (default: the rule's); \
+         type?: base|edge|contour (default from the inputs); name?, body_name? (the new body). \
+         Thickness, K-factor and bend radius come from the rule (sheet.manage_rules); passing them here is refused, \
+         and so is the corner relief on a base or contour flange",
     ),
     CommandSpec::new("sheet.perforate", "Perforate", perforate).at("SHEET METAL", "CREATE").icon("hem").params(
         "diameter, pitch: expr; margin?: expr (clear of edges, cut-outs and bends; default: the diameter); pattern?: staggered (60°, default) | square; body? - a perforation field over the whole flat sheet: holes in the flat pattern (perforations), the DXF (layer PERFORATION) and the measured volume, not cut into the B-rep (#732)",
@@ -133,10 +136,20 @@ fn rule_param(s: &Session, p: &Value, cmd: &str) -> Result<Option<String>> {
 const RULE_ONLY: [&str; 8] =
     ["thickness", "k_factor", "bend_radius", "relief_width", "relief_depth", "corner_relief", "corner_relief_shape", "hem_gap"];
 
+/// The two rule values an edge flange may set for itself: the corner relief.
+const EDGE_RELIEF: [&str; 2] = ["corner_relief", "corner_relief_shape"];
+
 fn flange(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sheet.flange";
     let nested = p.get("base").filter(|b| b.is_object());
-    if let Some(key) = RULE_ONLY.iter().find(|k| p.get(**k).is_some() || nested.is_some_and(|b| b.get(**k).is_some())) {
+    let ty = match str_(p, "type") {
+        Some(t) => t.to_ascii_lowercase(),
+        None if p.get("edges").is_some() => "edge".into(),
+        None if p.get("curves").is_some() => "contour".into(),
+        None => "base".into(),
+    };
+    let refused = |k: &&&str| !(ty == "edge" && EDGE_RELIEF.contains(*k));
+    if let Some(key) = RULE_ONLY.iter().filter(refused).find(|k| p.get(**k).is_some() || nested.is_some_and(|b| b.get(**k).is_some())) {
         return Err(bad(
             cmd,
             format!(
@@ -145,12 +158,6 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
             ),
         ));
     }
-    let ty = match str_(p, "type") {
-        Some(t) => t.to_ascii_lowercase(),
-        None if p.get("edges").is_some() => "edge".into(),
-        None if p.get("curves").is_some() => "contour".into(),
-        None => "base".into(),
-    };
     match ty.as_str() {
         "base" => {
             let sketch = feature_sketch(s, p, cmd)?;
@@ -194,7 +201,35 @@ fn flange(s: &mut Session, p: &Value) -> Result<Value> {
                 return Err(bad(cmd, "`position` must be inside, outside or middle"));
             }
             let body = str_(p, "body").map(str::to_string);
-            add_feature(s, p, FeatureKind::SheetFlange { edges, height, angle, radius, position, flip: bool_(p, "flip").unwrap_or(false), body })
+            // The corner relief these flanges make, in place of the rule's; null is not given.
+            let corner_relief_shape = match p.get("corner_relief_shape").filter(|v| !v.is_null()) {
+                Some(v) => Some(
+                    v.as_str()
+                        .and_then(solidcraft_doc::sheet::ReliefShape::parse)
+                        .map(|shape| shape.name().to_string())
+                        .ok_or_else(|| bad(cmd, "`corner_relief_shape` must be notch, round, rectangular or tear"))?,
+                ),
+                None => None,
+            };
+            let corner_relief = expr(p, "corner_relief");
+            if let Some(c) = &corner_relief {
+                check_expr(s, c, Kind::Length, cmd, "corner_relief")?;
+            }
+            add_feature(
+                s,
+                p,
+                FeatureKind::SheetFlange {
+                    edges,
+                    height,
+                    angle,
+                    radius,
+                    position,
+                    flip: bool_(p, "flip").unwrap_or(false),
+                    body,
+                    corner_relief_shape,
+                    corner_relief,
+                },
+            )
         }
         other => Err(bad(cmd, format!("unknown flange type `{other}` (base, edge or contour)"))),
     }

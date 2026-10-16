@@ -1178,3 +1178,6 @@ fn a_new_joint_starts_inside_its_limits_and_says_so() {
     let r = run(&mut s, "joint.as_built", json!({"type": "cylindrical", "a": "A", "b": "B", "name": "Spindle", "limits": [[-30, 30], [0, 5]]}));
     assert!(r.get("warnings").is_none(), "{r}");
 }
+
+#[path = "joints_coupling_tests.rs"]
+mod coupling;

@@ -10,7 +10,7 @@ use solidcraft_geom::Vec3;
 use solidcraft_kernel::Body;
 
 use super::CommandSpec;
-use super::joints::{cannot_move, joint_id, named_values, occurrence_id, resolve_holding, value};
+use super::joints::{cannot_move, effective_values, joint_id, occurrence_id, resolve_holding, value};
 use crate::params::{bad, bool_, str_, vec3};
 use crate::{EngineError, Result, Session};
 
@@ -350,10 +350,7 @@ fn drive_with_contact(s: &mut Session, want: &[(u64, Vec<f64>)], given: &BTreeSe
         stopped = None;
         stopped_by_loop = Some(json!({"joint": name, "fraction": lo}));
     }
-    let values: Vec<Value> = want
-        .iter()
-        .map(|(id, _)| json!({"joint": id, "values": s.doc.assembly.joints.iter().find(|j| j.id == *id).map(|j| named_values(j, &j.values))}))
-        .collect();
+    let values: Vec<Value> = want.iter().map(|(id, _)| json!({"joint": id, "values": effective_values(s, *id)})).collect();
     let out = json!({"values": values, "stopped_by_contact": stopped, "stopped_by_loop": stopped_by_loop, "conflicts": sol.conflicts.len()});
     Ok((out, sol))
 }

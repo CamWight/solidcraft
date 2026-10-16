@@ -496,7 +496,6 @@ fn nav_app(render: bool, preset: &str, around: crate::prefs::OrbitAround) -> cra
     let mut s = Session::default();
     s.execute("solid.box", &json!({"length":40,"width":30,"height":20,"body_name":"Product"})).unwrap();
     let mut app = crate::SolveApp::new(s, crate::Services::default());
-    app.viewport.no_pixels = true;
     if render {
         enter(&mut app, true).unwrap();
         assert!(active(&app));

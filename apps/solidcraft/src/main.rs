@@ -6,7 +6,7 @@
 //! the software renderer; see `startup` and docs/book/src/guide/troubleshooting.md.
 //!
 //! A `.step`/`.stp` file opens as a new design holding the file's bodies (an Import feature); a
-//! `.3mf`/`.stl` file as a new design holding mesh bodies.
+//! `.3mf`/`.stl`/`.obj`/`.glb`/`.gltf` file as a new design holding mesh bodies.
 //!
 //! `--control <port>` (or `SOLIDCRAFT_CONTROL_PORT`) starts a localhost JSON-lines control
 //! server: `{"id":1,"method":"engine.execute","params":{"command":"solid.box","params":{…}}}`.
@@ -111,7 +111,7 @@ fn services(cc: &eframe::CreationContext<'_>) -> Services {
             let future = open_parent
                 .clone()
                 .add_filter(
-                    "Designs, STEP, IGES and meshes",
+                    "Designs, CAD files and meshes",
                     &[
                         io::DESIGN_EXT,
                         io::LEGACY_DESIGN_EXT,
@@ -124,16 +124,27 @@ fn services(cc: &eframe::CreationContext<'_>) -> Services {
                         "iges",
                         "IGS",
                         "IGES",
+                        "FCStd",
+                        "fcstd",
+                        "3dm",
+                        "3DM",
                         "3mf",
                         "3MF",
                         "stl",
                         "STL",
+                        "obj",
+                        "OBJ",
+                        "glb",
+                        "GLB",
+                        "gltf",
+                        "GLTF",
                     ],
                 )
                 .add_filter("SolidCraft design (container or JSON)", &[io::DESIGN_EXT, io::LEGACY_DESIGN_EXT, "json"])
                 .add_filter("STEP", &["step", "stp", "STEP", "STP"])
                 .add_filter("IGES", &["igs", "iges", "IGS", "IGES"])
-                .add_filter("Mesh (3MF, STL)", &["3mf", "3MF", "stl", "STL"])
+                .add_filter("FreeCAD and Rhino", &["FCStd", "fcstd", "3dm", "3DM"])
+                .add_filter("Mesh (3MF, STL, OBJ, glTF)", &["3mf", "3MF", "stl", "STL", "obj", "OBJ", "glb", "GLB", "gltf", "GLTF"])
                 .add_filter("Sketch drawings (DXF, SVG)", &["dxf", "DXF", "svg", "SVG"])
                 .add_filter("All files", &["*"])
                 .pick_file();
@@ -559,6 +570,7 @@ fn main() -> eframe::Result {
                 eprintln!("SolidCraft graphics: {:?}, MSAA {}x (requested {}x)", rs.adapter.get_info().backend, rs.msaa_samples, samples);
                 solidcraft_engine::crash::phase("viewport pipelines (shader compile)");
                 app.set_wgpu(rs, DEPTH_BITS, STENCIL_BITS, rs.msaa_samples);
+                solidcraft_ui_egui::gpu::install_picture_renderer(rs);
                 // The graphics driver is loaded now; it may have put its own exception filter
                 // in front of ours.
                 #[cfg(target_os = "windows")]

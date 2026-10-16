@@ -330,7 +330,6 @@ fn drive_value_takes_the_keyboard() {
 fn drive_slider_previews_intermediate_positions_before_release() {
     let mut h = crate::scenario::Harness::new();
     h.app = two_boxes();
-    h.app.viewport.no_pixels = true;
     let (a, b) = (occ(&h.app, "A"), occ(&h.app, "B"));
     h.app
         .run(

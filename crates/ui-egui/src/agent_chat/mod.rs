@@ -50,7 +50,7 @@ const MAX_PROMPT: usize = 100_000;
 /// up on a request after five minutes).
 const APPROVAL_TIMEOUT_MS: f64 = 240_000.0;
 /// Size of the picture of the view sent with a message.
-const VIEW_IMAGE: (usize, usize) = (960, 600);
+const VIEW_IMAGE: (u32, u32) = (960, 600);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum State {
@@ -521,8 +521,11 @@ pub fn send(app: &mut SolveApp, ctx: &egui::Context, text: String) {
 
 fn start_turn(app: &mut SolveApp, text: String, image: bool) {
     let mut parts = vec![PromptPart::Text(text.clone())];
-    if image && let Some(png) = crate::control::view_png(app, VIEW_IMAGE.0, VIEW_IMAGE.1) {
-        parts.push(PromptPart::Image { mime: "image/png".into(), base64: backend::base64(&png) });
+    if image {
+        match crate::control::view_png(app, VIEW_IMAGE.0, VIEW_IMAGE.1) {
+            Ok(png) => parts.push(PromptPart::Image { mime: "image/png".into(), base64: backend::base64(&png) }),
+            Err(e) => log::warn!("the view's picture is left out of the prompt: {e}"),
+        }
     }
     let label: String = text.lines().next().unwrap_or("").chars().take(48).collect();
     app.agent_chat.turn =
