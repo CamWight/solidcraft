@@ -28,6 +28,7 @@ mod boundary;
 mod bridge;
 mod build;
 mod clearance;
+mod coaxial_overlap;
 mod continuity;
 mod coplanar;
 mod corner_g2;
@@ -54,6 +55,8 @@ mod intersection_curve_tests;
 mod issue_1038_tests;
 #[cfg(test)]
 mod issue_1080_tests;
+#[cfg(test)]
+mod issue_324_tests;
 #[cfg(test)]
 mod issue_616_tests;
 #[cfg(test)]
@@ -100,6 +103,7 @@ mod prism_local;
 mod prism_measure;
 pub mod provenance;
 mod record;
+mod seam_faces;
 mod sew;
 mod smooth_edges;
 mod spline_conv;
@@ -114,6 +118,8 @@ mod surface_ruled;
 mod surface_untrim;
 mod surfaces;
 mod sweep_path;
+#[cfg(test)]
+mod sweep_rails_tests;
 mod tangent_cylinders;
 mod tess;
 #[cfg(test)]
@@ -134,9 +140,10 @@ pub use boolean_diagnostics::{BooleanDiagnostics, BooleanFallback, BooleanStrate
 pub use boundary::{Boundary, boundary_patch};
 pub use bridge::{Continuity, Frame, blend_between, bridge, chain, chain_closes, frames, frames_across, sample_grid};
 pub use build::{
-    PathSeg, box_solid, canonical_revolve_axis, cylinder, extrude, extrude_tapered, extrude_tapered_between, loft, revolve, revolve_whole, sphere,
-    sweep, sweep_with, torus,
+    PathSeg, box_solid, canonical_revolve_axis, cylinder, extrude, extrude_tapered, extrude_tapered_between, loft, path_polyline, revolve,
+    revolve_whole, sphere, sweep, sweep_with, torus,
 };
+pub use coaxial_overlap::{CoaxialOverlap, coaxial_overlap};
 pub use continuity::{
     ContinuityReport, ContinuityTolerances, EdgePick, MAX_SAMPLES, MIN_SAMPLES, SeamReport, SeamVerdict, SeamWorst, pick_edges, seam_diagnostics,
 };
@@ -180,7 +187,7 @@ pub use surfaces::{
     copy_faces, extend, extrude_sheet, loft_sheet, patch_edges, patch_region, remove_faces, reverse_faces, revolve_sheet, stitch, sweep_sheet,
     sweep_sheet_points, sweep_sheet_points_with, sweep_sheet_with, thicken, trim, unstitch,
 };
-pub use sweep_path::{SweepControl, SweepOrientation, sweep_path, sweep_path_with};
+pub use sweep_path::{RailFit, SweepControl, SweepOrientation, sweep_path, sweep_path_with};
 pub use topo::{CylinderFace, cylinder_end_at, cylinder_face_at};
 pub use topo::{TopoCounts, merged_topology, seam_flags};
 pub use tspline::tspline_sheet;

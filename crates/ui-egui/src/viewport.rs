@@ -3348,7 +3348,8 @@ pub(crate) fn nearest_quarter_turn(yaw: f64) -> f64 {
 }
 
 /// Navigation bar (bottom centre).
-/// Turn the view to face the selected planar face or plane, else the active sketch.
+/// Turn the view to face the selected planar face or plane, else the active sketch; asked again
+/// while it already faces it, from the other side (#1886).
 pub fn look_at_selection(app: &mut SolveApp) {
     let target = app.session.selection.iter().find_map(|s| match s {
         Sel::Face { body, index, point } => crate::dialogs::planar_face(&app.session, body, *index).map(|(_, n)| (*point, n)),
@@ -3357,11 +3358,11 @@ pub fn look_at_selection(app: &mut SolveApp) {
     });
     match target {
         Some((p, n)) => {
-            let mut to = app.cam.looking_from(n);
+            let mut to = app.cam.looking_from(crate::dialogs::facing(app, n, true));
             to.target = p;
             app.animate_to(to);
         }
-        None => crate::dialogs::look_at_sketch(app),
+        None => crate::dialogs::look_at_sketch_again(app),
     }
 }
 
@@ -4108,6 +4109,40 @@ mod tests {
             app.viewport.gpu = Some(GpuTarget { format: egui_wgpu::wgpu::TextureFormat::Rgba8Unorm, depth: None, samples: 1, tess: false });
         }
         app
+    }
+
+    fn space(pressed: bool) -> egui::Event {
+        egui::Event::Key { key: egui::Key::Space, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::default() }
+    }
+
+    /// Holding Space is a momentary pan: the drag moves the view rather than the geometry under the
+    /// pointer, in every preset. The point is over the sketch's own point, so without Space this
+    /// drag would drag it (and the undo stack would grow).
+    #[test]
+    fn holding_space_pans_instead_of_dragging_geometry() {
+        for preset in crate::prefs::NAV_PRESETS.iter().map(|p| p.id) {
+            let ctx = egui::Context::default();
+            let mut app = hover_app(false);
+            app.preferences.nav = preset.into();
+            app.ui.show_origin = false;
+            hover_frame(&mut app, &ctx, vec![]);
+            let point = projection(&app, app.viewport.rect.unwrap()).to_screen(Vec3::ZERO).unwrap();
+            let before = app.cam;
+            let undo = app.session.undo.len();
+            let press = |pressed: bool, at: Pos2| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::default(),
+            };
+            hover_frame(&mut app, &ctx, vec![space(true)]);
+            hover_frame(&mut app, &ctx, vec![space(true), egui::Event::PointerMoved(point), press(true, point)]);
+            hover_frame(&mut app, &ctx, vec![space(true), egui::Event::PointerMoved(point + vec2(40.0, 25.0))]);
+            assert_ne!(app.cam, before, "{preset}: holding Space must pan the view");
+            assert_eq!(app.session.undo.len(), undo, "{preset}: holding Space must not edit the design");
+            assert!(app.viewport.point_drag.is_none(), "{preset}: holding Space must not drag geometry");
+            hover_frame(&mut app, &ctx, vec![press(false, point + vec2(40.0, 25.0)), space(false)]);
+        }
     }
 
     #[test]

@@ -300,6 +300,14 @@ thread_local! {
 /// The result carries its exact history ([`Body::history`]) over the operands `[a, b]`,
 /// whichever way it was made, or none where a step it took does not report one.
 pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
+    // Earlier coarse bores can leave a junction a later pattern copy cannot intersect.
+    // Resolve conical-cut junctions from the first copy, while the operands are unchanged.
+    if op == BoolOp::Cut && !APART.with(|c| c.get()) && conical_cut_junction(a, b) {
+        let refined = |a: &Body, b: &Body, op| boolean_whole_with_refinement(a, b, op, true);
+        if let Ok(result) = boolean_via(a, b, op, &refined) {
+            return Ok(result);
+        }
+    }
     let r = boolean_via(a, b, op, &boolean_whole);
     if r.is_ok() || !crate::tangent_cylinders::needed(a, b) {
         return r;
@@ -310,6 +318,19 @@ pub fn boolean(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
         crate::tangent_cylinders::boolean(a, b, op, &boolean_whole).unwrap_or_else(|| Err(KernelError::Failed("no split of faces helps".into())))
     };
     boolean_via(a, b, op, &split).or(r)
+}
+
+/// A conical cutter meeting a body with an earlier conical cut needs finer tracing at
+/// their junctions. Guard the analytic recognition as well as the Boolean itself.
+fn conical_cut_junction(a: &Body, b: &Body) -> bool {
+    guard("conical cut junction", || {
+        let conical = |body: &Body| {
+            let tol = (body.size() * 1e-5).max(1e-7);
+            body.solid.face_iter().any(|face| matches!(crate::offset::surf_of(face, tol), Some(crate::offset::Surf::Cone { .. })))
+        };
+        Ok(conical(b) && conical(a))
+    })
+    .unwrap_or(false)
 }
 
 /// [`boolean`], the boolean of the whole bodies taken by `whole`.
@@ -491,6 +512,15 @@ fn meeting_size(a: &Body, b: &Body) -> f64 {
     if s.x > 0.0 && s.y > 0.0 && s.z > 0.0 { s.x.min(s.y).min(s.z) } else { f64::INFINITY }
 }
 
+/// Smallest side of the box where the bounds of two meshes overlap (infinite when they don't).
+/// Unlike [`meeting_size`], this follows curved faces: a cylinder's vertices are only the points
+/// on its seam, so its vertex box says nothing about where its side reaches.
+fn mesh_meeting_size(a: &solidcraft_geom::Mesh, b: &solidcraft_geom::Mesh) -> f64 {
+    let (ba, bb) = (a.bounds(), b.bounds());
+    let s = solidcraft_geom::Aabb3 { min: ba.min.max(bb.min), max: ba.max.min(bb.max) }.size();
+    if s.x > 0.0 && s.y > 0.0 && s.z > 0.0 { s.x.min(s.y).min(s.z) } else { f64::INFINITY }
+}
+
 /// Whether a result volume is plausible for `op`: within the bounds the operands' volumes
 /// leave, plus the slack the meshed volumes are measured to.
 fn plausible(v: f64, op: BoolOp, va: f64, vb: f64, slack: f64) -> bool {
@@ -548,6 +578,10 @@ fn swept_prism(a: &Body, b: &Body, op: BoolOp) -> Option<Body> {
 }
 
 fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
+    boolean_whole_with_refinement(a, b, op, false)
+}
+
+fn boolean_whole_with_refinement(a: &Body, b: &Body, op: BoolOp, refine: bool) -> Result<Option<Body>> {
     if let Some(body) = swept_prism(a, b, op) {
         return Ok(Some(body));
     }
@@ -561,7 +595,7 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
     // refined: a round side trimmed to a thin band (a short boss crossing a gently sloping
     // floor) is otherwise spanned by triangles cutting through it, which reads as missing
     // material.
-    let tol_m = (size * 5e-4).min(meeting_size(a, b) * 2e-3).max(size * 1e-5);
+    let mut tol_m = (size * 5e-4).min(meeting_size(a, b) * 2e-3).max(size * 1e-5);
     // A prism pair (a plate and the tool through it) is decided exactly in 2D, with no mesh of
     // either operand. The sampled shortcuts below need a refined mesh of both, and that mesh is
     // most of what a boolean costs: a pattern or a multi-profile sketch rebuilds the whole
@@ -585,7 +619,30 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
             return Ok(Some(body.clone()));
         }
     }
-    let meshes = (a.tessellate_with(tol_m, true).ok(), b.tessellate_with(tol_m, true).ok());
+    let mut meshes = (a.tessellate_with(tol_m, true).ok(), b.tessellate_with(tol_m, true).ok());
+    // The vertex boxes above miss a curved operand's reach (a cylinder has only seam vertices),
+    // so a thin meeting region of curved bodies kept the coarse step: a sliver 0.5 mm thick was
+    // faceted at 0.017 mm and a correct result failed the membership test. The meshes just made
+    // do span the bodies, so the step is set again from where they meet and the meshes are
+    // remade once, when that is a much finer step.
+    let refined = match &meshes {
+        // A meeting box only a few steps thick is the tessellation error of bodies that merely
+        // touch or miss each other: a finer mesh there cannot help and only slows the operation.
+        (Some(ma), Some(mb)) => {
+            let meet = mesh_meeting_size(ma, mb);
+            (meet > tol_m * 8.0).then(|| (size * 5e-4).min(meet * 2e-3).max(size * 1e-5))
+        }
+        _ => None,
+    };
+    if let Some(refined) = refined
+        && refined < tol_m * 0.5
+    {
+        let again = (a.tessellate_with(refined, true).ok(), b.tessellate_with(refined, true).ok());
+        if again.0.is_some() && again.1.is_some() {
+            tol_m = refined;
+            meshes = again;
+        }
+    }
     let (va, vb) = match &meshes {
         (Some(ma), Some(mb)) => (ma.measure().volume, mb.measure().volume),
         _ => (volume(a), volume(b)),
@@ -622,6 +679,25 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
         };
         (consistent, v)
     };
+    if refine {
+        let keep: Vec<Vec<Vec3>> = a.split_keep().iter().chain(b.split_keep()).cloned().collect();
+        // Bounded to two finer meshes; no tool displacement or relaxed acceptance tests.
+        for k in [1e-5, 1e-6] {
+            let tol = (size * k).max(1e-6);
+            if let Ok((solid, history)) = truck_boolean(a, b, op, None, tol)
+                && !solid.boundaries().is_empty()
+                && let Ok(body) = guard("refined boolean result", || recorded::truck_result(solid, history, size, &keep, &counts))
+                && check(&body).0
+                && crate::boolean_guard::check_retry(a, b, op, Some(&body)).is_ok()
+            {
+                let mut event = BooleanFallback::new(BooleanStrategy::RefinedTolerance);
+                event.tolerance_mm = tol;
+                record(event);
+                return Ok(Some(body));
+            }
+        }
+        return Err(KernelError::Failed("no reliable result at refined tolerances".into()));
+    }
     // One body clear of or inside the other: no intersection needed.
     // Kept for the end when the facetings disagree with it: bodies that touch along curved
     // faces can pass through each other slightly, and often can't be intersected.
@@ -830,6 +906,18 @@ fn boolean_whole(a: &Body, b: &Body, op: BoolOp) -> Result<Option<Body>> {
             {
                 merge(diagnostics);
                 return Ok(Some(body));
+            }
+        }
+        // A whole turn of a cylinder or cone bounded by one wire along its seam (as STEP files
+        // write them) can't be divided by a loop lying inside it, and the tries below end in a
+        // nudged tool, or fail: the same boolean with such faces in two halves, which is exact.
+        if attempt == 1 && crate::seam_faces::needed(a, b) {
+            let (halves, diagnostics) = capture_boolean_diagnostics(|| crate::seam_faces::boolean(a, b, op, &boolean));
+            if let Some(Ok(r)) = halves
+                && r.as_ref().is_none_or(|body| check(body).0)
+            {
+                merge(diagnostics);
+                return Ok(r);
             }
         }
         let shift = mt::Vector3::new(j[0], j[1], j[2]) * (size * 0.01);
