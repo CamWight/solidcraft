@@ -45,10 +45,15 @@ to the same user installation:
 
 ```sh
 flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
-flatpak remote-add --user --if-not-exists solidcraft https://bherbruck.github.io/solidcraft/flatpak/solidcraft.flatpakrepo
+flatpak remote-add --user --if-not-exists solidcraft https://docs.solidcraft.io/flatpak/solidcraft.flatpakrepo
 flatpak install --user solidcraft ai.storyteller.solidcraft
 flatpak run ai.storyteller.solidcraft
 ```
+
+A SolidCraft remote added before the project moved to `docs.solidcraft.io` (from
+`bherbruck.github.io`) no longer finds updates. Point it at the new address, then update:
+`flatpak remote-modify --user --url=https://docs.solidcraft.io/flatpak/repo/ solidcraft` and
+`flatpak update --user`.
 
 Releases up to 0.7 used the application ID `ai.storyteller.solvecraft`. If you installed one
 of those from the SolidCraft remote, `flatpak update --user` reports it as end-of-life and offers
