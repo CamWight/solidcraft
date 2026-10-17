@@ -1201,7 +1201,7 @@ const MAX_INTERFERENCE_PAIRS: usize = 20_000;
 
 /// Index pairs `(i, j)`, `i < j`, whose boxes overlap or touch (sort and sweep along X), at most
 /// `limit` of them, plus how many more there were.
-fn overlapping_pairs(boxes: &[Aabb3], limit: usize) -> (Vec<(usize, usize)>, usize) {
+pub(crate) fn overlapping_pairs(boxes: &[Aabb3], limit: usize) -> (Vec<(usize, usize)>, usize) {
     let mut order: Vec<usize> = (0..boxes.len()).collect();
     order.sort_by(|&a, &b| match (boxes.get(a), boxes.get(b)) {
         (Some(a), Some(b)) => a.min.x.total_cmp(&b.min.x),

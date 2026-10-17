@@ -145,8 +145,8 @@ impl ModelBody {
         Some((Arc::new(plan), Arc::new(mesh)))
     }
 
-    /// The display mesh's chord tolerance: 1/1000 of the body's size.
-    fn display_tol(&self) -> f64 {
+    /// The chord tolerance of [`ModelBody::mesh`] (mm): 1/1000 of the body's size, at least 1 µm.
+    pub fn display_tol(&self) -> f64 {
         (self.body.size() * 1e-3).max(1e-3)
     }
 

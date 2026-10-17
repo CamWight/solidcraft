@@ -216,6 +216,57 @@ fn generated_knots(kind: &str, n_ctrl: usize, degree: usize) -> R<mt::KnotVec> {
     Ok(mt::KnotVec::from(v))
 }
 
+/// The ends of the part of a knot vector where a B-spline of `degree` is defined, when its end
+/// knots repeat fewer than `degree + 1` times (an unclamped or periodic knot vector, as
+/// OpenCascade writes closed B-splines and `UNIFORM_*` curves and surfaces have): only between
+/// knot `degree` and knot `len - degree - 1` do the basis functions sum to one. `None` for a
+/// clamped vector, whose whole range is the domain, and for one whose domain is a point.
+fn unclamped_ends(kv: &mt::KnotVec, degree: usize) -> Option<(Option<f64>, Option<f64>)> {
+    let n = kv.len();
+    if n < 2 * (degree + 1) || !(kv[n - 1 - degree] - kv[degree] > mt::TOLERANCE) {
+        return None;
+    }
+    let lo = (kv.multiplicity(0) <= degree).then(|| kv[degree]);
+    let hi = (kv.multiplicity(n - 1) <= degree).then(|| kv[n - 1 - degree]);
+    (lo.is_some() || hi.is_some()).then_some((lo, hi))
+}
+
+/// `c` restricted to its domain, with clamped ends (exact: knots are inserted at the domain's
+/// ends and the control points beyond them dropped). The kernel takes a B-spline's whole knot
+/// range as its parameter range, and an unclamped curve evaluated outside its domain leaves
+/// its control polygon (a rational one divides by zero at the outermost knots).
+fn clamped_curve<P: mt::control_point::ControlPoint<f64> + mt::Tolerance>(mut c: mt::BSplineCurve<P>) -> mt::BSplineCurve<P> {
+    let Some((lo, hi)) = unclamped_ends(c.knot_vec(), c.degree()) else { return c };
+    if let Some(lo) = lo {
+        c = c.cut(lo);
+    }
+    if let Some(hi) = hi {
+        let _ = c.cut(hi);
+    }
+    c
+}
+
+/// [`clamped_curve`] for a surface, in each direction whose knot vector is unclamped.
+fn clamped_surface<P: mt::control_point::ControlPoint<f64> + mt::Tolerance>(mut s: mt::BSplineSurface<P>) -> mt::BSplineSurface<P> {
+    if let Some((lo, hi)) = unclamped_ends(s.uknot_vec(), s.udegree()) {
+        if let Some(lo) = lo {
+            s = s.ucut(lo);
+        }
+        if let Some(hi) = hi {
+            let _ = s.ucut(hi);
+        }
+    }
+    if let Some((lo, hi)) = unclamped_ends(s.vknot_vec(), s.vdegree()) {
+        if let Some(lo) = lo {
+            s = s.vcut(lo);
+        }
+        if let Some(hi) = hi {
+            let _ = s.vcut(hi);
+        }
+    }
+    s
+}
+
 fn weights_list(p: Option<&Param>) -> R<Vec<f64>> {
     p.and_then(Param::as_list)
         .ok_or("rational B-spline without weights")?
@@ -267,9 +318,9 @@ fn bspline_curve(cx: &Ctx, e: &Entity) -> R<CurveGeo> {
         Some(r) => {
             let w = weights_list(r.first())?;
             let n = mt::NurbsCurve::<mt::Vector4>::try_from_bspline_and_weights(bsp, w).map_err(|e| format!("rational B-spline: {e}"))?;
-            Ok(CurveGeo::Nurbs(n))
+            Ok(CurveGeo::Nurbs(mt::NurbsCurve::new(clamped_curve(n.into_non_rationalized()))))
         }
-        None => Ok(CurveGeo::BSpline(bsp)),
+        None => Ok(CurveGeo::BSpline(clamped_curve(bsp))),
     }
 }
 
@@ -889,9 +940,9 @@ pub(crate) fn bspline_surface(cx: &Ctx, e: &Entity) -> R<mt::Surface> {
                 return Err("weights do not match the control net".into());
             }
             let n = mt::NurbsSurface::<mt::Vector4>::try_from_bspline_and_weights(bsp, w).map_err(|e| format!("rational surface: {e}"))?;
-            Ok(mt::Surface::NurbsSurface(n))
+            Ok(mt::Surface::NurbsSurface(mt::NurbsSurface::new(clamped_surface(n.into_non_rationalized()))))
         }
-        None => Ok(mt::Surface::BSplineSurface(bsp)),
+        None => Ok(mt::Surface::BSplineSurface(clamped_surface(bsp))),
     }
 }
 

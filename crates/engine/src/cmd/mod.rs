@@ -21,6 +21,7 @@ macro_rules! planned {
 }
 
 mod browser;
+mod clearance;
 mod clipboard;
 mod compare;
 mod component;
@@ -251,6 +252,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(component::COMMANDS.iter());
     v.extend(component_link::COMMANDS.iter());
     v.extend(joints::COMMANDS.iter());
+    v.extend(clearance::COMMANDS.iter());
     v.extend(motion::COMMANDS.iter());
     v.extend(config::COMMANDS.iter());
     v.extend(parts::COMMANDS.iter());

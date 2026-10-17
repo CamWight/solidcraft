@@ -719,6 +719,13 @@ fn component_items(app: &SolveApp, id: u64) -> Vec<Item> {
     v
 }
 
+/// Explode Text (#1842): the selected text's outlines become normal sketch lines, arcs and
+/// curves, no longer tied to the text, so they can be picked, trimmed and edited one by one.
+fn explode_text(app: &SolveApp) -> Option<Item> {
+    let link = crate::sketch_text::selected_link(app)?;
+    Some(cmd(app, "sketch.break_link", "Explode Text").with(json!({ "link": link })))
+}
+
 /// Sketch entity items: construction, fix, delete, dimension and the constraints the selection
 /// can take.
 fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
@@ -754,6 +761,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     if curves.is_empty() && points.is_empty() {
         if crate::sketch_text::selected_entity(app).is_some() {
             v.push(cmd(app, "sketch.edit_text", "Edit Text"));
+            v.extend(explode_text(app));
         }
         v.push(cmd(app, "sketch.line", "Line"));
         v.push(cmd(app, "sketch.rectangle.two_point", "Rectangle"));
@@ -773,6 +781,7 @@ fn sketch_entity_items(app: &SolveApp) -> Vec<Item> {
     }
     if crate::sketch_text::selected_entity(app).is_some() {
         v.push(cmd(app, "sketch.edit_text", "Edit Text"));
+        v.extend(explode_text(app));
     }
     v.push(cmd(app, "sketch.move", "Move/Copy").key("M"));
     v.push(act("ui.cut", "Cut", "").key("Ctrl+X"));
