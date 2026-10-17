@@ -1835,7 +1835,7 @@ pub(crate) fn rotate_about(p: Vec3, center: Vec3, k: Vec3, angle: f64) -> Vec3 {
 
 /// The path as a polyline: its first point, then each segment's points (arcs within 0.01 mm of
 /// their chords).
-pub(crate) fn path_polyline(path: &[PathSeg]) -> Result<Vec<Vec3>> {
+pub fn path_polyline(path: &[PathSeg]) -> Result<Vec<Vec3>> {
     let first = match path.first() {
         Some(PathSeg::Line { a, .. } | PathSeg::Arc { a, .. }) => *a,
         None => return Err(KernelError::Invalid("the path needs 1…1000 segments".into())),

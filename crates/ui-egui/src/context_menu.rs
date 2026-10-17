@@ -342,8 +342,8 @@ pub fn items(app: &SolveApp, target: &Target) -> Vec<Item> {
         Target::Workspace => {
             let rendering = crate::render_workspace::active(app);
             let mut v = vec![
-                act("ui.workspace.design", "Design", "box").with(json!({"workspace":"design"})).key(if rendering { "" } else { "current" }),
-                act("ui.workspace.render", "Render", "camera")
+                act("ui.workspace.design", "Design", "ws_design").with(json!({"workspace":"design"})).key(if rendering { "" } else { "current" }),
+                act("ui.workspace.render", "Render", "ws_render")
                     .with(json!({"workspace":"render"}))
                     .key(if rendering { "current" } else { "" })
                     .on(app.session.active_sketch.is_none() && app.tool.is_none() && app.dialog.is_none() && !app.file_load.busy()),

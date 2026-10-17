@@ -1001,7 +1001,7 @@ pub fn world_preview(s: &Session, cmds: &[(String, Value)], colors: Colors) -> O
         .map(|(_, r)| r.clone());
     let (before, after) = (preview.before, preview.after);
     // A moved component looks like itself (no new surface), with its old place as the ghost.
-    let colors = Colors { added: colors.body, ..colors };
+    let colors = Colors { added: colors.body, new_body: colors.body, ..colors };
     let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::preview::build(&before, &after, colors)));
     Some(match built {
         Ok(mut b) => {

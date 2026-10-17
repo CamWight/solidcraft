@@ -206,15 +206,20 @@ cargo run --release -p solidcraft-cli -- snapshot examples/bracket.json --out br
 cargo run --release -p solidcraft-cli -- render examples/render-studio.json --out product.png
 cargo run --release -p solidcraft -- part.step          # open a STEP file as a new design
 cargo run --release -p solidcraft-cli -- eval part.step # measure an imported STEP file
-cargo xtask ci                                          # fmt, clippy, tests, assets, layers, wasm
+cargo xtask ci                                          # fmt, clippy, tests, icons, assets, layers, wasm
 ```
+
+UI artwork changes follow the [icon specification](assets/icons/ui/STYLE_GUIDE.md).
+The [included review tool](assets/icons/ui/README.md) discovers new icons and keeps
+unaccepted artwork Open; run `cargo xtask icons` to check the collection.
 
 Windows builds: `cargo xwin build --release --target x86_64-pc-windows-msvc -p solidcraft`.
 
 On Windows and Linux, SolidCraft detects a connected 3Dconnexion SpaceNavigator or SpaceMouse through its
 multi-axis HID interface. Move the cap to pan and zoom, and tilt or twist it to rotate the 3D view.
 While editing a sketch, the cap pans and zooms without changing the sketch view. The Navigation
-page in Preferences has an on/off switch and a speed control for the 3D mouse. The web app reads
+page in Preferences has an on/off switch, a speed control and, for each of the cap's six axes, an
+invert switch and a speed for the 3D mouse. The web app reads
 it too, through the browser; Firefox needs a 3DxWare setting first (see
 [Getting started › 3D mouse in the browser](docs/book/src/guide/getting-started.md#3d-mouse-in-the-browser)).
 
