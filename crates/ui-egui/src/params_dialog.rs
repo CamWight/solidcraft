@@ -280,7 +280,7 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
             if r.source == "user" {
                 let mut sel = UNITS.iter().position(|u| *u == r.unit).unwrap_or(0);
                 let before = sel;
-                egui::ComboBox::from_id_salt(("punit", &r.name)).width(56.0).selected_text(unit_label(&r.unit)).show_ui(ui, |ui| {
+                egui::ComboBox::from_id_salt(("punit", salt, &r.name)).width(56.0).selected_text(unit_label(&r.unit)).show_ui(ui, |ui| {
                     for (i, u) in UNITS.iter().enumerate() {
                         ui.selectable_value(&mut sel, i, unit_label(u));
                     }
@@ -301,10 +301,15 @@ fn table(app: &mut SolveApp, ui: &mut egui::Ui, d: &mut ParamsDialog, rows: &[&R
             if bad {
                 te = te.text_color(t.error);
             }
-            let id = ui.make_persistent_id(("pexpr", &r.name));
+            // Per table: a favourite is listed twice, and one id would give both boxes the focus and
+            // each key to both (#1767).
+            let id = ui.make_persistent_id(("pexpr", salt, &r.name));
             let focused = ui.memory(|m| m.has_focus(id));
             let resp = ui.add_sized([170.0, 20.0], te.id(id));
             crate::scenario::publish_handle(&format!("param:{}", r.name), resp.rect.center());
+            if salt == "fav" {
+                crate::scenario::publish_handle(&format!("param:favorite:{}", r.name), resp.rect.center());
+            }
             let completed = complete(ui, &resp, &mut e);
             if resp.changed() || completed {
                 d.editing.insert(r.name.clone(), e.clone());
@@ -547,5 +552,30 @@ mod tests {
         assert!(r.iter().any(|x| x.name == "width" && x.source == "user"));
         assert!(check(&mut app, "width / 2", "mm").is_ok());
         assert!(check(&mut app, "width + 1 deg", "mm").is_err());
+    }
+
+    /// A favourite is listed twice, under Favorites and in its own table; typing into either of its
+    /// expression boxes enters each key once (#1767: `1.1` came out `1.11.1`).
+    #[test]
+    fn a_favourite_parameter_takes_each_key_once() {
+        for (favourite, row) in [(false, 0), (true, 0), (true, 1)] {
+            let mut h = crate::scenario::Harness::new();
+            h.app.home.open = false;
+            h.app.run("parameters.add", json!({"name": "width", "expression": "10 mm"})).unwrap();
+            if favourite {
+                h.app.run("parameters.favorite", json!({"name": "width", "favorite": true})).unwrap();
+            }
+            h.step(&json!({"start": "parameters.change"})).unwrap();
+            h.frames(4);
+            // `param:width` is the box in the parameter's own table, `param:favorite:width` the one
+            // under Favorites.
+            h.step(&json!({"click": {"handle": if row == 0 { "param:width" } else { "param:favorite:width" }}})).unwrap();
+            h.frames(2);
+            h.step(&json!({"key": "A", "cmd": true})).unwrap();
+            h.step(&json!({"text": "1.1"})).unwrap();
+            h.frames(2);
+            let editing = h.app.params.as_ref().unwrap().editing.get("width").cloned();
+            assert_eq!(editing.as_deref(), Some("1.1"), "favourite {favourite}, row {row}");
+        }
     }
 }
