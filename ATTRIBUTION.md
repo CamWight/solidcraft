@@ -82,6 +82,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/icons/ui/source/pointer.rs | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/de.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/en.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
+| assets/locales/es.json | jawler | Spanish (Spain) translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/fr.json | rlartot | French translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/gl.json | Pablo López (pablopeza) | Galician translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/ja.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |

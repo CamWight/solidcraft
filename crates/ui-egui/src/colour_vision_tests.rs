@@ -711,6 +711,7 @@ fn the_sections_messages_are_in_every_catalog() {
         .chain(["ui.colour_vision", "ui.colour_vision_mode", "ui.colour_vision_sample", "ui.colour_vision_note"])
         .collect();
     for (lang, text) in [
+        ("cs", include_str!("../../../assets/locales/cs.json")),
         ("de", include_str!("../../../assets/locales/de.json")),
         ("ja", include_str!("../../../assets/locales/ja.json")),
         ("ko", include_str!("../../../assets/locales/ko.json")),
