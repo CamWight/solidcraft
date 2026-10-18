@@ -481,14 +481,16 @@ fn two_sides_with_all_shows_distance_2_and_reverse_swaps_the_sides() {
     open(&mut h);
     assert!(h.widget("Distance 2").is_some(), "Two Sides with All shows the second side's distance");
     assert!(h.widget("Reverse Direction").is_some(), "Two Sides offers Reverse");
-    // The first side's arrow goes up (through all) and the second's down; Reverse swaps them.
-    let tips = || (crate::scenario::handle_at("arrow").unwrap().y, crate::scenario::handle_at("arrow2").unwrap().y);
+    // The first side's arrow goes up (through all) and the second's down, either side of the
+    // hole's centre on screen; Reverse swaps them.
+    let centre = h.at(&json!({"world":[10,10,0]})).unwrap()[1] as f32;
+    let tips = || (crate::scenario::handle_at("arrow").unwrap().y - centre, crate::scenario::handle_at("arrow2").unwrap().y - centre);
     let (first, second) = tips();
-    assert!(first < second, "the first side's arrow is above: {first} {second}");
+    assert!(first < 0.0 && second > 0.0, "the first side's arrow is above the sketch, the second's below: {first} {second}");
     h.step(&json!({"widget":"Reverse Direction"})).unwrap();
     h.frames(2);
     let (first, second) = tips();
-    assert!(first > second, "reversed, the first side's arrow is below: {first} {second}");
+    assert!(first > 0.0 && second < 0.0, "reversed, the first side's arrow is below, the second's above: {first} {second}");
     h.step(&json!({"widget":"OK"})).unwrap();
     assert!(h.app.dialog.is_none(), "{:?}", h.app.session.log);
     let e = extent(&h);
