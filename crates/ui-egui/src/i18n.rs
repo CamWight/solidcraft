@@ -104,8 +104,12 @@ impl Locale {
         interpolate(self.text(id), args)
     }
 
-    /// The default names SolidCraft gives (`Sketch1`, `Body2`, `Component3`), translated.
+    /// The default names SolidCraft gives (`Untitled` for a new design, `Sketch1`, `Body2`,
+    /// `Component3`), translated.
     fn default_name(self, text: &str) -> Option<String> {
+        if text == "Untitled" {
+            return Some(self.text("ui.untitled").to_string());
+        }
         for (prefix, id) in [("Sketch", "browser.sketch_name"), ("Body", "browser.body_name"), ("Component", "browser.component_name")] {
             if let Some(number) = text.strip_prefix(prefix)
                 && !number.is_empty()
@@ -227,6 +231,19 @@ mod tests {
         let ids: Vec<&str> = LOCALES.iter().map(|c| c.id).collect();
         assert_eq!(ids.first(), Some(&"en"));
         assert!(ids[1..].is_sorted(), "{ids:?}");
+    }
+
+    /// A new design's name, `Untitled`, is a default name like `Sketch1`: it shows translated
+    /// wherever the design's name is shown (the tab, the browser's top row, the save prompt).
+    #[test]
+    fn a_new_designs_name_is_translated_like_the_other_default_names() {
+        let ja = Locale::for_language("ja");
+        assert_eq!(ja.given_name("Untitled"), ja.text("ui.untitled"));
+        assert_ne!(ja.given_name("Untitled"), "Untitled");
+        assert_eq!(Locale::for_language("en").given_name("Untitled"), "Untitled");
+        // Only the whole default name: names people type stay as typed.
+        assert_eq!(ja.given_name("Untitled bracket"), "Untitled bracket");
+        assert_eq!(ja.given_name("Boss"), "Boss");
     }
     use std::collections::BTreeSet;
 

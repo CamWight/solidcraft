@@ -23,14 +23,14 @@ fn english_ids() -> BTreeMap<String, Vec<String>> {
 }
 
 /// Every piece of text one more frame paints: whole texts, and the parts of a composed one
-/// ("SKETCH › CREATE", "R   SKETCH › CREATE").
+/// ("SKETCH › CREATE", "R   SKETCH › CREATE", a tab's "Untitled •").
 fn painted(h: &mut Harness) -> BTreeSet<String> {
     fn walk(shape: &egui::Shape, out: &mut BTreeSet<String>) {
         match shape {
             egui::Shape::Text(t) => {
                 let text = t.galley.job.text.trim();
                 out.insert(text.to_string());
-                for part in text.split(['›', '·']).flat_map(|p| p.split("   ")) {
+                for part in text.split(['›', '·', '•']).flat_map(|p| p.split("   ")) {
                     out.insert(part.trim().to_string());
                 }
             }
@@ -65,12 +65,13 @@ fn design_names(app: &SolveApp) -> BTreeSet<String> {
 
 /// Texts painted in English although every catalog entry with that English text is translated
 /// in `language`. (When one entry with the text is still English there, English is right.)
-/// `names` are the design's own names, which are not UI text.
+/// `names` are the design's own names, which are not UI text, except the default names the
+/// language translates (a new design's `Untitled`, `Sketch1`): those must show translated.
 fn english_leaks(language: &str, texts: &BTreeSet<String>, english: &BTreeMap<String, Vec<String>>, names: &BTreeSet<String>) -> Vec<String> {
     let locale = crate::i18n::Locale::for_language(language);
     texts
         .iter()
-        .filter(|text| !names.contains(*text))
+        .filter(|text| !names.contains(*text) || locale.given_name(text) != text.as_str())
         .filter(|text| english.get(*text).is_some_and(|ids| ids.iter().all(|id| locale.text(id) != text.as_str())))
         .cloned()
         .collect()
