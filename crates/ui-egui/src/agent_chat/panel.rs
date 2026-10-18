@@ -129,9 +129,19 @@ fn picture_strip(ui: &mut egui::Ui, n: usize, pictures: &[Picture]) -> Option<us
     let mut clicked = None;
     ui.horizontal_wrapped(|ui| {
         for (i, picture) in pictures.iter().enumerate() {
-            let Some(texture) = picture.texture(ui.ctx()) else {
-                ui.label(RichText::new(tr("ui.agent_chat_view_attached")).color(t.text_dim).size(11.0));
-                continue;
+            let texture = match picture.texture(ui.ctx()) {
+                Shown::Ready(texture) => texture,
+                // Being decoded: a spinner the size of a thumbnail's corner, until it is in.
+                Shown::Loading => {
+                    ui.add(egui::Spinner::new().size(THUMB_MAX.1 / 2.0));
+                    continue;
+                }
+                // Not a readable picture: its name, or the plain caption.
+                Shown::Failed => {
+                    let caption = if picture.note.is_empty() { tr("ui.agent_chat_view_attached").to_string() } else { picture.note.clone() };
+                    ui.label(RichText::new(caption).color(t.text_dim).size(11.0));
+                    continue;
+                }
             };
             let size = fit(texture.size_vec2(), vec2(THUMB_MAX.0, THUMB_MAX.1));
             let thumb = ui.add(egui::Image::new((texture.id(), size)).corner_radius(4.0).sense(Sense::click()));
@@ -186,9 +196,17 @@ fn gallery_window(app: &mut SolveApp, ctx: &egui::Context) {
             ui.label(RichText::new(format!("{} / {}", gallery.at + 1, count)).color(t.text_dim));
         });
         if let Some(picture) = gallery.pictures.get(gallery.at) {
-            if let Some(texture) = picture.texture(ui.ctx()) {
-                let resp = ui.add(egui::Image::new((texture.id(), fit(texture.size_vec2(), max))).corner_radius(4.0));
-                crate::scenario::publish_rect("agent_chat:gallery_picture", resp.rect);
+            match picture.texture(ui.ctx()) {
+                Shown::Ready(texture) => {
+                    let resp = ui.add(egui::Image::new((texture.id(), fit(texture.size_vec2(), max))).corner_radius(4.0));
+                    crate::scenario::publish_rect("agent_chat:gallery_picture", resp.rect);
+                }
+                Shown::Loading => {
+                    ui.add(egui::Spinner::new().size(32.0));
+                }
+                Shown::Failed => {
+                    ui.label(RichText::new(tr("ui.agent_chat_view_attached")).color(t.text_dim));
+                }
             }
             if !picture.note.is_empty() {
                 ui.add(egui::Label::new(&picture.note).wrap());
