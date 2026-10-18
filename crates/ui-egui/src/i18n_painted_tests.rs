@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use solidcraft_engine::Session;
 
+use crate::context_menu::Target;
 use crate::scenario::Harness;
 use crate::{Services, SolveApp};
 
@@ -85,9 +86,10 @@ fn sample() -> Harness {
     h
 }
 
-/// The surfaces the sweep opens, each in every language: the window with the sample design, and
-/// the S command search with nothing typed (the first rows of every command, by name) and with
-/// a query.
+/// The surfaces the sweep opens, each in every language: the window with the sample design; the
+/// S command search with nothing typed (the first rows of every command, by name) and with two
+/// queries; every Preferences page; and the right-click menus of the viewport, a body, the
+/// toolbar and the workspace.
 fn sweep(h: &mut Harness, language: &str) -> BTreeMap<&'static str, BTreeSet<String>> {
     h.app.preferences.language = language.into();
     let mut seen = BTreeMap::new();
@@ -101,6 +103,33 @@ fn sweep(h: &mut Harness, language: &str) -> BTreeMap<&'static str, BTreeSet<Str
         seen.insert(name, painted(h));
     }
     h.app.ui.palette_open = false;
+    let title = crate::i18n::Locale::for_language(language).text("ui.preferences").to_string();
+    for page in crate::prefs::PAGES {
+        h.call("ui.prefs", serde_json::json!({"open": page}));
+        h.frames(2);
+        let texts = painted(h);
+        assert!(texts.contains(&title), "{language}: the {page} page isn't showing");
+        seen.insert(page, texts);
+    }
+    h.call("ui.prefs", serde_json::json!({"button": "cancel"}));
+    h.frames(1);
+    let body = h.app.session.model.state().bodies.first().map(|b| b.name.clone()).unwrap_or_default();
+    let menus = [
+        ("viewport menu", Target::Viewport),
+        ("body menu", Target::Body { name: body }),
+        ("toolbar menu", Target::Toolbar),
+        ("workspace menu", Target::Workspace),
+    ];
+    for (name, target) in menus {
+        crate::context_menu::open_for(&mut h.app, egui::pos2(700.0, 400.0), target);
+        h.frames(2);
+        let texts = painted(h);
+        let new = texts.difference(&seen["window"]).count();
+        assert!(new >= 2, "{language}: the {name} isn't showing ({new} new texts)");
+        seen.insert(name, texts);
+        crate::context_menu::close(&mut h.app);
+        h.frames(1);
+    }
     seen
 }
 
