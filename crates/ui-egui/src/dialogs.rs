@@ -523,7 +523,7 @@ impl Dialog {
             "solid.pipe" => Dialog::new(Kind::Pipe { diameter: "5 mm".into(), wall: String::new() }, vec![SelInput::new("Path", CURVES, true)]),
             "solid.bounding_solid" => Dialog::new(Kind::Stock { margin: "2 mm".into() }, vec![SelInput::new("Bodies (all if none)", BODIES, true)]),
             "construct.plane.offset" => {
-                Dialog::new(Kind::OffsetPlane { offset: "10 mm".into() }, vec![SelInput::new("Plane", PLANES | PLANAR_FACES, false)])
+                Dialog::new(Kind::OffsetPlane { offset: "0 mm".into() }, vec![SelInput::new("Plane", PLANES | PLANAR_FACES, false)])
             }
             "construct.plane.midplane" => Dialog::new(
                 Kind::Midplane,
@@ -1034,6 +1034,22 @@ fn default_profiles(s: &Session) -> Vec<Sel> {
         Some((id, 1)) => vec![Sel::Profile { sketch: id, index: 0 }],
         _ => Vec::new(),
     }
+}
+
+/// The sketch point (its sketch and id) a Single hole's face place `x` sits on: the one it was
+/// opened at, else a point a shown sketch shows exactly there (where a pick snapped to it).
+fn single_hole_point(app: &SolveApp, d: &Dialog, x: &Sel) -> Option<(u64, String)> {
+    let Sel::Face { point, .. } = x else { return None };
+    if let Some(k) = d.extra.get("single_point").filter(|k| k["point"] == pt3(*point)) {
+        return Some((k["sketch"].as_u64()?, k["id"].as_str()?.to_string()));
+    }
+    let st = app.session.world_state();
+    crate::viewport::visible_sketches(app).into_iter().find_map(|sid| {
+        let ss = st.sketch(sid)?;
+        let shown = SnapPoints::of(&ss.sketch);
+        let p = ss.sketch.points.iter().find(|p| shown.takes(p) && ss.plane.to_world(p.pos).dist(*point) < 1e-9)?;
+        Some((sid, p.id.clone()))
+    })
 }
 
 /// Does an input take face places that snap to sketch points on the face (the Single hole's)?
@@ -4236,7 +4252,12 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
                     }
                     taken.extend(crate::viewport::grouped_selection(s, x));
                     let kept = d.extra.get("position_exprs").filter(|k| face_point(x).is_some_and(|p| p == k["point"])).map(|k| k["at"].clone());
-                    places.extend(face_point(x).map(|p| json!({ "position": kept.unwrap_or(p) })));
+                    // A place snapped to a sketch point keeps the point, so the hole follows it (#2110).
+                    let snapped = if kept.is_none() { single_hole_point(app, d, x) } else { None };
+                    places.extend(face_point(x).map(|p| match snapped {
+                        Some((sk, id)) => json!({"sketch": sk, "points": [id], "single": true}),
+                        None => json!({ "position": kept.unwrap_or(p) }),
+                    }));
                 }
             }
             let mut out = Vec::new();
@@ -4849,7 +4870,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                 *dia = diameter.to_string();
                 opts.all = depth.is_none();
                 opts.angled = matches!(hole, HoleKind::Drilled { .. });
-                opts.multiple = points.is_some();
+                opts.multiple = points.as_ref().is_some_and(|sp| !sp.single);
                 if let Some(th) = thread {
                     opts.tapped = true;
                     opts.thread = th.clone();
@@ -4876,6 +4897,20 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             }
             d.kind = k;
             match points {
+                Some(sp) if sp.single => {
+                    // A Single hole at a sketch point: picked on its face where the point is now.
+                    let id = sp.ids.first().cloned().unwrap_or_default();
+                    let st = s.world_state();
+                    let at = st
+                        .sketch(sp.sketch.0)
+                        .and_then(|ss| ss.sketch.points.iter().find(|p| p.id == id).map(|p| ss.plane.to_world(p.pos)))
+                        .unwrap_or(position.0);
+                    if let Some(inp) = d.inputs.first_mut() {
+                        inp.items = vec![face_sel(s, at).unwrap_or(Sel::Face { body: String::new(), index: 0, point: at })];
+                    }
+                    d.extra.insert("direction".into(), pt3(direction.0));
+                    d.extra.insert("single_point".into(), json!({"point": pt3(at), "sketch": sp.sketch.0, "id": id}));
+                }
                 Some(sp) => {
                     d.inputs = vec![SelInput::new("Points", selection::POINTS, true)];
                     if let Some(inp) = d.inputs.first_mut() {
