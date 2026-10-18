@@ -1340,6 +1340,8 @@
   "ui.save_mesh_pick_bodies": "Виберіть тіла для збереження",
   "ui.save_mesh_temp_failed": "Не вдалося створити {folder}: {error}",
   "ui.saved_to": "Збережено {path}",
+  "ui.sbox_pin": "Закріпити вгорі поля S",
+  "ui.sbox_unpin": "Відкріпити",
   "ui.scale": "Масштаб",
   "ui.section_analysis": "Аналіз перерізу",
   "ui.select": "Вибрати",

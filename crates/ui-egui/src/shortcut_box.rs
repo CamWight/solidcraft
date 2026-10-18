@@ -98,22 +98,31 @@ pub fn score(q: &str, s: &str) -> u32 {
     300u32.saturating_sub(gaps * 20).max(10)
 }
 
-/// Commands matching `q`, best first: (id, label, icon, where it lives on the toolbar). With an
-/// empty query, recent commands come first, then everything by name.
-pub fn search(app: &SolveApp, q: &str) -> Vec<(&'static str, &'static str, &'static str, String)> {
+/// Commands matching `q`, best first: (id, label, icon, where it lives on the toolbar), the
+/// label and the place in the current language. With an empty query, recent commands come
+/// first, then everything by name.
+///
+/// The query matches the label, tab and panel in the current language and in English, and the
+/// id, so a name typed in either language, or an id, finds the command in every language.
+pub fn search(app: &SolveApp, q: &str) -> Vec<(&'static str, String, &'static str, String)> {
     let q = q.trim().to_lowercase();
-    let mut v: Vec<(u32, &'static str, &'static str, &'static str, String)> = command_specs()
+    let mut v: Vec<(u32, &'static str, String, &'static str, String)> = command_specs()
         .into_iter()
         .filter_map(|c| {
-            let place = if c.tab.is_empty() { String::new() } else { format!("{} › {}", c.tab, c.panel) };
-            let s = score(&q, c.label).max(score(&q, c.id) * 9 / 10).max(score(&q, c.tab) / 3).max(score(&q, c.panel) / 3);
+            let (label, tab, panel) = (crate::i18n::tr_label(c.label), crate::i18n::tr_label(c.tab), crate::i18n::tr_label(c.panel));
+            let place = if c.tab.is_empty() { String::new() } else { format!("{tab} › {panel}") };
+            let s = score(&q, label)
+                .max(score(&q, c.label))
+                .max(score(&q, c.id) * 9 / 10)
+                .max(score(&q, tab).max(score(&q, c.tab)) / 3)
+                .max(score(&q, panel).max(score(&q, c.panel)) / 3);
             let recent = app.sbox.recent.iter().position(|r| r == c.id).map_or(0, |i| 2000 - i as u32);
             // Commands that can run now come before those that can't.
             let usable = if c.info(&app.session).enabled { 150 } else { 0 };
-            (s > 0).then_some((s + usable + if q.is_empty() { recent } else { recent / 20 }, c.id, c.label, c.icon, place))
+            (s > 0).then_some((s + usable + if q.is_empty() { recent } else { recent / 20 }, c.id, label.to_string(), c.icon, place))
         })
         .collect();
-    v.sort_by(|a, b| b.0.cmp(&a.0).then(a.2.cmp(b.2)));
+    v.sort_by(|a, b| b.0.cmp(&a.0).then(a.2.cmp(&b.2)));
     v.into_iter().map(|(_, id, label, icon, place)| (id, label, icon, place)).collect()
 }
 
@@ -178,7 +187,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             ui.painter().rect_filled(r, 4.0, t.hover);
                         }
                         icons::paint(ui.painter(), r.shrink(5.0), c.icon, t.icon, t.icon_fill, t.accent);
-                        if resp.on_hover_text(c.label).clicked() {
+                        if resp.on_hover_text(crate::i18n::tr_label(c.label)).clicked() {
                             picked = Some(c.id);
                         }
                     }
@@ -223,7 +232,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         t.accent,
                     );
                     let col = if enabled { t.text } else { t.text_dim };
-                    ui.painter().text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, *label, FontId::proportional(13.0), col);
+                    ui.painter().text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), col);
                     let key = crate::keymap::effective(app, id).unwrap_or_default();
                     let right = if key.is_empty() { place.clone() } else { format!("{key}   {place}") };
                     ui.painter().text(pos2(r.right() - 26.0, r.center().y), Align2::RIGHT_CENTER, right, FontId::proportional(10.5), t.text_dim);
@@ -245,7 +254,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         }
                         ui.painter().add(egui::Shape::closed_line(pts, Stroke::new(1.0, if pinned { t.warning } else { t.text_dim })));
                     }
-                    if presp.on_hover_text(if pinned { "Unpin" } else { "Pin to the top of the S box" }).clicked() {
+                    if presp.on_hover_text(crate::i18n::tr(if pinned { "ui.sbox_unpin" } else { "ui.sbox_pin" })).clicked() {
                         pin = Some(id);
                     } else if resp.clicked() && enabled {
                         picked = Some(id);
@@ -336,5 +345,27 @@ mod tests {
         let mut other = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
         other.sbox.load(&app.sbox.prefs());
         assert_eq!((other.sbox.pinned.clone(), other.sbox.recent.len()), (vec!["solid.extrude".to_string()], 2));
+    }
+
+    /// The box shows each command's label and place in the current language, and finds a name
+    /// typed in that language, in English, or an id (#2544).
+    #[test]
+    fn search_shows_and_matches_the_current_language() {
+        let app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        let _ja = crate::i18n::scope("ja");
+        let ja = crate::i18n::Locale::for_language("ja");
+        let name = ja.text("cmd.sketch_rectangle_center");
+        assert_ne!(name, "Center Rectangle");
+        let place = format!("{} › {}", ja.label("SKETCH"), ja.label("CREATE"));
+        for query in [name, "長方形", "center rect", "sketch.rectangle.center"] {
+            let rows = search(&app, query);
+            let row = rows.iter().find(|r| r.0 == "sketch.rectangle.center").unwrap_or_else(|| panic!("{query:?} doesn't find it"));
+            assert_eq!((row.1.as_str(), row.3.as_str()), (name, place.as_str()), "{query:?}");
+        }
+        assert_eq!(search(&app, name).first().map(|r| r.0), Some("sketch.rectangle.center"), "the exact name comes first");
+        // English is unchanged.
+        drop(_ja);
+        let row = search(&app, "center rect").into_iter().find(|r| r.0 == "sketch.rectangle.center").unwrap();
+        assert_eq!((row.1.as_str(), row.3.as_str()), ("Center Rectangle", "SKETCH › CREATE"));
     }
 }

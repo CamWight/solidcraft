@@ -1116,6 +1116,8 @@
   "ui.save_mesh_pick_bodies": "Выберите тела для сохранения",
   "ui.save_mesh_temp_failed": "Не удалось создать {folder}: {error}",
   "ui.saved_to": "Сохранено: {path}",
+  "ui.sbox_pin": "Закрепить вверху панели S",
+  "ui.sbox_unpin": "Открепить",
   "ui.scale": "Масштаб",
   "ui.section_analysis": "Анализ сечения",
   "ui.select": "Выбрать",

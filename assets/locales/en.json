@@ -1412,6 +1412,8 @@
   "ui.save_mesh_pick_bodies": "Select the bodies to save",
   "ui.save_mesh_temp_failed": "Couldn't make {folder}: {error}",
   "ui.saved_to": "Saved {path}",
+  "ui.sbox_pin": "Pin to the top of the S box",
+  "ui.sbox_unpin": "Unpin",
   "ui.scale": "Scale",
   "ui.second_rail": "Second Rail",
   "ui.section_analysis": "Section Analysis",

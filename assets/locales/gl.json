@@ -1337,6 +1337,8 @@
   "ui.save_mesh_pick_bodies": "Selecciona os corpos que queres gardar",
   "ui.save_mesh_temp_failed": "Non se puido crear {folder}: {error}",
   "ui.saved_to": "Gardado {path}",
+  "ui.sbox_pin": "Fixar arriba na caixa S",
+  "ui.sbox_unpin": "Desfixar",
   "ui.scale": "Escala",
   "ui.section_analysis": "Análise de sección",
   "ui.select": "Seleccionar",

@@ -1372,6 +1372,8 @@
   "ui.save_mesh_pick_bodies": "Sélectionner les corps à enregistrer",
   "ui.save_mesh_temp_failed": "Impossible de créer {folder} : {error}",
   "ui.saved_to": "Enregistré : {path}",
+  "ui.sbox_pin": "Épingler en haut de la boîte S",
+  "ui.sbox_unpin": "Désépingler",
   "ui.scale": "Échelle",
   "ui.second_rail": "Second rail",
   "ui.section_analysis": "Analyse de coupe",

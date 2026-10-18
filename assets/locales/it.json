@@ -1363,6 +1363,8 @@
   "ui.save_mesh_pick_bodies": "Seleziona i corpi da salvare",
   "ui.save_mesh_temp_failed": "Impossibile creare {folder}: {error}",
   "ui.saved_to": "Salvato {path}",
+  "ui.sbox_pin": "Fissa in cima al riquadro S",
+  "ui.sbox_unpin": "Sblocca",
   "ui.scale": "Scala",
   "ui.second_rail": "Seconda guida",
   "ui.section_analysis": "Analisi in sezione",

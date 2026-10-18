@@ -1264,6 +1264,8 @@
   "ui.save_mesh_pick_bodies": "Kaydedilecek gövdeleri seçin",
   "ui.save_mesh_temp_failed": "{folder} oluşturulamadı: {error}",
   "ui.saved_to": "{path} konumuna kaydedildi",
+  "ui.sbox_pin": "S kutusunun en üstüne sabitle",
+  "ui.sbox_unpin": "Sabitlemeyi kaldır",
   "ui.scale": "Ölçekle",
   "ui.section_analysis": "Kesit analizi",
   "ui.select": "Seç",

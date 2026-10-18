@@ -1109,6 +1109,8 @@
   "ui.save_mesh_pick_bodies": "저장할 바디를 선택하세요",
   "ui.save_mesh_temp_failed": "{folder}을(를) 만들 수 없습니다: {error}",
   "ui.saved_to": "저장됨: {path}",
+  "ui.sbox_pin": "S 상자 맨 위에 고정",
+  "ui.sbox_unpin": "고정 해제",
   "ui.scale": "축척",
   "ui.section_analysis": "단면 분석",
   "ui.select": "선택",

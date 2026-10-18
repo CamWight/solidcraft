@@ -1412,6 +1412,8 @@
   "ui.save_mesh_pick_bodies": "保存するボディを選択してください",
   "ui.save_mesh_temp_failed": "{folder} を作成できません: {error}",
   "ui.saved_to": "保存しました: {path}",
+  "ui.sbox_pin": "Sボックスの上部に固定",
+  "ui.sbox_unpin": "固定を解除",
   "ui.scale": "尺度",
   "ui.second_rail": "第2レール",
   "ui.section_analysis": "断面解析",

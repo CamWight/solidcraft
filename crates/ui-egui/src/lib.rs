@@ -59,6 +59,8 @@ pub mod i18n;
 #[cfg(test)]
 mod i18n_menu_tests;
 #[cfg(test)]
+mod i18n_painted_tests;
+#[cfg(test)]
 mod i18n_ui_tests;
 pub mod icon_svg;
 pub mod icons;

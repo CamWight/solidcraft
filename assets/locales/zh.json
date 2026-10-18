@@ -1412,6 +1412,8 @@
   "ui.save_mesh_pick_bodies": "请选择要保存的实体",
   "ui.save_mesh_temp_failed": "无法创建 {folder}：{error}",
   "ui.saved_to": "已保存：{path}",
+  "ui.sbox_pin": "固定到 S 框顶部",
+  "ui.sbox_unpin": "取消固定",
   "ui.scale": "缩放",
   "ui.second_rail": "第二导轨",
   "ui.section_analysis": "截面分析",
