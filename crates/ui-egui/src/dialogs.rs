@@ -1377,7 +1377,7 @@ fn tr(text: &str) -> &str {
 }
 
 /// A dialog row's widget, for scenarios and demos: the handle `dialog:<row label>`.
-fn publish_row(r: &egui::Response) {
+pub(crate) fn publish_row(r: &egui::Response) {
     ROW.with(|row| crate::scenario::publish_handle(&format!("dialog:{}", row.borrow()), r.rect.center()));
 }
 
@@ -1864,6 +1864,11 @@ fn error_rows(app: &mut SolveApp, ctx: &egui::Context, d: &mut Dialog, ui: &mut 
     {
         d.refuse(app, error);
     }
+    // For Corner dialogs (fillet/chamfer), propagate preview errors to `d.error`
+    // so impossible sizes still show a refusal message and tests can check it.
+    if matches!(d.kind, Kind::SketchModify(crate::sketch_modify_ui::Mod::Corner { .. })) && app.preview.error.is_some() && d.error.is_none() {
+        d.error = app.preview.error.clone();
+    }
     if let Some(error) = d.error.as_ref().or(app.preview.error.as_ref()).cloned() {
         if !full_width {
             row_label(ui, "");
@@ -2208,6 +2213,11 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
     let has_ok = !matches!(d.kind, Kind::Sketch | Kind::Params { .. } | Kind::Measure { .. });
     let valid = match &d.kind {
         Kind::SaveMesh(_) => crate::dialogs_save_mesh::ready(&d.inputs),
+        Kind::SketchModify(crate::sketch_modify_ui::Mod::Corner { .. }) => {
+            // Corner dialogs: preview errors are visual only; validation errors from
+            // `apply_commands` go to `d.error`. OK stays enabled when the preview fails.
+            !has_ok || (built.unwrap_or_else(|| apply_commands(app, &d).is_ok()))
+        }
         _ => !has_ok || !d.previews() || (built.unwrap_or_else(|| apply_commands(app, &d).is_ok()) && app.preview.error.is_none()),
     };
     let width = if wide { crate::frame::Width::Wide } else { crate::frame::Width::Normal };
@@ -3368,6 +3378,19 @@ fn length_default(s: &Session, number: &str) -> String {
 /// does), so OK keeps the size. Anything else shows as stored.
 fn stored_length(s: &Session, e: &str) -> String {
     if s.doc.with_design_unit(e, ValueKind::Length) == e { e.to_string() } else { format!("{} mm", e.trim()) }
+}
+
+/// A stored value as its edit field shows it (#1936): a bare number is written with the unit the
+/// engine reads it in, "2" as "2 mm" for a length and "5" as "5 deg" for an angle, so the field
+/// and the on-canvas tag name the unit as the other dialogs do. The number keeps its stored text.
+/// Counts, units already written, parameter names, expressions and empty text show as stored.
+pub(crate) fn shown_expr(e: &str, kind: ValueKind) -> String {
+    let unit = match kind {
+        ValueKind::Length => "mm",
+        ValueKind::Angle => "deg",
+        _ => return e.to_string(),
+    };
+    if solidcraft_engine::doc::expr::is_bare_number(e) { format!("{} {unit}", e.trim()) } else { e.to_string() }
 }
 
 fn hole_defaults() -> Kind {
