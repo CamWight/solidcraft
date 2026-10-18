@@ -233,7 +233,9 @@ pub struct Extent {
     pub convention: ExtrudeConvention,
     #[serde(default)]
     pub direction: Direction,
-    /// Optional second side distance (two-sided extrude), along the negative normal.
+    /// Optional second side distance (two-sided extrude): the other way from the first side (against
+    /// the normal, or along it when the first side goes against it: `direction: negative`, a
+    /// negative distance, or a To Object below the sketch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[walk(length = "Distance 2")]
     pub distance2: Option<Expr>,

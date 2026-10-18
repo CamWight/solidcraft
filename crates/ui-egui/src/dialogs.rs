@@ -19,9 +19,16 @@ use crate::viewport::Hit;
 
 pub(crate) const OPS: [&str; 4] = ["new", "join", "cut", "intersect"];
 pub(crate) const OP_LABELS: [&str; 4] = ["New Body", "Join", "Cut", "Intersect"];
-const DIRS: [&str; 4] = ["positive", "negative", "symmetric", "positive"];
+const DIRS: [&str; 5] = ["positive", "negative", "symmetric", "positive", "negative"];
 /// The "Two sides" direction (a second distance the other way).
 pub const TWO_SIDES: usize = 3;
+/// Two sides, reversed: the first side goes against the normal and the second along it (#2700).
+pub const TWO_SIDES_REVERSED: usize = 4;
+
+/// An extrude direction with a second side.
+pub fn two_sided(direction: usize) -> bool {
+    direction == TWO_SIDES || direction == TWO_SIDES_REVERSED
+}
 /// Thin Extrude wall locations, as `solid.extrude` names them, and their labels.
 const WALL_SIDES: [&str; 4] = ["center", "inside", "outside", "two_sides"];
 const WALL_LABELS: [&str; 4] = ["Center", "Inside", "Outside", "Two Sides"];
@@ -2420,10 +2427,21 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                         row_label(ui, "Direction");
                         // One Side, Two Sides, Symmetric (a flip is a negative distance).
                         let order = [0usize, TWO_SIDES, 2];
-                        let mut pos = order.iter().position(|o| o == direction).unwrap_or(0);
+                        let reversed = *direction == 1 || *direction == TWO_SIDES_REVERSED;
+                        let shown = match *direction {
+                            1 => 0,
+                            TWO_SIDES_REVERSED => TWO_SIDES,
+                            d => d,
+                        };
+                        let mut pos = order.iter().position(|o| *o == shown).unwrap_or(0);
                         combo(ui, "ex_dir", &["One Side", "Two Sides", "Symmetric"], &mut pos);
-                        if pos != order.iter().position(|o| o == direction).unwrap_or(0) {
-                            *direction = order.get(pos).copied().unwrap_or(0);
+                        if pos != order.iter().position(|o| *o == shown).unwrap_or(0) {
+                            // One Side and Two Sides keep Reverse.
+                            *direction = match (order.get(pos).copied().unwrap_or(0), reversed) {
+                                (0, true) => 1,
+                                (TWO_SIDES, true) => TWO_SIDES_REVERSED,
+                                (d, _) => d,
+                            };
                             // Selecting Symmetric applies the current total-distance semantics.
                             d.extra.insert("convention".into(), json!(solidcraft_engine::doc::ExtrudeConvention::TotalDistance));
                             // An explicit direction ends the automatic choices (#1257).
@@ -2431,11 +2449,15 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             *auto_op = false;
                         }
                         ui.end_row();
-                        if *direction < 2 {
+                        if *direction < 2 || two_sided(*direction) {
                             row_label(ui, "Reverse");
-                            let mut reverse = *direction == 1;
+                            let mut reverse = *direction == 1 || *direction == TWO_SIDES_REVERSED;
                             if ui.checkbox(&mut reverse, tr("Reverse Direction")).changed() {
-                                *direction = usize::from(reverse);
+                                *direction = match (two_sided(*direction), reverse) {
+                                    (true, true) => TWO_SIDES_REVERSED,
+                                    (true, false) => TWO_SIDES,
+                                    (false, r) => usize::from(r),
+                                };
                                 // An explicit direction ends the automatic choices (#1257).
                                 smart.manual_dir = true;
                                 *auto_op = false;
@@ -2453,15 +2475,17 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                             row_label(ui, "Distance");
                             enter |= field(ui, distance);
                             ui.end_row();
-                            if *direction == TWO_SIDES {
-                                row_label(ui, "Distance 2");
-                                enter |= field(ui, distance2);
-                                ui.end_row();
-                            }
                         }
                         if ext == 1 {
                             row_label(ui, "To Offset");
                             enter |= field(ui, to_offset);
+                            ui.end_row();
+                        }
+                        // The second side is a distance whatever the first side's extent: All one
+                        // way and a distance the other is a common two-sided cut (#2700).
+                        if two_sided(*direction) {
+                            row_label(ui, "Distance 2");
+                            enter |= field(ui, distance2);
                             ui.end_row();
                         }
                         if *direction < 2 {
@@ -3733,7 +3757,7 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
             need(0, if *thin { "curves or profiles" } else { "profiles or a planar face" })?;
             let mut common = json!({"distance": distance, "direction": DIRS.get(*direction).copied().unwrap_or("positive"), "operation": OPS.get(*operation).copied().unwrap_or("new")});
             let tapered = s.doc.eval(taper, ValueKind::Angle).map(|v| v.abs() > 1e-12).unwrap_or(!taper.trim().is_empty());
-            if *direction == TWO_SIDES {
+            if two_sided(*direction) {
                 common["distance2"] = json!(distance2);
             } else if *direction < 2 && (*taper_present || tapered) {
                 common["taper"] = json!(taper);
@@ -4678,6 +4702,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
             d.kind = Kind::Extrude {
                 distance: extent.distance.to_string(),
                 direction: match (extent.direction, &extent.distance2) {
+                    (Direction::Negative, Some(_)) => TWO_SIDES_REVERSED,
                     (_, Some(_)) => TWO_SIDES,
                     (Direction::Positive, None) => 0,
                     (Direction::Negative, None) => 1,
