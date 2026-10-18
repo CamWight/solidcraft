@@ -18,12 +18,12 @@ pub struct Palette {
 /// Commands whose id or label matches the query: (id, label in the current language, icon).
 /// The label matches in the current language and in English, so a name typed in either finds
 /// the command.
-pub fn matches(q: &str) -> Vec<(&'static str, String, &'static str)> {
+pub fn matches(q: &str) -> Vec<(&'static str, &'static str, &'static str)> {
     let q = q.trim().to_lowercase();
-    let mut v: Vec<(bool, bool, String, &'static str, &'static str)> = command_specs()
+    let mut v: Vec<(bool, bool, &'static str, &'static str, &'static str)> = command_specs()
         .into_iter()
         .filter_map(|c| {
-            let label = crate::i18n::tr_label(c.label).to_string();
+            let label = crate::i18n::tr_label(c.label);
             let (shown, english, id) = (label.to_lowercase(), c.label.to_lowercase(), c.id.to_lowercase());
             let found = q.is_empty() || shown.contains(&q) || english.contains(&q) || id.contains(&q);
             found.then(|| (!(shown.starts_with(&q) || english.starts_with(&q)), !id.starts_with(&q), label, c.id, c.icon))
@@ -125,7 +125,7 @@ pub fn popup(app: &mut SolveApp, ctx: &egui::Context) {
                     ui.horizontal(|ui| {
                         let (ir, _) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::hover());
                         crate::icons::paint(ui.painter(), ir, icon, t.icon, t.icon_fill, t.accent);
-                        if ui.add_enabled(enabled, egui::Button::new(label.as_str()).frame(false)).clicked() {
+                        if ui.add_enabled(enabled, egui::Button::new(*label).frame(false)).clicked() {
                             picked = Some(id);
                         }
                         ui.label(RichText::new(*id).size(10.5).color(t.text_dim));
@@ -154,7 +154,7 @@ mod tests {
         let name = crate::i18n::Locale::for_language("ja").text("cmd.sketch_rectangle_center");
         for query in [name, "Center Rectangle", "sketch.rectangle.center"] {
             let found = matches(query);
-            assert_eq!(found.first().map(|m| (m.0, m.1.as_str())), Some(("sketch.rectangle.center", name)), "{query:?}");
+            assert_eq!(found.first().map(|m| (m.0, m.1)), Some(("sketch.rectangle.center", name)), "{query:?}");
         }
     }
 }

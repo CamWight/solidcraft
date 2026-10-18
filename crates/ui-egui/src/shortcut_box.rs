@@ -98,19 +98,22 @@ pub fn score(q: &str, s: &str) -> u32 {
     300u32.saturating_sub(gaps * 20).max(10)
 }
 
-/// Commands matching `q`, best first: (id, label, icon, where it lives on the toolbar), the
-/// label and the place in the current language. With an empty query, recent commands come
-/// first, then everything by name.
+/// A row of the box: the command id, its label, its icon, and where it lives on the toolbar
+/// (tab, panel; `None` off the toolbar), in the current language.
+pub type Row = (&'static str, &'static str, &'static str, Option<(&'static str, &'static str)>);
+
+/// Commands matching `q`, best first. With an empty query, recent commands come first, then
+/// everything by name.
 ///
 /// The query matches the label, tab and panel in the current language and in English, and the
 /// id, so a name typed in either language, or an id, finds the command in every language.
-pub fn search(app: &SolveApp, q: &str) -> Vec<(&'static str, String, &'static str, String)> {
+pub fn search(app: &SolveApp, q: &str) -> Vec<Row> {
     let q = q.trim().to_lowercase();
-    let mut v: Vec<(u32, &'static str, String, &'static str, String)> = command_specs()
+    let mut v: Vec<(u32, Row)> = command_specs()
         .into_iter()
         .filter_map(|c| {
             let (label, tab, panel) = (crate::i18n::tr_label(c.label), crate::i18n::tr_label(c.tab), crate::i18n::tr_label(c.panel));
-            let place = if c.tab.is_empty() { String::new() } else { format!("{tab} › {panel}") };
+            let place = (!c.tab.is_empty()).then_some((tab, panel));
             let s = score(&q, label)
                 .max(score(&q, c.label))
                 .max(score(&q, c.id) * 9 / 10)
@@ -119,11 +122,39 @@ pub fn search(app: &SolveApp, q: &str) -> Vec<(&'static str, String, &'static st
             let recent = app.sbox.recent.iter().position(|r| r == c.id).map_or(0, |i| 2000 - i as u32);
             // Commands that can run now come before those that can't.
             let usable = if c.info(&app.session).enabled { 150 } else { 0 };
-            (s > 0).then_some((s + usable + if q.is_empty() { recent } else { recent / 20 }, c.id, label.to_string(), c.icon, place))
+            (s > 0).then_some((s + usable + if q.is_empty() { recent } else { recent / 20 }, (c.id, label, c.icon, place)))
         })
         .collect();
-    v.sort_by(|a, b| b.0.cmp(&a.0).then(a.2.cmp(&b.2)));
-    v.into_iter().map(|(_, id, label, icon, place)| (id, label, icon, place)).collect()
+    v.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.1.cmp(b.1.1)));
+    v.into_iter().map(|(_, row)| row).collect()
+}
+
+/// A row's right-hand side, ending at `at`: the shortcut, then where the command lives
+/// ("Sketch › Create"). The separator is drawn, centred on the ink of the panel's name: a
+/// font's "›", or one centred on the row, sits low beside Japanese or Chinese words.
+fn paint_key_and_place(painter: &egui::Painter, at: Pos2, key: &str, place: Option<(&str, &str)>, color: egui::Color32) {
+    let font = FontId::proportional(10.5);
+    // One piece of text ending at `x`, centred on the row: its left edge and the middle of its ink.
+    let piece = |x: f32, text: &str| -> (f32, f32) {
+        let galley = painter.layout_no_wrap(text.to_string(), font.clone(), color);
+        let pos = pos2(x - galley.size().x, at.y - galley.size().y / 2.0);
+        let ink = galley
+            .rows
+            .first()
+            .filter(|r| r.row.visuals.mesh_bounds.is_positive())
+            .map_or(galley.size().y / 2.0, |r| r.pos.y + r.row.visuals.mesh_bounds.center().y);
+        painter.galley(pos, galley, color);
+        (pos.x, pos.y + ink)
+    };
+    let mut x = at.x;
+    if let Some((tab, panel)) = place {
+        let (left, ink) = piece(x, panel);
+        icons::glyphs::breadcrumb(painter, pos2(left - 5.0, ink), color);
+        x = piece(left - 10.0, tab).0 - 14.0;
+    }
+    if !key.is_empty() {
+        piece(x, key);
+    }
 }
 
 /// Open the box at a point (the cursor), or at the middle of the window.
@@ -234,8 +265,7 @@ pub fn show(app: &mut SolveApp, ctx: &egui::Context) {
                     let col = if enabled { t.text } else { t.text_dim };
                     ui.painter().text(pos2(r.left() + 30.0, r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(13.0), col);
                     let key = crate::keymap::effective(app, id).unwrap_or_default();
-                    let right = if key.is_empty() { place.clone() } else { format!("{key}   {place}") };
-                    ui.painter().text(pos2(r.right() - 26.0, r.center().y), Align2::RIGHT_CENTER, right, FontId::proportional(10.5), t.text_dim);
+                    paint_key_and_place(ui.painter(), pos2(r.right() - 26.0, r.center().y), &key, *place, t.text_dim);
                     // The pin.
                     let pinned = app.sbox.pinned.iter().any(|p| p == id);
                     let pr = Rect::from_center_size(pos2(r.right() - 11.0, r.center().y), vec2(16.0, 16.0));
@@ -356,16 +386,16 @@ mod tests {
         let ja = crate::i18n::Locale::for_language("ja");
         let name = ja.text("cmd.sketch_rectangle_center");
         assert_ne!(name, "Center Rectangle");
-        let place = format!("{} › {}", ja.label("SKETCH"), ja.label("CREATE"));
+        let place = Some((ja.label("SKETCH"), ja.label("CREATE")));
         for query in [name, "長方形", "center rect", "sketch.rectangle.center"] {
             let rows = search(&app, query);
             let row = rows.iter().find(|r| r.0 == "sketch.rectangle.center").unwrap_or_else(|| panic!("{query:?} doesn't find it"));
-            assert_eq!((row.1.as_str(), row.3.as_str()), (name, place.as_str()), "{query:?}");
+            assert_eq!((row.1, row.3), (name, place), "{query:?}");
         }
         assert_eq!(search(&app, name).first().map(|r| r.0), Some("sketch.rectangle.center"), "the exact name comes first");
         // English is unchanged.
         drop(_ja);
         let row = search(&app, "center rect").into_iter().find(|r| r.0 == "sketch.rectangle.center").unwrap();
-        assert_eq!((row.1.as_str(), row.3.as_str()), ("Center Rectangle", "SKETCH › CREATE"));
+        assert_eq!((row.1, row.3), ("Center Rectangle", Some(("SKETCH", "CREATE"))));
     }
 }
