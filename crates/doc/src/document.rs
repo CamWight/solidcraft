@@ -814,11 +814,11 @@ pub enum FeatureKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         line: Option<String>,
     },
-    /// A construction axis (Fusion's CONSTRUCT axes).
+    /// A construction axis (CONSTRUCT axes).
     ConstructionAxis {
         def: AxisDef,
     },
-    /// A construction point (Fusion's CONSTRUCT points).
+    /// A construction point (CONSTRUCT points).
     ConstructionPoint {
         def: PointDef,
     },
@@ -2067,7 +2067,7 @@ impl FeatureKind {
         )
     }
 
-    /// Fusion-like type name (timeline tooltip, `inspect`).
+    /// Short type name (timeline tooltip, `inspect`).
     pub fn type_name(&self) -> &'static str {
         match self {
             FeatureKind::BodyTransfer { .. } => "BodyTransferFeature",
@@ -3275,7 +3275,7 @@ impl Document {
     }
 }
 
-/// Density of the default material (g/cm³), as Fusion's default.
+/// Density of the default material (g/cm³), as the default.
 #[path = "../../../assets/materials/library.rs"]
 mod materials;
 pub use materials::{DEFAULT_DENSITY, MATERIALS, material_color};
