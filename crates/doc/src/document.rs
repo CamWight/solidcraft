@@ -3195,8 +3195,10 @@ impl Document {
         }
     }
 
-    /// Apply parameter values to every dimension in a sketch (in place).
+    /// Apply parameter values to every dimension in a sketch, and to its points placed by
+    /// parameters (in place).
     pub fn apply_dimension_values(&self, vals: &std::collections::BTreeMap<String, expr::Value>, sk: &mut Sketch) -> Result<()> {
+        self.apply_point_values(vals, sk)?;
         for c in &mut sk.constraints {
             if let Some(p) = &c.param {
                 let kind = if c.kind.is_angle() { Kind::Angle } else { Kind::Length };
@@ -3206,6 +3208,27 @@ impl Document {
         }
         for c in &sk.constraints {
             sk.validate(&c.kind)?;
+        }
+        Ok(())
+    }
+
+    /// Move the points placed by parameters to where their expressions come to (in place). Such
+    /// a point is fixed, so the solve keeps it there.
+    pub fn apply_point_values(&self, vals: &std::collections::BTreeMap<String, expr::Value>, sk: &mut Sketch) -> Result<()> {
+        use crate::eval::val;
+        for p in &mut sk.points {
+            let Some(exprs) = p.exprs.as_deref() else { continue };
+            let mut at = p.pos;
+            for (e, slot, what) in [(&exprs.x, &mut at.x, "X"), (&exprs.y, &mut at.y, "Y")] {
+                if let Some(e) = e {
+                    *slot = val(vals, e, Kind::Length).map_err(|error| DocError::Expr(format!("point {} {what}: {error}", p.id)))?;
+                }
+            }
+            if !(at.is_finite() && at.x.abs() < solidcraft_sketch::MAX_COORD && at.y.abs() < solidcraft_sketch::MAX_COORD) {
+                return Err(DocError::Invalid(format!("point {} is placed out of range", p.id)));
+            }
+            p.pos = at;
+            p.fixed = true;
         }
         Ok(())
     }
