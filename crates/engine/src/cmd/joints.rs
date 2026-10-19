@@ -12,7 +12,7 @@ use solidcraft_doc::joints::{self, Coupling, Joint, JointExprs, JointKind, Joint
 use solidcraft_geom::{Aabb3, Vec3};
 
 use super::CommandSpec;
-use crate::params::{bad, bool_, num, str_, string_list, vec3};
+use crate::params::{bad, bool_, num, str_, vec3};
 use crate::{EngineError, Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -77,8 +77,8 @@ pub static COMMANDS: &[CommandSpec] = &[
          (joint chains joined to nothing grounded: the solver places none of them, so driving them moves nothing)",
     ),
     CommandSpec::new("joint.solve", "Solve Joints", solve_cmd).icon("compute").params("re-place the occurrences from the joints → conflicts, errors, dof"),
-    CommandSpec::new("inspect.interference", "Interference", interference).at("SOLID", "INSPECT").icon("interference").noundo().params(
-        "bodies?: [names] (default: all, in world placement) → interferences: pairs that overlap with the overlap volume, area, bounding box and centre (a pin a hair off the axis of a hole of its size also has near_coaxial: {offset_mm, length_mm}, its volume the crescent the walls share); unchecked: pairs that could not be checked, with the reason. Bodies are pruned by bounding box first, so any number of bodies is fine; at most 20000 pairs whose boxes overlap are intersected per call (truncated: true and skipped_pairs: n say when more were left out)",
+    CommandSpec::new("inspect.interference", "Interference", super::interference::interference).at("SOLID", "INSPECT").icon("interference").noundo().params(
+        "bodies?: [names] (default: all, in world placement); budget_s?: seconds (default 240, at most 86400: pairs not finished by then are listed in unchecked as \"not checked: the time budget … ran out\" and the call returns) → interferences: pairs that overlap with the overlap volume, area, bounding box and centre (a pin a hair off the axis of a hole of its size also has near_coaxial: {offset_mm, length_mm}, its volume the crescent the walls share); unchecked: pairs that could not be checked, with the reason. Bodies are pruned by bounding box first, then by their display meshes (pairs whose meshes stay apart by more than their chord tolerances, neither inside the other, are clear without a boolean), so any number of bodies is fine; the pairs left are intersected exactly, in parallel on desktop, the slowest first; at most 20000 pairs whose boxes overlap are intersected per call (truncated: true and skipped_pairs: n say when more were left out). Also: pairs_candidate (boxes overlap), pairs_cleared (by the meshes), pairs_intersected, pairs_not_checked, budget_exceeded, threads (worker threads; 0: on the calling thread), boolean_ms and tessellate_ms (kernel time summed over the pairs), slowest: [{a, b, ms, boolean_ms, tessellate_ms}] and ms",
     ),
 ];
 
@@ -1319,61 +1319,6 @@ fn solve_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let sol = resolve(s);
     Ok(sol_json(&sol, p))
 }
-
-fn interference(s: &mut Session, p: &Value) -> Result<Value> {
-    let want = string_list(p, "bodies");
-    let st = s.world_state();
-    let bodies: Vec<&solidcraft_doc::ModelBody> =
-        st.bodies.iter().filter(|b| want.is_empty() || want.contains(&b.name)).filter(|b| !b.body.is_mesh()).collect();
-    // Prune by bounding boxes first (sort and sweep), so the cost follows the pairs that can
-    // touch rather than the square of the body count.
-    let boxes: Vec<Aabb3> = bodies.iter().map(|b| b.mesh().bounds()).collect();
-    let (pairs, skipped) = overlapping_pairs(&boxes, MAX_INTERFERENCE_PAIRS);
-    let (mut hits, mut unchecked) = (Vec::new(), Vec::new());
-    for (i, j) in pairs {
-        let (Some(a), Some(b)) = (bodies.get(i), bodies.get(j)) else { continue };
-        let threshold = 1e-9 * a.body.size().max(1.0).powi(3);
-        // A pin a hair off the axis of its hole: the crescent the walls share, which the
-        // boolean can't intersect.
-        if let Some(o) = solidcraft_kernel::coaxial_overlap(&a.body, &b.body) {
-            if o.volume > threshold {
-                hits.push(json!({"a": a.name, "b": b.name, "volume_mm3": o.volume, "area_mm2": o.area, "center": o.centroid,
-                    "bbox": {"min": o.bbox.min, "max": o.bbox.max}, "near_coaxial": {"offset_mm": o.offset, "length_mm": o.length}}));
-            }
-            continue;
-        }
-        // A pair whose shared part can't be worked out is reported, not passed as clear.
-        let (shared, report) =
-            solidcraft_kernel::capture_boolean_diagnostics(|| solidcraft_kernel::boolean(&a.body, &b.body, solidcraft_kernel::BoolOp::Intersect));
-        let mut skip = |reason: String| unchecked.push(json!({"a": a.name, "b": b.name, "reason": reason}));
-        let shared = match shared {
-            Ok(o) => o,
-            Err(e) => {
-                skip(e.to_string());
-                continue;
-            }
-        };
-        if let Some(reason) = report.unverified() {
-            skip(reason);
-        }
-        let Some(o) = shared else { continue };
-        let m = match solidcraft_kernel::measure(&o) {
-            Ok(m) => m,
-            Err(e) => {
-                skip(e.to_string());
-                continue;
-            }
-        };
-        if m.volume > threshold {
-            hits.push(json!({"a": a.name, "b": b.name, "volume_mm3": m.volume, "area_mm2": m.area, "center": m.centroid, "bbox": {"min": m.bbox.min, "max": m.bbox.max}}));
-        }
-    }
-    Ok(json!({"interferences": hits, "count": hits.len(), "checked": bodies.len(), "unchecked": unchecked,
-        "truncated": skipped > 0, "skipped_pairs": skipped}))
-}
-
-/// Most pairs with overlapping bounding boxes `inspect.interference` intersects in one call.
-const MAX_INTERFERENCE_PAIRS: usize = 20_000;
 
 /// Index pairs `(i, j)`, `i < j`, whose boxes overlap or touch (sort and sweep along X), at most
 /// `limit` of them, plus how many more there were.

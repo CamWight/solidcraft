@@ -2831,6 +2831,11 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             let r = Rect::from_min_size(pos, galley.size() + vec2(16.0, 8.0));
             painter.rect_filled(r, 4.0, t.overlay);
             painter.galley(pos + vec2(8.0, 4.0), galley, t.text);
+            // A click opens every message of the run, to read and copy (#2763).
+            crate::scenario::publish_handle("status:chip", r.center());
+            if ui.interact(r, egui::Id::new("sc_status_chip"), Sense::click()).on_hover_text(crate::i18n::tr("messages.chip_hint")).clicked() {
+                app.messages.open = true;
+            }
             ui.ctx().request_repaint_after(std::time::Duration::from_millis(500));
         } else {
             app.status = None;

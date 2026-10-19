@@ -349,6 +349,8 @@ completed drawings publish atomically. The browser still exports synchronously.
   rounds next to earlier rounds of another radius, and smooth corner patches where three rounds
   meet (a sphere for equal radii); perpendicular corner fillets after a closed ring of earlier
   rounds preserve the ring's radii and the enclosed planar face (#1557);
+  mitres between separate rounds of the same radius keep their endpoint tangent, so a later
+  fillet can select an upright and its adjoining bottom mitre as one chain (#2422);
   straight edges (convex or concave) between planar faces with perpendicular
   planar end faces (equal-distance chamfers also meet sloped planar end faces, including inner
   basin rims within the rim width); convex fillets also meet sloped planar ends and reflex

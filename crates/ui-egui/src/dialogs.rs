@@ -3403,7 +3403,7 @@ fn fillet_kind(size: &str, chamfer: bool) -> Kind {
 /// A length field's first text: `number` in the design's units, with the unit written out so the
 /// field shows it as the other dialogs show theirs ("20 mm", "20 in"). OK makes the size the bare
 /// number would.
-fn length_default(s: &Session, number: &str) -> String {
+pub(crate) fn length_default(s: &Session, number: &str) -> String {
     match s.doc.with_design_unit(number, ValueKind::Length) {
         e if e != number => e,
         // A millimetre design (or one whose units are not a length): bare numbers are mm.

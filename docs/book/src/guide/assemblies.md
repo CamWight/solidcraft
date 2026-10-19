@@ -62,7 +62,10 @@ body in `bodies` and the other in `against`, and `skip_within` leaves out pairs 
 occurrence (`"occurrence"`) or one placed component, its subcomponents included
 (`"component"`): the parts of a bought component that touch by design. Distances are measured on
 the exact faces and edges; the meshes only rule out pairs that are too far apart, and the pairs
-left are checked in parallel. `inspect.interference` remains for the overlaps alone.
+left are checked in parallel. `inspect.interference` remains for the overlaps alone: it clears
+pairs whose meshes stay apart without intersecting them, intersects the rest in parallel, and
+returns after `budget_s` seconds (default 240) at most, listing the pairs it had no time for as
+not checked.
 
 **Gear**, **Rack and Pinion** and **Screw** (on the **ASSEMBLE** panel) are motion links whose
 ratio comes from the parts rather than a typed number:
