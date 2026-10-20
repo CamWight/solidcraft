@@ -98,6 +98,7 @@ Editable drawing code, native projects and shipped exports are collected under `
 | assets/locales/cs.json | potuzai | Czech translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/da.json | SolidCraft contributors | Original Danish translation of SolidCraft's English catalog; no commercial CAD text used | MIT OR Apache-2.0 |
 | assets/locales/de.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
+| assets/locales/en-GB.json | SolidCraft contributors | English (UK): the English catalog's messages whose spelling differs, in UK spelling | MIT OR Apache-2.0 |
 | assets/locales/en.json | SolidCraft contributors | Original SolidCraft resource data or drawing code, collected without redesign | MIT OR Apache-2.0 |
 | assets/locales/es.json | jawler | Spanish (Spain) translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |
 | assets/locales/fr.json | rlartot | French translation of the English catalog, contributed upstream | MIT OR Apache-2.0 |

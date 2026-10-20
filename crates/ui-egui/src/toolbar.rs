@@ -2331,7 +2331,7 @@ mod home_tests {
     fn needs_design_tooltip_is_translated() {
         let english = crate::i18n::Locale::for_language("en").text("ui.needs_design");
         assert!(english.contains("{command}"));
-        for catalog in crate::i18n::LOCALES.iter().filter(|c| c.id != "en") {
+        for catalog in crate::i18n::LOCALES.iter().filter(|c| !matches!(c.id, "en" | "en-GB")) {
             let text = crate::i18n::Locale::for_language(catalog.id).text("ui.needs_design");
             assert!(text != english && text.contains("{command}"), "{} must translate ui.needs_design", catalog.id);
         }
