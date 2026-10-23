@@ -76,6 +76,62 @@ pub fn bezier(pts: &[Vec2]) -> Option<Seg2> {
     })
 }
 
+/// Smallest radius, conic weight and absolute arc sweep [`Seg2::check`] accepts.
+const MIN_POSITIVE: f64 = 1e-12;
+/// Largest conic weight [`Seg2::check`] accepts.
+const MAX_WEIGHT: f64 = 1e12;
+/// Largest arc start angle either way, in radians, [`Seg2::check`] accepts.
+const MAX_START_ANGLE: f64 = 1e6;
+
+fn require(condition: bool, message: &'static str) -> Result<(), &'static str> {
+    if condition { Ok(()) } else { Err(message) }
+}
+
+/// Every value finite and at most `max_abs` in size: [`Seg2::check`]'s rule for coordinates, which
+/// `section` applies to its planes and contacts too.
+pub(crate) fn coordinates(values: impl IntoIterator<Item = f64>, max_abs: f64) -> Result<(), &'static str> {
+    require(values.into_iter().all(|v| v.is_finite() && v.abs() <= max_abs), "non-finite or excessive coordinate")
+}
+
+fn controls(points: &[Vec2], max_abs: f64) -> Result<(), &'static str> {
+    coordinates(points.iter().flat_map(|p| [p.x, p.y]), max_abs)?;
+    let Some((first, rest)) = points.split_first() else { return Err("empty controls") };
+    require(rest.iter().any(|p| p != first), "collapsed curve")
+}
+
+impl Seg2 {
+    /// Checks a segment read from outside before anything evaluates it: every stored coordinate
+    /// finite and at most `max_abs` in size (a Bézier's unused slots too, as they are serialized),
+    /// a radius in 1e-12..=`max_abs`, an arc's start within ±1e6 radians and its absolute sweep
+    /// 1e-12 to one turn (with 1e-12 radians of allowance), a conic weight in 1e-12..=1e12, a
+    /// Bézier degree of 4 to [`MAX_BEZIER_DEGREE`], controls not all at one point, and finite
+    /// ends. The limits keep evaluation finite; they promise no accuracy. The caller wraps the
+    /// message in its own error.
+    pub(crate) fn check(&self, max_abs: f64) -> Result<(), &'static str> {
+        match *self {
+            Seg2::Line { a, b } => controls(&[a, b], max_abs)?,
+            Seg2::Arc { center, radius, start, sweep } => {
+                coordinates([center.x, center.y], max_abs)?;
+                require(radius.is_finite() && (MIN_POSITIVE..=max_abs).contains(&radius), "arc radius")?;
+                require(start.is_finite() && start.abs() <= MAX_START_ANGLE, "arc start angle")?;
+                require(sweep.is_finite() && (MIN_POSITIVE..=TAU + 1e-12).contains(&sweep.abs()), "arc sweep")?;
+            }
+            Seg2::Cubic { p0, p1, p2, p3 } => controls(&[p0, p1, p2, p3], max_abs)?,
+            Seg2::Conic { a, apex, b, w } => {
+                controls(&[a, apex, b], max_abs)?;
+                require(w.is_finite() && (MIN_POSITIVE..=MAX_WEIGHT).contains(&w), "conic weight")?;
+            }
+            Seg2::Bezier { n, ref p } => {
+                require((4..=MAX_BEZIER_DEGREE).contains(&usize::from(n)), "Bezier degree")?;
+                // The unused slots are serialized too: reject hidden non-finite/excessive values.
+                coordinates(p.iter().flat_map(|q| [q.x, q.y]), max_abs)?;
+                controls(p.get(..=usize::from(n)).ok_or("Bezier degree")?, max_abs)?;
+            }
+        }
+        require(self.start().is_finite() && self.end().is_finite(), "non-finite curve endpoint")
+    }
+}
+
 /// de Casteljau: the point at `t` and the two halves' control points.
 fn casteljau(c: &[Vec2], t: f64) -> (Vec2, Vec<Vec2>, Vec<Vec2>) {
     let mut w = c.to_vec();
@@ -585,6 +641,10 @@ pub struct Region2 {
 impl Region2 {
     pub fn area(&self) -> f64 {
         self.outer.signed_area().abs() - self.holes.iter().map(|h| h.signed_area().abs()).sum::<f64>()
+    }
+    /// The outer loop, then the holes.
+    pub fn loops(&self) -> impl Iterator<Item = &Loop2> + Clone {
+        std::iter::once(&self.outer).chain(&self.holes)
     }
     /// A point strictly inside the region (for picking and labels).
     pub fn interior_point(&self) -> Vec2 {

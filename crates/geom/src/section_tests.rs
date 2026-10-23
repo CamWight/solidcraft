@@ -1,4 +1,4 @@
-use std::f64::consts::PI;
+use std::f64::consts::{PI, TAU};
 
 use super::*;
 use crate::{MAX_BEZIER_CTRL, bezier};

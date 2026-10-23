@@ -32,17 +32,17 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::paper::MAX_LINE_MM;
+/// The longest side a custom sheet may have, in millimetres: the paper scene's limit.
+pub use crate::paper::MAX_SIDE_MM;
 use crate::{Aabb2, Vec2};
 
-/// The longest side a custom sheet may have, in millimetres.
-pub const MAX_SIDE_MM: f64 = 5000.0;
 /// The most fields an equal division may cut each way.
 pub const MAX_EQUAL_FIELDS: u32 = 200;
 /// ISO 5457's filing margin: the left margin of a drawing that gets bound.
 pub const FILING_MARGIN_MM: f64 = 20.0;
 const MIN_FIELD_MM: f64 = 1.0;
 const MAX_FIELD_MM: f64 = 1000.0;
-const MAX_LINE_MM: f64 = 10.0;
 /// The smallest drawing space the margins may leave, each way.
 const MIN_DRAWING_SPACE_MM: f64 = 1.0;
 /// A corner field shorter than this joins its neighbour, so rounding never leaves a sliver.

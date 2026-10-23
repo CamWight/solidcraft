@@ -25,6 +25,7 @@ mod grid;
 mod mesh;
 pub mod mesh_distance;
 pub mod network;
+pub mod paper;
 mod plane;
 mod profile;
 pub mod section;
