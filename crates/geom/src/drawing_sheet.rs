@@ -11,14 +11,19 @@
 //! Sheet coordinates are millimetres from the sheet's lower-left corner, x to the right and y up.
 //! The drawing border's line is centred on [`SheetLayout::drawing_border`].
 //!
-//! [`DrawingBorderProfile::iso`] is ISO 5457's: a 20 mm filing margin on the left and 10 mm on the
-//! other sides, a 0.7 mm drawing border, and 50 mm fields counted out from the sheet's centre lines,
-//! the corner fields taking what is left. Rows are lettered from the top without I and O and columns
-//! numbered from the left, on the sides [`LabelSides::Iso`] gives: the top and right of an A4 sheet,
-//! every side of the others. The labels sit between the drawing border and the grid reference
-//! border, 5 mm outside it. A centring mark runs from the grid reference border to 10 mm inside the
-//! drawing border at each end of the sheet's centre lines, and each corner has a trimming mark in
-//! the margins, outside the grid reference border: two overlapping 10 x 5 mm rectangles.
+//! [`DrawingBorderProfile::iso`] is the built-in profile, after ISO 5457: 10 mm margins all round,
+//! a 0.7 mm drawing border, and 50 mm fields counted out from the sheet's centre lines, the corner
+//! fields taking what is left. Rows are lettered from the top without I and O and columns numbered
+//! from the left, on the sides [`LabelSides::Iso`] gives: the top and right of an A4 sheet, every
+//! side of the others. The labels sit between the drawing border and the grid reference border,
+//! 5 mm outside it. A centring mark runs from the grid reference border to the drawing border at
+//! each end of the sheet's centre lines, never into the drawing area.
+//!
+//! The rest of ISO 5457's border is a choice in the profile: the 20 mm filing margin on the left,
+//! for drawings that get bound; centring marks that reach inside the drawing border (10 mm in the
+//! standard's figure); and a trimming mark at each corner, outside the grid reference border, of
+//! two overlapping 10 x 5 mm rectangles. The built-in profile leaves the trimming marks out, as
+//! they take a lot of ink.
 //!
 //! Sizes: ISO 216 A0 to A5, Letter and Legal, ANSI A to F (ASME Y14.1), the architectural A to E
 //! and E1, and custom sizes, finite, above 0 and at most [`MAX_SIDE_MM`] a side. Title blocks, the
@@ -33,6 +38,8 @@ use crate::{Aabb2, Vec2};
 pub const MAX_SIDE_MM: f64 = 5000.0;
 /// The most fields an equal division may cut each way.
 pub const MAX_EQUAL_FIELDS: u32 = 200;
+/// ISO 5457's filing margin: the left margin of a drawing that gets bound.
+pub const FILING_MARGIN_MM: f64 = 20.0;
 const MIN_FIELD_MM: f64 = 1.0;
 const MAX_FIELD_MM: f64 = 1000.0;
 const MAX_LINE_MM: f64 = 10.0;
@@ -141,6 +148,13 @@ pub struct Margins {
     pub bottom_mm: f64,
 }
 
+impl Margins {
+    /// Left, right, top and bottom.
+    fn sides(self) -> [f64; 4] {
+        [self.left_mm, self.right_mm, self.top_mm, self.bottom_mm]
+    }
+}
+
 /// How the drawing border is cut into reference fields. Externally tagged (`"none"`,
 /// `{"from_centre": {...}}`), as serde ignores extra fields on an internally tagged unit variant.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -201,6 +215,10 @@ impl LabelSides {
 #[serde(deny_unknown_fields)]
 pub struct DrawingBorderProfile {
     pub margins: Margins,
+    /// ISO 5457's filing margin: when on, the left margin is [`FILING_MARGIN_MM`] in place of
+    /// `margins.left_mm`, which is kept for when it's off again. Off when not given.
+    #[serde(default)]
+    pub filing_margin: bool,
     /// The drawing border's line width; the centring marks are drawn in it too.
     pub drawing_border_line_mm: f64,
     pub grid: GridRule,
@@ -210,7 +228,8 @@ pub struct DrawingBorderProfile {
     /// How far outside the drawing border the grid reference border runs; the labels sit between
     /// the two.
     pub grid_border_mm: f64,
-    /// How far each centring mark reaches inside the drawing border (`None`: no centring marks).
+    /// How far each centring mark reaches inside the drawing border, 0 to stop it on the drawing
+    /// border (`None`: no centring marks).
     pub centring_mark_mm: Option<f64>,
     /// The trimming mark's rectangles: their length along the sheet border and their width into
     /// the sheet, which must leave them outside the grid reference border (`None`: no trimming
@@ -239,8 +258,8 @@ pub struct SheetLayout {
     /// The sides labelled on this sheet.
     pub label_sides: Sides,
     pub grid_border: Aabb2,
-    /// Bottom, top, left and right: each from the grid reference border to inside the drawing
-    /// border.
+    /// Bottom, top, left and right: each from the grid reference border to the drawing border, or
+    /// as far inside it as the profile asks.
     pub centring_marks: Vec<[Vec2; 2]>,
     /// Filled rectangles, two at each corner of the sheet.
     pub trimming_marks: Vec<Aabb2>,
@@ -280,26 +299,34 @@ impl Sheet {
 }
 
 impl DrawingBorderProfile {
-    /// ISO 5457's drawing border, for a sheet of any size.
+    /// The built-in drawing border, after ISO 5457, for a sheet of any size (the module's notes
+    /// say how it follows the standard).
     pub fn iso() -> DrawingBorderProfile {
         DrawingBorderProfile {
-            margins: Margins { left_mm: 20.0, right_mm: 10.0, top_mm: 10.0, bottom_mm: 10.0 },
+            margins: Margins { left_mm: 10.0, right_mm: 10.0, top_mm: 10.0, bottom_mm: 10.0 },
+            filing_margin: false,
             drawing_border_line_mm: 0.7,
             grid: GridRule::FromCentre { field_mm: 50.0 },
             skip_i_and_o: true,
             label_sides: LabelSides::Iso,
             grid_border_mm: 5.0,
-            centring_mark_mm: Some(10.0),
-            trimming_mark_mm: Some([10.0, 5.0]),
+            centring_mark_mm: Some(0.0),
+            trimming_mark_mm: None,
         }
+    }
+
+    /// The margins as laid out: `margins`, with the filing margin on the left when it's on.
+    fn laid_out_margins(&self) -> Margins {
+        let left_mm = if self.filing_margin { FILING_MARGIN_MM } else { self.margins.left_mm };
+        Margins { left_mm, ..self.margins }
     }
 
     /// Checks what doesn't depend on the sheet: call it when a profile is read. [`Self::layout`]
     /// calls it too.
     pub fn validate(&self) -> Result<()> {
-        let m = self.margins;
-        let margins = [m.left_mm, m.right_mm, m.top_mm, m.bottom_mm];
-        for margin in margins {
+        // Every margin as given, the left one too while the filing margin stands in for it, so
+        // turning the filing margin off never brings back a bad value.
+        for margin in self.margins.sides() {
             require(margin.is_finite() && (0.0..=MAX_SIDE_MM).contains(&margin), "a margin is finite and 0 to 5000 mm")?;
         }
         let line = self.drawing_border_line_mm;
@@ -315,12 +342,14 @@ impl DrawingBorderProfile {
             }
         }
         // The grid reference border lies in the margins, and the trimming marks between it and the
-        // sheet border (ISO 5457 4.5), so the narrowest margin bounds both.
-        let narrowest = margins.into_iter().fold(f64::INFINITY, f64::min);
+        // sheet border (ISO 5457 4.5), so the narrowest margin laid out bounds both.
+        let narrowest = self.laid_out_margins().sides().into_iter().fold(f64::INFINITY, f64::min);
         let g = self.grid_border_mm;
         require(g.is_finite() && g >= 0.0 && g <= narrowest, "the grid reference border lies between the sheet border and the drawing border")?;
         if let Some(reach) = self.centring_mark_mm {
-            require(reach.is_finite() && reach > 0.0, "a centring mark reaches above 0 inside the drawing border")?;
+            require(reach.is_finite() && reach >= 0.0, "a centring mark ends on the drawing border or inside it")?;
+            // Else it would start and end on the drawing border.
+            require(g > 0.0 || reach > 0.0, "a centring mark needs a grid reference border to start from or a reach inside the drawing border")?;
         }
         if let Some([length, width]) = self.trimming_mark_mm {
             require(length.is_finite() && width > 0.0 && width <= length, "a trimming mark is finite, above 0 and no wider than it is long")?;
@@ -333,7 +362,7 @@ impl DrawingBorderProfile {
     pub fn layout(&self, sheet: &Sheet) -> Result<SheetLayout> {
         self.validate()?;
         let size = sheet.size_mm()?;
-        let m = self.margins;
+        let m = self.laid_out_margins();
         let drawing_border = Aabb2 { min: Vec2::new(m.left_mm, m.bottom_mm), max: Vec2::new(size.x - m.right_mm, size.y - m.top_mm) };
         let space = drawing_border.size();
         require(space.x >= MIN_DRAWING_SPACE_MM && space.y >= MIN_DRAWING_SPACE_MM, "the margins leave no drawing space")?;

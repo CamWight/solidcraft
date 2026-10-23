@@ -6,6 +6,16 @@ fn iso_layout(size: PaperSize, orientation: Orientation) -> SheetLayout {
     DrawingBorderProfile::iso().layout(&Sheet::standard(size, orientation)).unwrap()
 }
 
+fn with_filing_margin() -> DrawingBorderProfile {
+    DrawingBorderProfile { filing_margin: true, ..DrawingBorderProfile::iso() }
+}
+
+/// ISO 5457's border with every choice on: the filing margin, centring marks 10 mm inside the
+/// drawing border and trimming marks.
+fn full_iso_5457() -> DrawingBorderProfile {
+    DrawingBorderProfile { centring_mark_mm: Some(10.0), trimming_mark_mm: Some([10.0, 5.0]), ..with_filing_margin() }
+}
+
 fn lengths(fields: &[Field]) -> Vec<f64> {
     fields.iter().map(|f| f.to_mm - f.from_mm).collect()
 }
@@ -65,13 +75,14 @@ fn landscape_is_the_default_and_either_orientation_turns_every_size() {
 }
 
 #[test]
-fn a3_landscape_has_a_390_by_277_drawing_border_and_8_by_6_fields() {
+fn a3_landscape_has_a_400_by_277_drawing_border_and_8_by_6_fields() {
     let layout = iso_layout(PaperSize::A3, Orientation::Landscape);
     assert_eq!(layout.sheet_border, Aabb2 { min: Vec2::ZERO, max: Vec2::new(420.0, 297.0) });
-    assert_eq!(layout.drawing_border, Aabb2 { min: Vec2::new(20.0, 10.0), max: Vec2::new(410.0, 287.0) });
+    assert_eq!(layout.drawing_border, Aabb2 { min: Vec2::new(10.0, 10.0), max: Vec2::new(410.0, 287.0) });
     assert_eq!(layout.drawing_border_line_mm, 0.7);
-    // Columns: 50 mm out from the centre line at 210; the left corner takes the 40 mm left over.
-    assert!(close(&lengths(&layout.columns), &[40.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]));
+    // Columns: 50 mm out from the centre line at 210, which is 200 mm from either side: four fields
+    // each way, and nothing left over for the corners.
+    assert!(close(&lengths(&layout.columns), &[50.0; 8]));
     assert_eq!(layout.columns.iter().map(|f| f.label.as_str()).collect::<Vec<_>>(), ["1", "2", "3", "4", "5", "6", "7", "8"]);
     assert!(layout.columns.iter().any(|f| f.to_mm == 210.0));
     // Rows: 148.5 above and below 10 and 287, so two of 50 and a 38.5 mm corner each way.
@@ -84,11 +95,45 @@ fn a3_landscape_has_a_390_by_277_drawing_border_and_8_by_6_fields() {
 }
 
 #[test]
-fn a3_landscape_has_iso_5457s_grid_border_centring_and_trimming_marks() {
+fn a3_landscape_has_a_grid_border_and_centring_marks_that_stop_at_the_drawing_border() {
     let layout = iso_layout(PaperSize::A3, Orientation::Landscape);
-    // 5 mm outside the drawing border (20, 10)-(410, 287), the left side too.
+    // 5 mm outside the drawing border (10, 10)-(410, 287).
+    assert_eq!(layout.grid_border, Aabb2 { min: Vec2::new(5.0, 5.0), max: Vec2::new(415.0, 292.0) });
+    // On the centre lines x = 210 and y = 148.5, from the grid reference border to the drawing border.
+    let mark = |a: (f64, f64), b: (f64, f64)| [Vec2::new(a.0, a.1), Vec2::new(b.0, b.1)];
+    assert_eq!(
+        layout.centring_marks,
+        [
+            mark((210.0, 5.0), (210.0, 10.0)),
+            mark((210.0, 292.0), (210.0, 287.0)),
+            mark((5.0, 148.5), (10.0, 148.5)),
+            mark((415.0, 148.5), (410.0, 148.5))
+        ]
+    );
+    assert!(layout.trimming_marks.is_empty());
+    // On the sheet's centre lines, not the drawing border's: a deeper bottom margin leaves them at 148.5.
+    let sheet = Sheet::standard(PaperSize::A3, Orientation::Landscape);
+    let iso = DrawingBorderProfile::iso();
+    let deep = DrawingBorderProfile { margins: Margins { bottom_mm: 30.0, ..iso.margins }, ..iso }.layout(&sheet).unwrap();
+    assert!(deep.centring_marks.iter().skip(2).all(|[a, b]| a.y == 148.5 && b.y == 148.5), "{:?}", deep.centring_marks);
+    // A profile can leave the centring marks out.
+    let plain = DrawingBorderProfile { centring_mark_mm: None, ..iso }.layout(&sheet).unwrap();
+    assert!(plain.centring_marks.is_empty());
+    assert_eq!(plain.grid_border, layout.grid_border);
+}
+
+/// A profile can still ask for all of ISO 5457's border: on A3 the drawing border, fields and marks
+/// are the standard's.
+#[test]
+fn a3_landscape_with_iso_5457s_full_border_has_its_filing_margin_and_every_mark() {
+    let layout = full_iso_5457().layout(&Sheet::standard(PaperSize::A3, Orientation::Landscape)).unwrap();
+    // ISO 5457's 390 x 277 drawing space; the left corner field takes the 40 mm left over.
+    assert_eq!(layout.drawing_border, Aabb2 { min: Vec2::new(20.0, 10.0), max: Vec2::new(410.0, 287.0) });
+    assert!(close(&lengths(&layout.columns), &[40.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]));
+    assert!(close(&lengths(&layout.rows), &[38.5, 50.0, 50.0, 50.0, 50.0, 38.5]));
+    // 5 mm outside the drawing border, the left side too.
     assert_eq!(layout.grid_border, Aabb2 { min: Vec2::new(15.0, 5.0), max: Vec2::new(415.0, 292.0) });
-    // On the centre lines x = 210 and y = 148.5, from the grid border to 10 mm inside the drawing border.
+    // From the grid reference border to 10 mm inside the drawing border.
     let mark = |a: (f64, f64), b: (f64, f64)| [Vec2::new(a.0, a.1), Vec2::new(b.0, b.1)];
     assert_eq!(
         layout.centring_marks,
@@ -114,63 +159,92 @@ fn a3_landscape_has_iso_5457s_grid_border_centring_and_trimming_marks() {
             rect(415.0, 287.0, 420.0, 297.0),
         ]
     );
-    // On the sheet's centre lines, not the drawing border's: a deeper bottom margin leaves them at 148.5.
-    let sheet = Sheet::standard(PaperSize::A3, Orientation::Landscape);
-    let iso = DrawingBorderProfile::iso();
-    let deep = DrawingBorderProfile { margins: Margins { bottom_mm: 30.0, ..iso.margins }, ..iso }.layout(&sheet).unwrap();
-    assert!(deep.centring_marks.iter().skip(2).all(|[a, b]| a.y == 148.5 && b.y == 148.5), "{:?}", deep.centring_marks);
-    // A profile can leave the marks out.
-    let plain = DrawingBorderProfile { centring_mark_mm: None, trimming_mark_mm: None, ..iso }.layout(&sheet).unwrap();
-    assert!(plain.centring_marks.is_empty() && plain.trimming_marks.is_empty());
-    assert_eq!(plain.grid_border, layout.grid_border);
 }
 
-/// On every standard size either way, ISO 5457's marks are where the standard puts them.
+/// On every standard size either way, the marks are where the profile puts them: the built-in
+/// centring marks end exactly on the drawing border and there are no trimming marks; ISO 5457's
+/// full border reaches 10 mm inside and has its trimming marks in the corners.
 #[test]
-fn every_iso_sheet_has_its_marks_on_its_centre_lines_and_in_its_corners() {
-    for size in PaperSize::ALL {
-        for orientation in [Orientation::Landscape, Orientation::Portrait] {
-            let layout = iso_layout(size, orientation);
-            let (size_mm, drawing, grid) = (layout.sheet_border.max, layout.drawing_border, layout.grid_border);
-            let centre = Vec2::new(size_mm.x / 2.0, size_mm.y / 2.0);
-            // Bottom, top, left and right.
-            let expected = [
-                [Vec2::new(centre.x, grid.min.y), Vec2::new(centre.x, drawing.min.y + 10.0)],
-                [Vec2::new(centre.x, grid.max.y), Vec2::new(centre.x, drawing.max.y - 10.0)],
-                [Vec2::new(grid.min.x, centre.y), Vec2::new(drawing.min.x + 10.0, centre.y)],
-                [Vec2::new(grid.max.x, centre.y), Vec2::new(drawing.max.x - 10.0, centre.y)],
-            ];
-            assert_eq!(layout.centring_marks.len(), 4);
-            for (mark, [from, to]) in layout.centring_marks.iter().zip(expected) {
-                assert!(mark[0].dist(from) < EPS && mark[1].dist(to) < EPS, "{size:?} {orientation:?}: {mark:?}");
-            }
-            assert_eq!(layout.trimming_marks.len(), 8);
-            for (i, r) in layout.trimming_marks.iter().enumerate() {
-                assert!(r.min.x >= 0.0 && r.min.y >= 0.0 && r.max.x <= size_mm.x && r.max.y <= size_mm.y, "{size:?}: {r:?}");
-                let on_corner = (r.min.x == 0.0 || r.max.x == size_mm.x) && (r.min.y == 0.0 || r.max.y == size_mm.y);
-                let shape = if i % 2 == 0 { Vec2::new(10.0, 5.0) } else { Vec2::new(5.0, 10.0) };
-                assert!(on_corner && r.size().dist(shape) < EPS, "{size:?} {orientation:?}: {r:?}");
-                // In the margins: up to the grid reference border, never across it.
-                assert!(!r.inflated(-EPS).meets(&grid), "{size:?} {orientation:?}: {r:?}");
+fn every_sheet_has_centring_marks_on_its_centre_lines_and_trimming_marks_only_when_asked() {
+    for (profile, reach, trimming_marks) in [(DrawingBorderProfile::iso(), 0.0, 0), (full_iso_5457(), 10.0, 8)] {
+        for size in PaperSize::ALL {
+            for orientation in [Orientation::Landscape, Orientation::Portrait] {
+                let layout = profile.layout(&Sheet::standard(size, orientation)).unwrap();
+                let (size_mm, drawing, grid) = (layout.sheet_border.max, layout.drawing_border, layout.grid_border);
+                let centre = Vec2::new(size_mm.x / 2.0, size_mm.y / 2.0);
+                // Bottom, top, left and right, from the grid reference border.
+                let expected = [
+                    [Vec2::new(centre.x, grid.min.y), Vec2::new(centre.x, drawing.min.y + reach)],
+                    [Vec2::new(centre.x, grid.max.y), Vec2::new(centre.x, drawing.max.y - reach)],
+                    [Vec2::new(grid.min.x, centre.y), Vec2::new(drawing.min.x + reach, centre.y)],
+                    [Vec2::new(grid.max.x, centre.y), Vec2::new(drawing.max.x - reach, centre.y)],
+                ];
+                assert_eq!(layout.centring_marks, expected, "{size:?} {orientation:?} {reach}");
+                assert_eq!(layout.trimming_marks.len(), trimming_marks, "{size:?} {orientation:?}");
+                for (i, r) in layout.trimming_marks.iter().enumerate() {
+                    assert!(r.min.x >= 0.0 && r.min.y >= 0.0 && r.max.x <= size_mm.x && r.max.y <= size_mm.y, "{size:?}: {r:?}");
+                    let on_corner = (r.min.x == 0.0 || r.max.x == size_mm.x) && (r.min.y == 0.0 || r.max.y == size_mm.y);
+                    let shape = if i % 2 == 0 { Vec2::new(10.0, 5.0) } else { Vec2::new(5.0, 10.0) };
+                    assert!(on_corner && r.size().dist(shape) < EPS, "{size:?} {orientation:?}: {r:?}");
+                    // In the margins: up to the grid reference border, never across it.
+                    assert!(!r.inflated(-EPS).meets(&grid), "{size:?} {orientation:?}: {r:?}");
+                }
             }
         }
     }
 }
 
+/// The filing margin puts ISO 5457's 20 mm on the left in either orientation and moves nothing
+/// else; a 20 mm left margin set by hand lays out the same.
+#[test]
+fn the_filing_margin_puts_20_mm_on_the_left_of_every_sheet() {
+    let iso = DrawingBorderProfile::iso();
+    let (filing, by_hand) = (with_filing_margin(), DrawingBorderProfile { margins: Margins { left_mm: 20.0, ..iso.margins }, ..iso });
+    // ISO 5457's drawing spaces: A3 across 390 x 277, A4 upright 180 x 277.
+    let a3 = filing.layout(&Sheet::standard(PaperSize::A3, Orientation::Landscape)).unwrap();
+    assert_eq!(a3.drawing_border, Aabb2 { min: Vec2::new(20.0, 10.0), max: Vec2::new(410.0, 287.0) });
+    assert!(close(&lengths(&a3.columns), &[40.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0, 50.0]));
+    let a4 = filing.layout(&Sheet::standard(PaperSize::A4, Orientation::Portrait)).unwrap();
+    assert_eq!(a4.drawing_border, Aabb2 { min: Vec2::new(20.0, 10.0), max: Vec2::new(200.0, 287.0) });
+    // 85 mm left of the centre line at 105 and 95 right of it: two fields each way.
+    assert!(close(&lengths(&a4.columns), &[35.0, 50.0, 50.0, 45.0]));
+    for size in PaperSize::ALL {
+        for orientation in [Orientation::Landscape, Orientation::Portrait] {
+            let sheet = Sheet::standard(size, orientation);
+            let (on, off) = (filing.layout(&sheet).unwrap(), iso.layout(&sheet).unwrap());
+            assert_eq!(on, by_hand.layout(&sheet).unwrap(), "{size:?} {orientation:?}");
+            assert_eq!((on.drawing_border.min.x, off.drawing_border.min.x), (20.0, 10.0), "{size:?} {orientation:?}");
+            assert_eq!((on.drawing_border.min.y, on.drawing_border.max), (off.drawing_border.min.y, off.drawing_border.max));
+            assert_eq!(on.rows, off.rows, "{size:?} {orientation:?}");
+        }
+    }
+    // A left margin set by hand is kept for when the filing margin is off again.
+    let a3 = Sheet::standard(PaperSize::A3, Orientation::Landscape);
+    let wide = DrawingBorderProfile { margins: Margins { left_mm: 30.0, ..iso.margins }, ..iso };
+    assert_eq!(DrawingBorderProfile { filing_margin: true, ..wide }.layout(&a3).unwrap().drawing_border.min.x, 20.0);
+    assert_eq!(wide.layout(&a3).unwrap().drawing_border.min.x, 30.0);
+}
+
 #[test]
 fn the_iso_rule_gives_the_standard_field_counts_for_a0_to_a4_either_way() {
-    // ISO 5457's table, long side by short side.
-    for (size, long, short) in
-        [(PaperSize::A0, 24, 16), (PaperSize::A1, 16, 12), (PaperSize::A2, 12, 8), (PaperSize::A3, 8, 6), (PaperSize::A4, 6, 4)]
-    {
-        let across = iso_layout(size, Orientation::Landscape);
-        assert_eq!((across.columns.len(), across.rows.len()), (long, short), "{size:?} landscape");
-        let upright = iso_layout(size, Orientation::Portrait);
-        assert_eq!((upright.columns.len(), upright.rows.len()), (short, long), "{size:?} portrait");
+    // ISO 5457's table, long side by short side, with the filing margin or without.
+    for profile in [DrawingBorderProfile::iso(), with_filing_margin()] {
+        for (size, long, short) in
+            [(PaperSize::A0, 24, 16), (PaperSize::A1, 16, 12), (PaperSize::A2, 12, 8), (PaperSize::A3, 8, 6), (PaperSize::A4, 6, 4)]
+        {
+            let across = profile.layout(&Sheet::standard(size, Orientation::Landscape)).unwrap();
+            assert_eq!((across.columns.len(), across.rows.len()), (long, short), "{size:?} landscape {profile:?}");
+            let upright = profile.layout(&Sheet::standard(size, Orientation::Portrait)).unwrap();
+            assert_eq!((upright.columns.len(), upright.rows.len()), (short, long), "{size:?} portrait {profile:?}");
+        }
     }
-    // A1 across: 400.5 left of the centre line and 410.5 right of it; eight fields each way.
-    let a1 = lengths(&iso_layout(PaperSize::A1, Orientation::Landscape).columns);
-    assert!((a1.first().unwrap() - 50.5).abs() < EPS && (a1.last().unwrap() - 60.5).abs() < EPS, "{a1:?}");
+    // A1 across: 410.5 mm each side of the centre line, so eight fields each way and 60.5 mm corners;
+    // the filing margin leaves 400.5 on the left, a 50.5 mm corner.
+    let a1 = Sheet::standard(PaperSize::A1, Orientation::Landscape);
+    for (profile, left) in [(DrawingBorderProfile::iso(), 60.5), (with_filing_margin(), 50.5)] {
+        let widths = lengths(&profile.layout(&a1).unwrap().columns);
+        assert!((widths.first().unwrap() - left).abs() < EPS && (widths.last().unwrap() - 60.5).abs() < EPS, "{widths:?}");
+    }
 }
 
 /// The label sides are worked out for each sheet, so one profile labels every size as ISO 5457 does.
@@ -193,7 +267,8 @@ fn one_iso_profile_labels_a4_on_its_top_and_right_and_every_other_size_all_round
 #[test]
 fn an_equal_division_cuts_the_drawing_border_evenly() {
     let sheet = Sheet::standard(PaperSize::A3, Orientation::Landscape);
-    let profile = DrawingBorderProfile { grid: GridRule::Equal { columns: 8, rows: 6 }, ..DrawingBorderProfile::iso() };
+    // With the filing margin, so the 390 mm across isn't a whole number of 50 mm fields.
+    let profile = DrawingBorderProfile { grid: GridRule::Equal { columns: 8, rows: 6 }, ..with_filing_margin() };
     let layout = profile.layout(&sheet).unwrap();
     assert!(close(&lengths(&layout.columns), &[48.75; 8]));
     assert!(close(&lengths(&layout.rows), &[277.0 / 6.0; 6]));
@@ -244,6 +319,9 @@ fn hostile_sizes_and_profiles_are_refused() {
         with_margins(f64::NAN, 10.0, 10.0, 10.0),
         with_margins(20.0, f64::INFINITY, 10.0, 10.0),
         with_margins(20.0, 10.0, 5000.1, 10.0),
+        // The left margin is checked while the filing margin stands in for it.
+        DrawingBorderProfile { filing_margin: true, ..with_margins(f64::NAN, 10.0, 10.0, 10.0) },
+        DrawingBorderProfile { filing_margin: true, ..with_margins(-1.0, 10.0, 10.0, 10.0) },
         DrawingBorderProfile { drawing_border_line_mm: 0.0, ..iso },
         DrawingBorderProfile { drawing_border_line_mm: -0.7, ..iso },
         DrawingBorderProfile { drawing_border_line_mm: f64::NAN, ..iso },
@@ -259,24 +337,28 @@ fn hostile_sizes_and_profiles_are_refused() {
         // The grid reference border lies between the sheet border and the drawing border.
         DrawingBorderProfile { grid_border_mm: -0.1, ..iso },
         DrawingBorderProfile { grid_border_mm: f64::NAN, ..iso },
-        DrawingBorderProfile { grid_border_mm: 10.000_001, trimming_mark_mm: None, ..iso },
-        // On every side: ISO's 5 mm is wider than a 4 mm bottom margin.
-        DrawingBorderProfile { trimming_mark_mm: None, ..with_margins(20.0, 10.0, 10.0, 4.0) },
-        // A centring mark reaches above 0 inside the drawing border.
-        DrawingBorderProfile { centring_mark_mm: Some(0.0), ..iso },
+        DrawingBorderProfile { grid_border_mm: 10.000_001, ..iso },
+        // On every side: 5 mm is wider than a 4 mm bottom margin, or a 4 mm left one without the
+        // filing margin.
+        with_margins(20.0, 10.0, 10.0, 4.0),
+        with_margins(4.0, 10.0, 10.0, 10.0),
+        // A centring mark ends on the drawing border or inside it...
+        DrawingBorderProfile { centring_mark_mm: Some(-0.000_001), ..iso },
         DrawingBorderProfile { centring_mark_mm: Some(-10.0), ..iso },
         DrawingBorderProfile { centring_mark_mm: Some(f64::NAN), ..iso },
         DrawingBorderProfile { centring_mark_mm: Some(f64::INFINITY), ..iso },
+        // ...and is longer than 0: one that stops on the drawing border needs a grid reference border.
+        DrawingBorderProfile { grid_border_mm: 0.0, ..iso },
         // A trimming mark is finite, above 0 and no wider than it is long...
         DrawingBorderProfile { trimming_mark_mm: Some([4.0, 5.0]), ..iso },
         DrawingBorderProfile { trimming_mark_mm: Some([10.0, 0.0]), ..iso },
         DrawingBorderProfile { trimming_mark_mm: Some([f64::NAN, 5.0]), ..iso },
         DrawingBorderProfile { trimming_mark_mm: Some([10.0, f64::NAN]), ..iso },
         DrawingBorderProfile { trimming_mark_mm: Some([f64::INFINITY, 5.0]), ..iso },
-        // ...and fits between the sheet border and the grid reference border: ISO's 5 mm fill its
-        // 10 - 5 mm exactly.
-        DrawingBorderProfile { grid_border_mm: 5.000_001, ..iso },
-        DrawingBorderProfile { grid_border_mm: 0.0, ..with_margins(2.0, 2.0, 2.0, 2.0) },
+        // ...and fits between the sheet border and the grid reference border: ISO 5457's 5 mm fill
+        // the 10 - 5 mm left exactly.
+        DrawingBorderProfile { grid_border_mm: 5.000_001, ..full_iso_5457() },
+        DrawingBorderProfile { grid_border_mm: 0.0, centring_mark_mm: None, trimming_mark_mm: Some([10.0, 5.0]), ..with_margins(2.0, 2.0, 2.0, 2.0) },
     ] {
         assert!(profile.validate().is_err(), "validated {profile:?}");
         assert!(profile.layout(&a3).is_err(), "laid out {profile:?}");
@@ -291,6 +373,12 @@ fn hostile_sizes_and_profiles_are_refused() {
         DrawingBorderProfile { centring_mark_mm: Some(138.500_001), ..iso },
         // Or a drawing border its centre lines miss.
         DrawingBorderProfile { grid: GridRule::Equal { columns: 2, rows: 2 }, ..with_margins(200.0, 219.0, 10.0, 10.0) },
+        // Or one whose left side lies on the centre line at 210, with any reach inside it.
+        DrawingBorderProfile {
+            grid: GridRule::Equal { columns: 2, rows: 2 },
+            centring_mark_mm: Some(0.000_001),
+            ..with_margins(210.0, 10.0, 10.0, 10.0)
+        },
         // A trimming mark longer than half the 297 mm side.
         DrawingBorderProfile { trimming_mark_mm: Some([148.500_001, 5.0]), ..iso },
     ] {
@@ -307,12 +395,19 @@ fn hostile_sizes_and_profiles_are_refused() {
         DrawingBorderProfile { grid: GridRule::FromCentre { field_mm: 1.0 }, ..iso },
         DrawingBorderProfile { grid: GridRule::FromCentre { field_mm: 1000.0 }, ..iso },
         DrawingBorderProfile { grid: GridRule::Equal { columns: 200, rows: 200 }, ..iso },
-        DrawingBorderProfile { grid_border_mm: 0.0, trimming_mark_mm: None, ..with_margins(0.0, 0.0, 0.0, 0.0) },
-        DrawingBorderProfile { grid_border_mm: 10.0, trimming_mark_mm: None, ..iso },
+        DrawingBorderProfile { grid_border_mm: 0.0, centring_mark_mm: None, ..with_margins(0.0, 0.0, 0.0, 0.0) },
+        DrawingBorderProfile { grid_border_mm: 10.0, ..iso },
         DrawingBorderProfile { centring_mark_mm: Some(138.5), ..iso },
-        // ISO's own trimming marks fill their strip exactly, and so do these.
+        // With no grid reference border, a centring mark that reaches inside has a length.
+        DrawingBorderProfile { grid_border_mm: 0.0, centring_mark_mm: Some(10.0), ..iso },
+        // A centre line on the drawing border's left side: a mark that stops on the border fits.
+        DrawingBorderProfile { grid: GridRule::Equal { columns: 2, rows: 2 }, ..with_margins(210.0, 10.0, 10.0, 10.0) },
+        // The filing margin stands in for a left margin too narrow for the grid reference border.
+        DrawingBorderProfile { filing_margin: true, ..with_margins(4.0, 10.0, 10.0, 10.0) },
         iso,
-        DrawingBorderProfile { grid_border_mm: 0.0, trimming_mark_mm: Some([10.0, 2.0]), ..with_margins(2.0, 2.0, 2.0, 2.0) },
+        // ISO 5457's trimming marks fill their strip exactly, and so do these.
+        full_iso_5457(),
+        DrawingBorderProfile { grid_border_mm: 0.0, centring_mark_mm: None, trimming_mark_mm: Some([10.0, 2.0]), ..with_margins(2.0, 2.0, 2.0, 2.0) },
         DrawingBorderProfile { trimming_mark_mm: Some([148.5, 5.0]), ..iso },
     ] {
         profile.layout(&a3).unwrap();
@@ -336,17 +431,26 @@ fn names_round_trip_and_unknown_fields_are_refused() {
     assert_eq!(serde_json::from_value::<Sheet>(value).unwrap(), sheet);
     let profile = DrawingBorderProfile::iso();
     let value = serde_json::to_value(profile).unwrap();
+    assert_eq!(value["margins"], serde_json::json!({"left_mm": 10.0, "right_mm": 10.0, "top_mm": 10.0, "bottom_mm": 10.0}));
+    assert_eq!(value["filing_margin"], serde_json::json!(false));
     assert_eq!(value["grid"], serde_json::json!({"from_centre": {"field_mm": 50.0}}));
     assert_eq!(value["label_sides"], serde_json::json!("iso"));
+    assert_eq!(value["centring_mark_mm"], serde_json::json!(0.0));
+    assert_eq!(value["trimming_mark_mm"], serde_json::json!(null));
     assert_eq!(serde_json::to_value(GridRule::None).unwrap(), serde_json::json!("none"));
     assert_eq!(serde_json::from_value::<DrawingBorderProfile>(value.clone()).unwrap(), profile);
     for other in [
         DrawingBorderProfile { grid: GridRule::None, ..profile },
         DrawingBorderProfile { grid: GridRule::Equal { columns: 8, rows: 6 }, ..profile },
         DrawingBorderProfile { label_sides: LabelSides::Fixed(Sides::ALL), ..profile },
+        full_iso_5457(),
     ] {
         assert_eq!(serde_json::from_value::<DrawingBorderProfile>(serde_json::to_value(other).unwrap()).unwrap(), other);
     }
+    // A profile written without the filing margin reads with it off.
+    let mut without = value.clone();
+    without.as_object_mut().unwrap().remove("filing_margin");
+    assert_eq!(serde_json::from_value::<DrawingBorderProfile>(without).unwrap(), profile);
     for bad in [
         serde_json::json!({"size": {"standard": "a6"}}),
         serde_json::json!({"size": {"standard": "a3"}, "scale": 1}),
@@ -400,10 +504,11 @@ fn fields_tile_every_drawing_border_exactly() {
     ];
     let mut accepted = 0;
     for sheet in &sheets {
-        for margins in margins {
+        for (margins, filing_margin) in margins.into_iter().flat_map(|m| [(m, false), (m, true)]) {
             for grid in grids {
                 let profile = DrawingBorderProfile {
                     margins,
+                    filing_margin,
                     drawing_border_line_mm: 0.7,
                     grid,
                     skip_i_and_o: true,
