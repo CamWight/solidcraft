@@ -121,12 +121,25 @@ impl Document {
         self.param(n).is_some() || self.features.iter().any(|f| f.param_names.iter().any(|x| x == n))
     }
 
+    /// Every name a parameter or a feature input has, gathered once: asking `name_taken` for each
+    /// candidate searched the whole design once per candidate, quadratic in the named inputs.
+    fn taken_names(&self) -> std::collections::HashSet<&str> {
+        self.params.iter().map(|p| p.name.as_str()).chain(self.features.iter().flat_map(|f| f.param_names.iter().map(String::as_str))).collect()
+    }
+
+    /// The first of `base`, `base2`, `base3`, … that no parameter or feature input has.
+    fn free_name(&self, base: &str) -> String {
+        let taken = self.taken_names();
+        // One candidate more than there are names, so one of them is free.
+        (1..=taken.len() + 1)
+            .map(|n| if n == 1 { base.to_string() } else { format!("{base}{n}") })
+            .find(|name| !taken.contains(name.as_str()))
+            .unwrap_or_else(|| base.to_string())
+    }
+
     /// The next free `dN` name.
     pub fn next_d_name(&self) -> String {
-        // Every taken name at once: asking `name_taken` for d1, d2, … searched the whole
-        // design once per number, quadratic in the number of named inputs.
-        let taken: std::collections::HashSet<&str> =
-            self.params.iter().map(|p| p.name.as_str()).chain(self.features.iter().flat_map(|f| f.param_names.iter().map(String::as_str))).collect();
+        let taken = self.taken_names();
         let mut n = 1;
         loop {
             let c = format!("d{n}");
@@ -724,6 +737,35 @@ impl Document {
     /// dimension, favourite and comment that refers to it follows. Returns how many
     /// references were updated.
     pub fn rename_param(&mut self, old: &str, new: &str) -> Result<usize> {
+        self.rename_param_with(old, new, expr::rename_reference)
+    }
+
+    /// Rename the parameters and feature inputs of an older design whose names are now units
+    /// (`names`, which a format step listed as the design opened): `g` becomes `g_param` (or
+    /// `g_param2`, … when that is taken), every expression that uses it follows as the build that
+    /// saved the design read it (`2 g` was 2 × `g`, not 2 grams), and its comment says why. No
+    /// value changes. A listed name that isn't reserved now, or that nothing has, is left alone.
+    pub(crate) fn rename_unit_word_params(&mut self, names: &[String]) -> Result<()> {
+        for old in names {
+            if !expr::is_reserved(old) || !self.name_taken(old) {
+                continue;
+            }
+            let new = self.free_name(&format!("{old}_param"));
+            self.rename_param_with(old, &new, expr::rename_word)?;
+            let note = format!("renamed from `{old}`, which is now a unit");
+            let had = match self.param(&new) {
+                Some(p) => p.comment.clone(),
+                None => self.param_comments.get(&new).cloned().unwrap_or_default(),
+            };
+            let comment = if had.is_empty() { note } else { format!("{had} ({note})") };
+            // A comment already at its longest keeps its own text: the rename is what matters.
+            let _ = self.set_param_comment(&new, &comment);
+        }
+        Ok(())
+    }
+
+    /// [`Document::rename_param`], renaming the name in expressions with `rename`.
+    fn rename_param_with(&mut self, old: &str, new: &str, rename: fn(&str, &str, &str) -> String) -> Result<usize> {
         let new = new.trim();
         if !self.name_taken(old) {
             return Err(DocError::Unknown(format!("parameter `{old}`")));
@@ -742,7 +784,7 @@ impl Document {
             if p.name == old {
                 p.name = new.to_string();
             }
-            let r = expr::rename_reference(&p.expr, old, new);
+            let r = rename(&p.expr, old, new);
             if r != p.expr {
                 p.expr = r;
                 n += 1;
@@ -755,14 +797,14 @@ impl Document {
                 }
             }
             for e in f.kind.placement_exprs_mut() {
-                let r = expr::rename_reference(e, old, new);
+                let r = rename(e, old, new);
                 if r != *e {
                     *e = r.into();
                     n += 1;
                 }
             }
             for (_, e, _) in f.kind.inputs_mut() {
-                let r = expr::rename_reference(e, old, new);
+                let r = rename(e, old, new);
                 if r != *e {
                     *e = r.into();
                     n += 1;
@@ -776,7 +818,7 @@ impl Document {
                     }
                 }
                 for e in sketch.text_exprs_mut() {
-                    let r = expr::rename_reference(e, old, new);
+                    let r = rename(e, old, new);
                     if r != *e {
                         *e = r;
                         n += 1;
@@ -794,17 +836,17 @@ impl Document {
         }
         // Configuration cells refer to parameters too.
         for rule in &mut self.configs.rules {
-            rule.rename_parameter(old, new);
+            rule.rename_parameter(old, new, rename);
         }
         for r in &mut self.configs.rows {
             for (column, cell) in self.configs.columns.iter().zip(&mut r.cells) {
                 if matches!(column, crate::config::Column::Param(_)) {
-                    *cell = expr::rename_reference(cell, old, new);
+                    *cell = rename(cell, old, new);
                 }
             }
         }
         for e in self.assembly.exprs_mut() {
-            let r = expr::rename_reference(e, old, new);
+            let r = rename(e, old, new);
             if r != *e {
                 *e = r;
                 n += 1;
