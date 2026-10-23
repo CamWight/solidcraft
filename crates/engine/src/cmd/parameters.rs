@@ -11,7 +11,8 @@ use crate::{EngineError, Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("parameters.change", "Change Parameters", change_param).at("SOLID", "MODIFY").icon("params").params(
-        "name, expression (number or text), unit?: mm|cm|m|in|ft|deg|rad|\"\" (new parameters default to their value's unit), comment?, \
+        "name, expression (number or text), unit?: a unit expressions know (mm, in, deg, kg, mm³, m²…; every one is listed in \
+         docs/book/src/guide/parameters.md) or \"\" (new parameters default to their value's kind's unit), comment?, \
              favorite?: bool, new_name?: rename (references follow); or delete: name; or changes: {name: expression, …} (existing \
          parameters, checked together and rebuilt once, all or nothing) → changed?: {name: value} (with changes), recomputed: features rebuilt, \
          restored: features whose earlier result for the same inputs was reused (e.g. a value set back)",
@@ -304,10 +305,8 @@ fn evaluate(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "expr.evaluate";
     let e = expr_arg(p, "expression").ok_or_else(|| bad(cmd, "`expression` must be text or a number"))?;
     let unit = str_(p, "unit");
-    if let Some(u) = unit
-        && expr::unit_info(u).is_none()
-    {
-        return Err(bad(cmd, format!("unknown unit `{u}`")));
+    if let Some(why) = unit.and_then(expr::unit_problem) {
+        return Err(bad(cmd, why));
     }
     // A kind by the name `Kind` has for itself (`length`, `mass`…), or `number` for a unit-less one.
     let kind = match (str_(p, "kind"), unit) {
