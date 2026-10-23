@@ -39,6 +39,10 @@ pub(crate) fn reveal(app: &mut SolveApp, id: u64, body: &str) {
 }
 
 pub(super) fn rows(app: &mut SolveApp, ui: &mut egui::Ui, component: u64, path: &[u64], depth: usize, acts: &mut Actions) {
+    // A search lists only what it finds, and it doesn't look for features.
+    if app.tree.search.on() {
+        return;
+    }
     let has_features = match app.tree.model.as_ref().filter(|m| m.matches(&app.session)) {
         Some(model) => model.features.get(&component).is_some_and(|features| !features.is_empty()),
         None => app.session.doc.features.iter().any(|feature| feature.component == component && !matches!(feature.kind, FeatureKind::Sketch { .. })),

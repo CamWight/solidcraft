@@ -74,6 +74,8 @@ pub struct TreeState {
     pub reveal: Option<String>,
     /// A native feature to reveal in its placed component's Features folder.
     pub(super) reveal_feature: Option<features::Reveal>,
+    /// The search above the tree (#1413).
+    pub search: crate::browser_search::BrowserSearch,
     /// The Move/Copy panel of an occurrence.
     pub occurrence_move: Option<OccMove>,
     /// The Redefine Sketch Plane panel (sketch id).
@@ -556,12 +558,19 @@ fn reveals_in_occurrence(app: &SolveApp, path: &[u64]) -> bool {
     app.tree.reveal.as_ref().is_some_and(|r| app.session.occurrence_bodies(path, true).is_ok_and(|bodies| bodies.contains(r)))
 }
 
+/// Is the row with this fold key open? During a search every row is, unless it was closed in
+/// the search; the tree's own folds come back when it ends.
 pub(crate) fn is_open(app: &SolveApp, key: &str, default: bool) -> bool {
+    if app.tree.search.on() {
+        return !app.tree.search.closed(key);
+    }
     if default { !app.tree.collapsed.contains(key) } else { app.tree.expanded.contains(key) }
 }
 
 pub(crate) fn toggle(app: &mut SolveApp, key: &str, default: bool) {
-    if default {
+    if app.tree.search.on() {
+        app.tree.search.toggle_closed(key);
+    } else if default {
         if !app.tree.collapsed.remove(key) {
             app.tree.collapsed.insert(key.to_string());
         }
@@ -972,6 +981,27 @@ fn browser_rows_hugging(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Action
 fn rows_scrolling(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions, shrink_height: bool) {
     prepare_model(app);
     acts.lit = Lit::of(app);
+    // Find in Browser shows the whole tree, for a body or for the feature that made a face.
+    if app.tree.reveal.is_some() || app.tree.reveal_feature.is_some() {
+        app.tree.search.clear();
+    }
+    if ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.modifiers.command_only() && i.key_pressed(egui::Key::F)) {
+        app.tree.search.focus();
+    }
+    // Above the rows and never scrolled with them, but clipped to the card's height, so it folds
+    // away with the card as the rows do. The bar ends with its own gap, so none between the two.
+    ui.spacing_mut().item_spacing.y = 0.0;
+    egui::ScrollArea::vertical()
+        .id_salt("browser_search_bar")
+        .max_height(ui.available_height())
+        .min_scrolled_height(0.0)
+        .auto_shrink([false, true])
+        .scroll_source(egui::scroll_area::ScrollSource::NONE)
+        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+        .show(ui, |ui| crate::browser_search::bar(app, ui));
+    if app.tree.search.hits().is_some_and(|h| h.total() == 0) {
+        return;
+    }
     egui::ScrollArea::vertical()
         // The card may animate all the way down to its header.
         .min_scrolled_height(0.0)
@@ -1027,6 +1057,8 @@ fn component_rows(app: &mut SolveApp, ui: &mut egui::Ui, id: u64, depth: usize, 
     let faded = app.session.active_component != 0 && !app.session.doc.component_within(id, app.session.active_component) && !active;
     let name = component_name(app, id);
     let badges: &[&str] = if grounded { &["pin"] } else { &[] };
+    // A search never matches the design itself: it is the matches' parent, dimmed.
+    let searching = app.tree.search.on();
     let row = Row {
         depth,
         fold: Some(open),
@@ -1035,7 +1067,7 @@ fn component_rows(app: &mut SolveApp, ui: &mut egui::Ui, id: u64, depth: usize, 
         label: &name,
         name: true,
         selected: app.tree.picked_components.contains(&id),
-        dim: faded,
+        dim: faded || searching,
         radio: Some(active),
         badges,
         // The design holds everything the tree lists.
@@ -1094,7 +1126,7 @@ fn component_rows(app: &mut SolveApp, ui: &mut egui::Ui, id: u64, depth: usize, 
         return;
     }
     let d = depth + 1;
-    if id == 0 {
+    if id == 0 && !searching {
         doc_settings(app, ui, d);
         named_view_rows(app, ui, d, acts);
         origin_rows(app, ui, d, acts);
@@ -1123,6 +1155,11 @@ fn occurrence_key(path: &[u64]) -> String {
 /// because their complete paths are the selection and row identity.
 fn occurrence_rows(app: &mut SolveApp, ui: &mut egui::Ui, path: Vec<u64>, depth: usize, acts: &mut Actions) {
     let Some(placement) = model_placement(app, &path) else { return };
+    // A search lists the placements that match, and dimmed, those that hold a match.
+    let (listed, matches, folds) = app.tree.search.hits().map_or((true, true, true), |h| (h.lists(&path), h.matches(&path), h.holds(&path)));
+    if !listed {
+        return;
+    }
     let key = occurrence_key(&path);
     if reveals_in_occurrence(app, &path) {
         app.tree.collapsed.remove(&key);
@@ -1144,13 +1181,13 @@ fn occurrence_rows(app: &mut SolveApp, ui: &mut egui::Ui, path: Vec<u64>, depth:
         ui.id().with(&key),
         &Row {
             depth,
-            fold: Some(open),
+            fold: folds.then_some(open),
             eye: Some(own_visible),
             icon: "component",
             label: &label,
             name: true,
             selected,
-            dim: faded || !visible,
+            dim: faded || !visible || !matches,
             radio: Some(active),
             badges,
             mark: acts.lit.placement(&app.session.doc, &path, placement.component),
@@ -1162,6 +1199,9 @@ fn occurrence_rows(app: &mut SolveApp, ui: &mut egui::Ui, path: Vec<u64>, depth:
         crate::scenario::publish_handle(&format!("row:occurrence:{}", key.trim_start_matches("o:")), pos2(rect.right() - 12.0, rect.center().y));
         let x = rect.left() + 2.0 + depth as f32 * INDENT;
         for (control, offset) in [("fold", 6.0), ("eye", 22.0), ("activate", 38.0)] {
+            if control == "fold" && !folds {
+                continue;
+            }
             crate::scenario::publish_handle(&format!("{control}:occurrence:{}", key.trim_start_matches("o:")), pos2(x + offset, rect.center().y));
         }
     }
@@ -1208,7 +1248,7 @@ fn occurrence_rows(app: &mut SolveApp, ui: &mut egui::Ui, path: Vec<u64>, depth:
     {
         acts.drop = Some(DropAction::Component { to: placement.component, folder: d.folder, keys: d.keys.clone() });
     }
-    if !open {
+    if !open || !folds {
         return;
     }
     for folder in ["bodies", "sketches", "construction"] {
@@ -1876,9 +1916,15 @@ fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option
             }
         }
     }
+    // A search keeps the rows that match.
+    if let Some(hits) = app.tree.search.hits() {
+        let at = path.unwrap_or(&[]);
+        all.retain(|e| hits.row(at, folder, &e.key));
+    }
     if all.is_empty() {
         return;
     }
+    let searching = app.tree.search.on();
     let fstatic = folder_static(folder);
     let key = format!("{prefix}/{folder}");
     if let Some(r) = app.tree.reveal.clone()
@@ -1906,7 +1952,7 @@ fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option
             eye: Some(shown),
             icon: "folder",
             label: folder_label(folder),
-            dim: folder_faded,
+            dim: folder_faded || searching,
             mark: acts.lit.branch(folder, &all),
             ..Default::default()
         },
@@ -1941,6 +1987,9 @@ fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option
     let (groups, loose) = arrange(app, comp, folder, all);
     let loose_keys: Vec<String> = loose.iter().map(|e| e.key.clone()).collect();
     for (g, items) in &groups {
+        if searching && items.is_empty() {
+            continue;
+        }
         let gkey = format!("{prefix}/g{}", g.id);
         let gopen = is_open(app, &gkey, true);
         let gshown = !app.session.folder_hidden(&gkey);
@@ -1956,7 +2005,7 @@ fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option
                 icon: "folder",
                 label: &label,
                 name: true,
-                dim: group_faded,
+                dim: group_faded || searching,
                 mark: acts.lit.branch(folder, items),
                 ..Default::default()
             },
@@ -2078,7 +2127,8 @@ fn entry_row(
     }
     let Some(resp) = &r.resp else { return };
     // Drag: the selected items of this folder when this one is selected, else just this one.
-    if resp.drag_started() && !r.on_control {
+    // Not during a search: it shows only some of the folder, and a new order needs every item.
+    if resp.drag_started() && !r.on_control && !app.tree.search.on() {
         let keys: Vec<String> = if e.selected { selected_keys(app, comp, folder) } else { vec![e.key.clone()] };
         resp.dnd_set_drag_payload(Drag { comp, folder, keys });
     }
