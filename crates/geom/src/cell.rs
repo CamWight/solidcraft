@@ -1,0 +1,297 @@
+//! Cell content: what a title-block cell shows, as text and fields, how it should fit, and the
+//! cell text rule that places a label and a value in a cell. Plain data in sheet millimetres, like
+//! [`crate::drawing_sheet`]: nothing here reads a field's value, measures text or draws.
+//!
+//! - [`Content`] is a list of [`Part`]s: text as written, or a field naming a value by its
+//!   [`Source`] and key, with a [`Format`]. Keys, units and decimals are kept as written; the
+//!   resolver checks them against each source. [`Content::validate`] bounds its size.
+//! - A resolved value is a [`Resolved`]: the text shown, whether it is live, typed over (an
+//!   [`Override`]) or missing, and why a part couldn't be read. [`MISSING`] stands in for a part
+//!   that couldn't.
+//! - A value is never cut: when it has more than its [`Fit`] allows, it is shown whole with a
+//!   [`Warning`].
+//!
+//! The cell text rule (x to the right, y up):
+//! - a label's baseline starts [`PADDING_MM`] in from the cell's left side, and its cap height
+//!   plus [`PADDING_MM`] down from the cell's top ([`label_at`]);
+//! - the value box is the cell inset by [`PADDING_MM`], its top [`PADDING_MM`] below the label's
+//!   baseline when there is a label ([`value_box`]);
+//! - one line of a value that doesn't wrap is centred top to bottom in the value box; otherwise the
+//!   lines run down from the box's top at the font's line pitch, the first baseline a cap height
+//!   below it ([`place_lines`]);
+//! - a line's anchor is on its baseline, at the box's left side, middle or right side: a writer
+//!   aligns the line on it.
+//!
+//! Breaking a value into lines that fit the box's width, and warning about width, need the text
+//! measured: they come with the paper scene's text.
+
+use serde::{Deserialize, Serialize};
+
+use crate::{Aabb2, EPS, Vec2};
+
+/// The most parts a cell's content may have.
+pub const MAX_PARTS: usize = 64;
+/// The most bytes of text a cell's content may hold in all, and each text of an override.
+pub const MAX_TEXT_BYTES: usize = 4096;
+/// The space between a cell's lines and its text, in millimetres.
+pub const PADDING_MM: f64 = 1.0;
+/// What a part that couldn't be read shows.
+pub const MISSING: &str = "-";
+
+/// Where a field's value comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// The component the sheet documents.
+    Component,
+    /// The drawing.
+    Drawing,
+    /// The sheet the cell is on.
+    Sheet,
+    /// The drawing's newest revision.
+    Revision,
+    /// An answer given when the block was placed.
+    Prompt,
+}
+
+/// One part of a cell's content. Externally tagged: `{"text": "Sheet "}`,
+/// `{"field": {"source": "sheet", "key": "number"}}`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum Part {
+    /// Text shown as written.
+    Text(String),
+    /// The value `source` holds under `key` (such as `component` `mass`), shown by `format`.
+    Field {
+        source: Source,
+        key: String,
+        #[serde(default)]
+        format: Format,
+    },
+}
+
+/// How a field's number is shown; what isn't given comes from the caller's settings.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Format {
+    pub unit: Option<String>,
+    pub decimals: Option<u8>,
+}
+
+/// What a cell shows: its parts in order.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Content(pub Vec<Part>);
+
+/// What a value should fit beyond its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Fit {
+    /// The most characters a value should have, line breaks not counted.
+    pub max_chars: Option<u32>,
+    /// The most for a value with a wide character (Chinese, Japanese, Korean or Yi), when it
+    /// differs from `max_chars`.
+    pub wide_max_chars: Option<u32>,
+    /// The value breaks between words to fit the box's width, its lines running down from the top.
+    #[serde(default)]
+    pub wrap: bool,
+}
+
+/// Where a line sits across its box.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HAlign {
+    #[default]
+    Left,
+    Centre,
+    Right,
+}
+
+/// Text typed over a cell's value, with the value it replaced, so a later change shows as drift.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Override {
+    pub text: String,
+    pub source_was: String,
+}
+
+/// A cell's value as resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Resolved {
+    /// What the cell shows.
+    pub text: String,
+    pub state: State,
+    pub problems: Vec<Problem>,
+}
+
+/// Where a resolved value's text comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    /// Its source, as it is now.
+    Live,
+    /// An override; `drifted` when the source no longer gives what it replaced.
+    Overridden { drifted: bool },
+    /// Its source, with [`MISSING`] for a part that couldn't be read.
+    Missing,
+}
+
+/// A part of the content that couldn't be read, by its index, and why.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Problem {
+    pub part: usize,
+    pub reason: Reason,
+}
+
+/// Why a field couldn't be read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Reason {
+    /// The source has no value under the key, such as a property never set.
+    NotSet,
+    /// The source no longer exists, such as a deleted component.
+    Gone,
+    /// The source's model hasn't been worked out since it changed.
+    Stale,
+    /// SolidCraft doesn't keep this value yet.
+    NotYet,
+    /// The value can't be measured, such as a mass when a part's isn't known.
+    Unmeasurable,
+}
+
+/// The projection a drawing's views use, first or third angle (ISO 5456-2): the value of
+/// `drawing.projection`, which the views and the title block's symbol both read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Projection {
+    First,
+    Third,
+}
+
+/// What doesn't fit, when a value is shown whole.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Warning {
+    /// More characters than the fit allows.
+    Chars { count: usize, max: u32 },
+    /// More lines than the value box holds.
+    Height,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("cell: {0}")]
+pub struct Invalid(pub &'static str);
+
+type Result<T> = std::result::Result<T, Invalid>;
+
+fn require(condition: bool, message: &'static str) -> Result<()> {
+    if condition { Ok(()) } else { Err(Invalid(message)) }
+}
+
+/// Checks text by the module's rule: at most [`MAX_TEXT_BYTES`] in all, and no control character
+/// but a line break.
+fn check_text<'a>(texts: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    let mut bytes = 0usize;
+    for text in texts {
+        bytes = bytes.saturating_add(text.len());
+        require(bytes <= MAX_TEXT_BYTES, "a cell's text is at most 4096 bytes")?;
+        require(!text.chars().any(|c| c.is_control() && c != '\n'), "a cell's text has no control character but a line break")?;
+    }
+    Ok(())
+}
+
+impl Part {
+    /// Its text, or its key and unit.
+    fn texts(&self) -> impl Iterator<Item = &str> {
+        let (first, unit) = match self {
+            Part::Text(text) => (text.as_str(), None),
+            Part::Field { key, format, .. } => (key.as_str(), format.unit.as_deref()),
+        };
+        std::iter::once(first).chain(unit)
+    }
+}
+
+impl Content {
+    /// Checks the content's size: at most [`MAX_PARTS`] parts, counted first, and its text, keys
+    /// and units by the module's text rule.
+    pub fn validate(&self) -> Result<()> {
+        require(self.0.len() <= MAX_PARTS, "a cell has at most 64 parts")?;
+        check_text(self.0.iter().flat_map(Part::texts))
+    }
+}
+
+impl Override {
+    /// Checks the typed text and the value it replaced, each by the module's text rule.
+    pub fn validate(&self) -> Result<()> {
+        check_text([self.text.as_str()])?;
+        check_text([self.source_was.as_str()])
+    }
+}
+
+impl Fit {
+    /// [`Warning::Chars`] when `text` has more characters than the fit allows. A text with a wide
+    /// character is held to `wide_max_chars` when it is given.
+    pub fn warn_chars(&self, text: &str) -> Option<Warning> {
+        let wide = text.chars().any(is_wide);
+        let max = if wide { self.wide_max_chars.or(self.max_chars) } else { self.max_chars }?;
+        let count = text.chars().filter(|&c| c != '\n').count();
+        (count > max as usize).then_some(Warning::Chars { count, max })
+    }
+}
+
+/// The Unicode blocks of the scripts written in wide characters (Chinese, Japanese, Korean and Yi),
+/// with their full-width and vertical forms.
+const WIDE: [(u32, u32); 15] = [
+    (0x1100, 0x115F),
+    (0x2E80, 0x303E),
+    (0x3041, 0x33FF),
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xA000, 0xA4CF),
+    (0xA960, 0xA97F),
+    (0xAC00, 0xD7A3),
+    (0xF900, 0xFAFF),
+    (0xFE10, 0xFE19),
+    (0xFE30, 0xFE6F),
+    (0xFF00, 0xFF60),
+    (0xFFE0, 0xFFE6),
+    (0x20000, 0x2FFFD),
+    (0x30000, 0x3FFFD),
+];
+
+fn is_wide(c: char) -> bool {
+    let c = u32::from(c);
+    WIDE.iter().any(|&(first, last)| (first..=last).contains(&c))
+}
+
+/// Where a label `cap_mm` high goes in `cell`: its baseline's left end.
+pub fn label_at(cell: Aabb2, cap_mm: f64) -> Vec2 {
+    Vec2::new(cell.min.x + PADDING_MM, cell.max.y - PADDING_MM - cap_mm)
+}
+
+/// The box a cell's value goes in, under a label `label_cap_mm` high when it has one.
+pub fn value_box(cell: Aabb2, label_cap_mm: Option<f64>) -> Aabb2 {
+    let inset = cell.inflated(-PADDING_MM);
+    match label_cap_mm {
+        Some(cap_mm) => Aabb2 { max: Vec2::new(inset.max.x, label_at(cell, cap_mm).y - PADDING_MM), ..inset },
+        None => inset,
+    }
+}
+
+/// Where `lines` lines `cap_mm` high go in `value_box`, `pitch_mm` apart, by the module's rule:
+/// the first line's anchor, each next line `pitch_mm` below the one before, and
+/// [`Warning::Height`] when the last baseline is below the box.
+pub fn place_lines(value_box: Aabb2, lines: usize, cap_mm: f64, pitch_mm: f64, align: HAlign, wrap: bool) -> Result<(Vec2, Option<Warning>)> {
+    let Aabb2 { min, max } = value_box;
+    require(min.is_finite() && max.is_finite() && min.x <= max.x && min.y <= max.y, "a value box is finite and not inside out")?;
+    require([cap_mm, pitch_mm].into_iter().all(|v| v.is_finite() && v > 0.0), "a cap height and a line pitch are finite and above 0")?;
+    let x = match align {
+        HAlign::Left => min.x,
+        HAlign::Centre => value_box.center().x,
+        HAlign::Right => max.x,
+    };
+    let y = if lines == 1 && !wrap { value_box.center().y - cap_mm / 2.0 } else { max.y - cap_mm };
+    let last = y - lines.saturating_sub(1) as f64 * pitch_mm;
+    let overflows = lines > 0 && last < min.y - EPS;
+    Ok((Vec2::new(x, y), overflows.then_some(Warning::Height)))
+}
+
+#[cfg(test)]
+#[path = "cell_tests.rs"]
+mod tests;
