@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use solidcraft_doc::bom::{self, Bom, Group, Holds, Mass, Request, Tree, Unknown, View};
 
 use crate::Session;
 
@@ -762,7 +763,7 @@ fn rows_name_their_materials_and_with_mass_weigh_one_part() {
         ],
         "one of each, whatever the count: {flat}"
     );
-    // The frame as one row holds its parts and has no material of its own.
+    // The frame as one row stands for its steel and aluminium parts: no one material.
     let top = run(&mut s, "assembly.bom", json!({"levels": "top", "mass": true}));
     assert_eq!(weights(&top)[1], weight("Frame", "", Some(799.33)), "{top}");
     // Weighing measures every part, so it is asked for; materials come without it.
@@ -800,28 +801,6 @@ fn a_reference_placement_adds_nothing_to_what_its_assembly_weighs() {
     assert_eq!(frame(&mut s), None);
 }
 
-#[test]
-fn a_row_has_a_mass_only_when_its_definitions_are_weighed_and_agree() {
-    use super::Holds::{All, Nothing};
-    let weighed = std::collections::BTreeMap::from([
-        ((1, All), Some((392.5, 1))),
-        ((2, All), Some((392.5, 1))),
-        ((3, All), Some((6.48, 1))),
-        ((4, All), Some((0.0, 1))),
-        ((5, All), Some((0.0, 0))),
-        ((6, All), None),
-    ]);
-    let row_mass = |components: &[u64]| super::row_mass(components, All, &weighed);
-    assert_eq!(row_mass(&[1, 2]), Some(392.5));
-    assert_eq!(row_mass(&[1, 3]), None);
-    assert_eq!(row_mass(&[4, 4]), Some(0.0), "a body that weighs nothing (a surface) is weighed");
-    assert_eq!(row_mass(&[4, 1]), None);
-    assert_eq!(row_mass(&[5]), None, "nothing to weigh");
-    assert_eq!(row_mass(&[6]), None, "not measured");
-    assert_eq!(row_mass(&[7]), None, "never weighed");
-    assert_eq!(super::row_mass(&[1], Nothing, &weighed), None, "weighed for another kind of row");
-}
-
 /// Every list's rows add up to the assembly once: in parts only, what a part holds is listed
 /// beside it, so it isn't weighed again with the part.
 #[test]
@@ -854,7 +833,8 @@ fn the_rows_of_every_list_add_up_to_the_assembly() {
     set_type(&mut s, "Bracket", "purchased");
     check(&mut s, "an inseparable frame with purchased brackets", &[&flat, &top, &folded]);
     let frame = run(&mut s, "assembly.bom", json!({"mass": true}));
-    assert_eq!(weights(&frame)[1], weight("Frame", "", Some(785.0)), "{frame}");
+    // Its steel blocks: the aluminium brackets are rows beside it.
+    assert_eq!(weights(&frame)[1], weight("Frame", "Steel", Some(785.0)), "{frame}");
     // A placement kept for reference adds nothing to the assembly either.
     set_occurrence(&mut s, "Block:2", json!("reference"));
     check(&mut s, "a block kept for reference", &[&flat, &top, &folded]);
@@ -875,6 +855,45 @@ fn one_part_number_has_one_mass_only_when_its_definitions_agree() {
     let block = &r["rows"][0];
     assert_eq!((block["components"].as_array().map(Vec::len), grams(block)), (Some(3), None), "{r}");
     assert_eq!(block["material"], "Steel; Default");
+}
+
+/// A row that stands for an assembly names a material only when everything it stands for shares it
+/// (Cameron, 2026-10-23), whatever kind of row it is; a part lists its own bodies' materials.
+#[test]
+fn an_assembly_row_names_the_one_material_all_it_stands_for_shares() {
+    let mut s = frame();
+    let material = |s: &mut Session, p: Value, definition: &str| -> String {
+        let r = run(s, "assembly.bom", p);
+        let row = r["rows"].as_array().unwrap().iter().find(|r| r["definition"] == definition).cloned();
+        row.and_then(|r| r["material"].as_str().map(str::to_string)).unwrap_or_else(|| panic!("no {definition} row: {r}"))
+    };
+    let (flat, top, folded) = (json!({}), json!({"levels": "top"}), json!({"group_children": true}));
+    // Steel blocks and a bracket of aluminium and steel; the bracket, a part, lists both.
+    assert_eq!(material(&mut s, top.clone(), "Frame"), "");
+    assert_eq!(material(&mut s, flat.clone(), "Bracket"), "Aluminum; Steel");
+    // Kept for reference, the brackets aren't part of it: the frame is its steel blocks.
+    set_type(&mut s, "Bracket", "reference");
+    assert_eq!(material(&mut s, top.clone(), "Frame"), "Steel");
+    // Bought as one: the same rule.
+    set_type(&mut s, "Bracket", "normal");
+    set_type(&mut s, "Frame", "purchased");
+    assert_eq!(material(&mut s, flat.clone(), "Frame"), "");
+    // Made as one, in parts only: its purchased brackets are listed beside it, each with its own.
+    set_type(&mut s, "Frame", "inseparable");
+    set_type(&mut s, "Bracket", "purchased");
+    assert_eq!(material(&mut s, flat.clone(), "Frame"), "Steel");
+    assert_eq!(material(&mut s, flat.clone(), "Bracket"), "Aluminum; Steel", "a bought part with nothing inside lists its own");
+    assert_eq!(material(&mut s, top.clone(), "Frame"), "", "at the top level it stands for its brackets too");
+    // Folded with a part number: the same rule, and its children list their own.
+    set_type(&mut s, "Frame", "normal");
+    set_type(&mut s, "Bracket", "normal");
+    run(&mut s, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
+    assert_eq!(material(&mut s, folded.clone(), "Frame"), "");
+    // A physical material given to the whole frame is every body's in it, so the row shows it.
+    run(&mut s, "material.assign", json!({"bodies": ["Block", "Plate", "Cube"], "material": "Aluminum"}));
+    for p in [top, folded] {
+        assert_eq!(material(&mut s, p.clone(), "Frame"), "Aluminum", "{p}");
+    }
 }
 
 /// A row names the material its mass is worked out with, as the library or the design spells it:
@@ -925,4 +944,181 @@ fn a_body_that_measures_inside_out_has_no_mass() {
     let r = run(&mut s, "assembly.bom", json!({"mass": true}));
     assert_eq!(weights(&r), [weight("Facing down", "Default", None), weight("Flat", "Default", Some(0.0))], "{r}");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The bill of materials `request` lists for the design `s` holds, as typed rows.
+fn list(s: &Session, request: Request) -> Bom {
+    let state = s.model.state();
+    bom::list(&mut Tree::new(&s.doc, &state), &request).unwrap()
+}
+
+/// `assembly.bom`'s JSON presents the typed rows: every field of every row and child, for every
+/// option.
+#[test]
+fn assembly_bom_presents_the_typed_rows() {
+    let base = Request::default();
+    let options = [
+        (json!({}), base),
+        (json!({"levels": "top"}), Request { view: View::FirstLevel, ..base }),
+        (json!({"group_children": true}), Request { fold: true, ..base }),
+        (json!({"levels": "top", "group_children": true}), Request { view: View::FirstLevel, fold: true, ..base }),
+        (json!({"group_by": ["definition"], "group_children": true}), Request { group: Group::Definition, fold: true, ..base }),
+        (json!({"mass": true}), Request { mass: true, ..base }),
+        (json!({"levels": "top", "mass": true}), Request { view: View::FirstLevel, mass: true, ..base }),
+        (json!({"group_children": true, "mass": true}), Request { fold: true, mass: true, ..base }),
+    ];
+    let mut numbered_frame = frame();
+    run(&mut numbered_frame, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
+    for (name, mut s) in [("assembly", assembly()), ("bolts", bolts()), ("machine", machine()), ("frame", numbered_frame)] {
+        for (params, request) in &options {
+            let shown = run(&mut s, "assembly.bom", params.clone());
+            let listed = list(&s, *request);
+            assert_eq!(shown["total_occurrences"], listed.total.occurrences, "{name} {params}");
+            let lines: Vec<&Value> = shown["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|r| std::iter::once(r).chain(r["children"].as_array().into_iter().flatten()))
+                .collect();
+            let deep = listed.rows_deep();
+            assert_eq!(lines.len(), deep.len(), "{name} {params}");
+            for (line, (item, row)) in lines.into_iter().zip(deep) {
+                let top = item.len() == 1;
+                assert_eq!(line["item"], if top { json!(row.item) } else { json!(bom::item_text(&item)) }, "{name} {params}");
+                let fields = [
+                    &line["part_number"],
+                    &line["description"],
+                    &line["revision"],
+                    &line["bom_type"],
+                    &line["count"],
+                    &line["definition"],
+                    &line["material"],
+                ];
+                let want = [
+                    json!(row.part_number),
+                    json!(row.description),
+                    json!(row.revision),
+                    json!(row.bom_type.as_str()),
+                    json!(row.count),
+                    json!(row.names.join("; ")),
+                    json!(row.materials.join("; ")),
+                ];
+                assert_eq!(fields, want.each_ref(), "{name} {params}");
+                if top {
+                    assert_eq!((&line["components"], &line["properties"]), (&json!(row.components), &json!(row.properties)), "{name} {params}");
+                } else {
+                    assert_eq!(line["each"], row.each, "{name} {params}");
+                }
+                match row.mass {
+                    Mass::NotAsked => assert!(line.get("mass_g").is_none(), "{name} {params}"),
+                    Mass::Grams(grams) => assert_eq!(line["mass_g"], json!(grams), "{name} {params}"),
+                    Mass::Unknown(_) => assert!(line["mass_g"].is_null(), "{name} {params}"),
+                }
+            }
+        }
+    }
+}
+
+/// A row's mass is known, or says why not; it is weighed only when asked.
+#[test]
+fn a_rows_mass_says_why_it_is_unknown() {
+    let s = frame();
+    let flat = list(&s, Request { mass: true, ..Request::default() });
+    let masses: Vec<(&str, Option<f64>)> = flat
+        .rows
+        .iter()
+        .map(|r| {
+            let grams = match r.mass {
+                Mass::Grams(g) => Some((g * 1e6).round() / 1e6),
+                Mass::NotAsked | Mass::Unknown(_) => None,
+            };
+            (r.names[0].as_str(), grams)
+        })
+        .collect();
+    assert_eq!(masses, [("Block", Some(392.5)), ("Bracket", Some(14.33)), ("Grease", None), ("Spacer", Some(1.29))]);
+    assert_eq!(flat.rows[2].mass, Mass::Unknown(Unknown::NothingToWeigh), "the grease has no bodies");
+    let plain = list(&s, Request::default());
+    assert!(plain.rows.iter().all(|r| r.mass == Mass::NotAsked) && plain.total.mass == Mass::NotAsked);
+    // At the top level the bolts with and without a washer and nut share a row, and weigh differently.
+    let top = list(&bolts(), Request { view: View::FirstLevel, mass: true, ..Request::default() });
+    assert_eq!(top.rows[0].mass, Mass::Unknown(Unknown::Differs));
+}
+
+/// The assembly's mass is weighed from the design, never added up from rows: a row whose
+/// definitions weigh differently has none, and the assembly still has one. When every row is
+/// known, the rows of every list add up to it.
+#[test]
+fn the_total_is_weighed_from_the_assembly_not_added_up_from_rows() {
+    let properties = |s: &mut Session| run(s, "component.properties", json!({"component": "root"}))["total"]["mass_g"].as_f64().unwrap();
+    let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * b.abs();
+    let mut s = bolts();
+    let top = list(&s, Request { view: View::FirstLevel, mass: true, ..Request::default() });
+    let Mass::Grams(total) = top.total.mass else { panic!("{:?}", top.total) };
+    assert!(close(total, properties(&mut s)), "{total} g");
+    let mut s = frame();
+    run(&mut s, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
+    for reference in [false, true] {
+        if reference {
+            set_occurrence(&mut s, "Block:2", json!("reference"));
+        }
+        let assembly = properties(&mut s);
+        for view in View::ALL {
+            for fold in [false, true] {
+                let b = list(&s, Request { view, fold, mass: true, ..Request::default() });
+                let Mass::Grams(total) = b.total.mass else { panic!("{:?}", b.total) };
+                let listed: f64 = b.rows.iter().map(|r| if let Mass::Grams(g) = r.mass { r.count as f64 * g } else { 0.0 }).sum();
+                assert!(
+                    close(total, assembly) && close(listed, assembly),
+                    "{view:?} {fold} {reference}: {listed} g listed, {total} g, {assembly} g in all"
+                );
+            }
+        }
+    }
+}
+
+/// A row says what one of its parts stands for when weighed, and which placements it counts.
+#[test]
+fn a_row_says_what_it_stands_for_and_which_placements_it_counts() {
+    let mut s = frame();
+    set_type(&mut s, "Frame", "inseparable");
+    set_type(&mut s, "Bracket", "purchased");
+    let id = |name: &str| s.doc.occurrences.iter().find(|o| o.name == name).unwrap().id;
+    let mut brackets = vec![vec![id("Frame:1"), id("Bracket:1")], vec![id("Bracket:2")]];
+    brackets.sort();
+    let want = [
+        ("Bracket", Holds::All, brackets),
+        ("Frame", Holds::AllButPurchased, vec![vec![id("Frame:1")]]),
+        ("Grease", Holds::Own, vec![vec![id("Grease:1")]]),
+        ("Spacer", Holds::Own, vec![vec![id("Spacer:1")]]),
+    ];
+    let flat = list(&s, Request::default());
+    let rows: Vec<(&str, Holds, Vec<Vec<u64>>)> = flat.rows.iter().map(|r| (r.names[0].as_str(), r.stands_for, r.members.clone())).collect();
+    assert_eq!(rows, want, "the blocks are the inseparable frame's, the brackets bought beside it");
+    // At the first level each row stands for all its part holds.
+    assert!(list(&s, Request { view: View::FirstLevel, ..Request::default() }).rows.iter().all(|r| r.stands_for == Holds::All));
+}
+
+/// A compact assembly that places one block 2^64 times (a level placed once, each level below it
+/// placed twice in the one above, 64 deep): one of its rows holds more bodies than a count does.
+/// Weighing it must never overflow; parts only, which walks every placement, refuses it.
+#[test]
+fn a_compact_assembly_of_more_bodies_than_a_count_holds_is_weighed() {
+    let mut s = Session::default();
+    let block = run(&mut s, "component.create", json!({"name": "Block"}))["component"].as_u64().unwrap();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    let doc = s.doc_mut();
+    let mut parent = doc.add_component(Some("Level 1"), 0).unwrap();
+    for level in 2..=64 {
+        let below = doc.add_component(Some(format!("Level {level}").as_str()), parent).unwrap();
+        doc.add_occurrence(below, parent, solidcraft_doc::IDENTITY).unwrap();
+        parent = below;
+    }
+    for _ in 0..2 {
+        doc.add_occurrence(block, parent, solidcraft_doc::IDENTITY).unwrap();
+    }
+    doc.occurrences.retain(|o| !(o.component == block && o.parent == 0));
+    let top = run(&mut s, "assembly.bom", json!({"levels": "top", "mass": true}));
+    assert!(top["rows"][0]["mass_g"].as_f64().is_some_and(f64::is_finite), "{top}");
+    assert!(s.execute("assembly.bom", &json!({})).is_err(), "more placements than a list walks");
 }
