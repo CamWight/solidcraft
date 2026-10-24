@@ -229,15 +229,15 @@ pub struct DrawingBorderProfile {
     /// the two.
     pub grid_border_mm: f64,
     /// How far each centring mark reaches inside the drawing border, 0 to stop it on the drawing
-    /// border (`None`: no centring marks).
+    /// border, at most [`MAX_SIDE_MM`] (`None`: no centring marks).
     pub centring_mark_mm: Option<f64>,
     /// Where each centring mark starts outside the drawing border. The trimmed sheet's edge when not
     /// given.
     #[serde(default)]
     pub centring_mark_start: CentringMarkStart,
-    /// The trimming mark's rectangles: their length along the sheet border and their width into
-    /// the sheet, which must leave them outside the grid reference border (`None`: no trimming
-    /// marks).
+    /// The trimming mark's rectangles: their length along the sheet border, at most
+    /// [`MAX_SIDE_MM`], and their width into the sheet, which must leave them outside the grid
+    /// reference border (`None`: no trimming marks).
     pub trimming_mark_mm: Option<[f64; 2]>,
 }
 
@@ -363,7 +363,8 @@ impl DrawingBorderProfile {
         let g = self.grid_border_mm;
         require(g.is_finite() && g >= 0.0 && g <= narrowest, "the grid reference border lies between the sheet border and the drawing border")?;
         if let Some(reach) = self.centring_mark_mm {
-            require(reach.is_finite() && reach >= 0.0, "a centring mark ends on the drawing border or inside it")?;
+            let fits = reach.is_finite() && (0.0..=MAX_SIDE_MM).contains(&reach);
+            require(fits, "a centring mark ends on the drawing border or at most 5000 mm inside it")?;
             // Else it would start and end on the drawing border.
             let outside = match self.centring_mark_start {
                 CentringMarkStart::SheetEdge => narrowest,
@@ -372,7 +373,8 @@ impl DrawingBorderProfile {
             require(outside > 0.0 || reach > 0.0, "a centring mark needs room outside the drawing border to start from, or a reach inside it")?;
         }
         if let Some([length, width]) = self.trimming_mark_mm {
-            require(length.is_finite() && width > 0.0 && width <= length, "a trimming mark is finite, above 0 and no wider than it is long")?;
+            let fits = length.is_finite() && length <= MAX_SIDE_MM && width > 0.0 && width <= length;
+            require(fits, "a trimming mark is above 0, at most 5000 mm long and no wider than it is long")?;
             require(width <= narrowest - g, "a trimming mark lies between the sheet border and the grid reference border")?;
         }
         Ok(())

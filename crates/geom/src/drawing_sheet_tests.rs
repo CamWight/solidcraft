@@ -362,6 +362,10 @@ fn hostile_sizes_and_profiles_are_refused() {
         DrawingBorderProfile { centring_mark_mm: Some(-10.0), ..iso },
         DrawingBorderProfile { centring_mark_mm: Some(f64::NAN), ..iso },
         DrawingBorderProfile { centring_mark_mm: Some(f64::INFINITY), ..iso },
+        // No mark is longer than the largest sheet's side, so a file's huge number is refused when
+        // read rather than saved as one the next read refuses.
+        DrawingBorderProfile { centring_mark_mm: Some(5_000.000_001), ..iso },
+        DrawingBorderProfile { centring_mark_mm: Some(u64::MAX as f64), ..iso },
         // ...and is longer than 0: one that stops on the drawing border needs room outside it on
         // the side it starts from, a grid reference border or every margin.
         DrawingBorderProfile { grid_border_mm: 0.0, centring_mark_start: CentringMarkStart::GridBorder, ..iso },
@@ -372,6 +376,8 @@ fn hostile_sizes_and_profiles_are_refused() {
         DrawingBorderProfile { trimming_mark_mm: Some([f64::NAN, 5.0]), ..iso },
         DrawingBorderProfile { trimming_mark_mm: Some([10.0, f64::NAN]), ..iso },
         DrawingBorderProfile { trimming_mark_mm: Some([f64::INFINITY, 5.0]), ..iso },
+        DrawingBorderProfile { trimming_mark_mm: Some([5_000.000_001, 5.0]), ..iso },
+        DrawingBorderProfile { trimming_mark_mm: Some([u64::MAX as f64, 5.0]), ..iso },
         // ...and fits between the sheet border and the grid reference border: ISO 5457's 5 mm fill
         // the 10 - 5 mm left exactly.
         DrawingBorderProfile { grid_border_mm: 5.000_001, ..full_iso_5457() },
@@ -398,6 +404,9 @@ fn hostile_sizes_and_profiles_are_refused() {
         },
         // A trimming mark longer than half the 297 mm side.
         DrawingBorderProfile { trimming_mark_mm: Some([148.500_001, 5.0]), ..iso },
+        // The longest marks a profile may have, on the largest sheet only.
+        DrawingBorderProfile { centring_mark_mm: Some(5000.0), ..iso },
+        DrawingBorderProfile { trimming_mark_mm: Some([5000.0, 5.0]), ..iso },
     ] {
         assert_eq!(profile.validate(), Ok(()), "{profile:?}");
         assert!(profile.layout(&a3).is_err(), "laid out {profile:?}");
