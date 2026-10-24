@@ -15,6 +15,7 @@ mod dimensioned;
 mod drag;
 #[path = "sketch_face.rs"]
 pub(super) mod face;
+use super::sketch_store;
 use dimensioned::draw as draw_dimensioned;
 use drag::drag_entity;
 
@@ -212,23 +213,6 @@ pub static COMMANDS: &[CommandSpec] = &[
 // ---------------------------------------------------------------------------------------------
 // Helpers
 
-/// Resolve the sketch a command acts on: `sketch` param (id or name) or the active sketch.
-pub(super) fn target_sketch(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
-    if let Some(v) = p.get("sketch") {
-        let key = match v {
-            Value::Number(n) => n.to_string(),
-            Value::String(x) => x.clone(),
-            _ => return Err(bad(cmd, "`sketch` must be an id or a name")),
-        };
-        let f = s.doc.find_feature(&key).ok_or_else(|| bad(cmd, format!("no sketch `{key}`")))?;
-        if !matches!(f.kind, FeatureKind::Sketch { .. }) {
-            return Err(bad(cmd, format!("`{key}` is not a sketch")));
-        }
-        return Ok(f.id);
-    }
-    s.active_sketch.ok_or_else(|| EngineError::Other("no sketch is being edited".into()))
-}
-
 /// Edit a sketch: clone it, apply `f`, solve with the document's dimension values and store
 /// it. With `strict`, an edit that makes the constraints unsolvable is rejected.
 pub(super) fn edit<T>(
@@ -238,7 +222,7 @@ pub(super) fn edit<T>(
     strict: bool,
     f: impl FnOnce(&mut Sketch, &mut solidcraft_doc::Document) -> Result<T>,
 ) -> Result<(T, Value)> {
-    let id = target_sketch(s, p, cmd)?;
+    let id = sketch_store::target(s, p, cmd)?;
     let (out, rep) = edit_solved(s, id, strict, Analysis::Freedom, |sk, doc| Ok((f(sk, doc)?, Left::Unsolved)))?;
     Ok((out, rep.map(|rep| report_json(&rep)).unwrap_or(Value::Null)))
 }
@@ -282,7 +266,7 @@ pub(super) fn edit_solved<T>(
     f: impl FnOnce(&mut Sketch, &mut solidcraft_doc::Document) -> Result<(T, Left)>,
 ) -> Result<(T, Option<SolveReport>)> {
     let mut doc = (*s.doc).clone();
-    let mut sk = doc.sketch(id)?.clone();
+    let mut sk = sketch_store::read(&doc, id)?.clone();
     if sk.patterns.iter().any(|p| p.count_expression.is_some()) {
         doc.apply_pattern_quantities(&doc.param_values().0, &mut sk)?;
     }
@@ -329,8 +313,8 @@ pub(super) fn edit_solved<T>(
             Some(settle(strict, rep, &mut sk, unsolved)?)
         }
     };
-    sk.validate_periodic_splines()?;
-    *doc.sketch_mut(id)? = sk;
+    sketch_store::checked(&sk)?;
+    sketch_store::write(&mut doc, id, sk)?;
     *s.doc_mut() = doc;
     Ok((out, rep))
 }
@@ -862,7 +846,7 @@ fn entry_point(s: &Session) -> SketchEntry {
 /// and Undo is the way back.
 fn cancel_sketch(s: &mut Session, _p: &Value) -> Result<Value> {
     let cmd = "sketch.cancel";
-    let id = s.active_sketch.ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
     let entry = s.sketch_entry.clone().filter(|entry| entry.sketch == id);
     let current = entry.filter(|entry| {
         let top = entry.undo_len.checked_sub(1).and_then(|i| s.undo.get(i)).map(|snap| &snap.doc);
@@ -1507,7 +1491,12 @@ fn draw_point(s: &mut Session, p: &Value) -> Result<Value> {
         // end refuses it, rather than answered as if a point had been made.
         let made = str_(p, "point")
             .filter(|_| p.get("point") != Some(&given))
-            .filter(|id| target_sketch(s, p, cmd).ok().and_then(|sid| s.doc.sketch(sid).ok()).is_some_and(|sk| sk.resolve_point(id).is_some()))
+            .filter(|id| {
+                sketch_store::target(s, p, cmd)
+                    .ok()
+                    .and_then(|sid| sketch_store::read(&s.doc, sid).ok())
+                    .is_some_and(|sk| sk.resolve_point(id).is_some())
+            })
             .map(str::to_string);
         let Some(pid) = made else {
             return Err(bad(
@@ -1729,7 +1718,7 @@ pub(super) fn redundancy(
 /// The constraints that already determine constraint `cid` of the target sketch, as
 /// "id (Name)".
 fn determined_by(s: &Session, p: &Value, cmd: &str, cid: &str) -> Vec<String> {
-    let Some(sk) = target_sketch(s, p, cmd).ok().and_then(|id| s.doc.sketch(id).ok()) else { return Vec::new() };
+    let Some(sk) = sketch_store::target(s, p, cmd).ok().and_then(|id| sketch_store::read(&s.doc, id).ok()) else { return Vec::new() };
     let Some(ci) = sk.constraints.iter().position(|c| c.id == cid) else { return Vec::new() };
     solidcraft_sketch::determined_by(sk, ci)
         .into_iter()
@@ -1863,7 +1852,7 @@ fn c_horizontal_vertical(s: &mut Session, p: &Value) -> Result<Value> {
 fn c_coincident(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.constraint.coincident";
     // Already tied (e.g. connected when it was drawn there): nothing to add.
-    let sk = s.doc.sketch(target_sketch(s, p, cmd)?)?;
+    let sk = sketch_store::read(&s.doc, sketch_store::target(s, p, cmd)?)?;
     if let Some((a, b)) = two_round(sk, p) {
         return coincident_circles(s, p, cmd, a, b);
     }
@@ -2635,7 +2624,7 @@ fn measured(is_angle: bool, v: f64) -> (f64, &'static str) {
 
 /// What the dimension just added (the sketch's last constraint) measures on the solved sketch.
 fn solved_measure(s: &Session, p: &Value, cmd: &str) -> Option<(f64, &'static str)> {
-    let sk = s.doc.sketch(target_sketch(s, p, cmd).ok()?).ok()?;
+    let sk = sketch_store::read(&s.doc, sketch_store::target(s, p, cmd).ok()?).ok()?;
     let k = &sk.constraints.last()?.kind;
     Some(measured(k.is_angle(), solidcraft_sketch::measure_dimension(sk, k)?))
 }
@@ -2906,7 +2895,7 @@ fn sketch_delete(s: &mut Session, p: &Value) -> Result<Value> {
 fn move_point(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.move_point";
     let to = req_vec2(cmd, p, "to")?;
-    let id = target_sketch(s, p, cmd)?;
+    let id = sketch_store::target(s, p, cmd)?;
     let state = s.model.result(id).map(|r| r.state.clone());
     let last = state.as_ref().and_then(|state| state.sketch(id));
     let (_, rep) = edit_solved(s, id, false, Analysis::Freedom, |sk, _| {
@@ -2932,7 +2921,7 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
         None | Some(Value::Null) => to,
         Some(v) => vec2(v).ok_or_else(|| bad(cmd, "`from` must be a point [x, y]"))?,
     };
-    let id = target_sketch(s, p, cmd)?;
+    let id = sketch_store::target(s, p, cmd)?;
     // The sketch's report as last evaluated: a live frame keeps its degrees of freedom.
     let state = s.model.result(id).map(|r| r.state.clone());
     let last = state.as_ref().and_then(|state| state.sketch(id));
@@ -2969,7 +2958,7 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
     })?;
     // Lines retain the grabbed material point through rotation. Other entities report the
     // average displacement of their moving points, as before.
-    let sk = s.doc.sketch(id)?;
+    let sk = sketch_store::read(&s.doc, id)?;
     let at = d.at(sk, from);
     let rep = rep.or_else(|| last.map(|ss| SolveReport { status: solidcraft_sketch::SolveStatus::Solved, failing: Vec::new(), ..ss.report.clone() }));
     let out = json!({"sketch": rep.as_ref().map(report_json), "reached": d.reached, "at": [at.x, at.y], "retry": d.retry});
@@ -2981,7 +2970,7 @@ fn drag_frame(s: &mut Session, p: &Value, live: bool) -> Result<(Value, Option<c
 /// evaluate first.
 fn drag_end(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.drag_end";
-    let id = target_sketch(s, p, cmd)?;
+    let id = sketch_store::target(s, p, cmd)?;
     let start = s.doc.clone();
     let mut constraint = Value::Null;
     if let Some(c) = p.get("constraint").filter(|c| !c.is_null()) {
@@ -3044,8 +3033,8 @@ fn sketch_options(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let set = |k: &str| bool_(p, k);
     if keys.iter().all(|k| set(k).is_none()) {
-        let id = target_sketch(s, p, cmd)?;
-        return Ok(json!({"options": options_json(&s.doc.sketch(id)?.view)}));
+        let id = sketch_store::target(s, p, cmd)?;
+        return Ok(json!({"options": options_json(&sketch_store::read(&s.doc, id)?.view)}));
     }
     let (v, info) = edit(s, p, cmd, false, |sk, _| {
         let v = &mut sk.view;
@@ -3071,14 +3060,14 @@ fn sketch_options(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn chain_cmd(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.chain";
-    let id = target_sketch(s, p, cmd)?;
-    let sk = s.doc.sketch(id)?;
+    let id = sketch_store::target(s, p, cmd)?;
+    let sk = sketch_store::read(&s.doc, id)?;
     let c = curve_ref(sk, p.get("curve"), cmd, "curve")?;
     Ok(json!({"curves": ids_of(sk, &sk.chain(c))}))
 }
 
 fn solve_cmd(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = target_sketch(s, p, "sketch.solve")?;
+    let id = sketch_store::target(s, p, "sketch.solve")?;
     let st = s.model.state();
     let ss = st.sketch(id).ok_or_else(|| EngineError::Other("the sketch has not been evaluated".into()))?;
     Ok(json!({"status": ss.report.status, "dof": ss.report.dof, "failing": ss.report.failing, "profiles": ss.profiles.len()}))
