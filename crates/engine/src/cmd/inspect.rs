@@ -252,12 +252,7 @@ fn sketch_json(s: &Session, id: u64) -> Option<Value> {
 }
 
 fn sketch_inspect(s: &mut Session, p: &Value) -> Result<Value> {
-    let id = match p.get("sketch") {
-        Some(Value::Number(n)) => s.doc.find_feature(&n.to_string()).map(|f| f.id),
-        Some(Value::String(x)) => s.doc.find_feature(x).map(|f| f.id),
-        _ => s.active_sketch,
-    }
-    .ok_or_else(|| bad("sketch.inspect", "no such sketch (and none is active)"))?;
+    let id = super::sketch_store::target(s, p, "sketch.inspect")?;
     sketch_json(s, id).ok_or_else(|| EngineError::Other("that sketch is not evaluated (rolled back or not a sketch)".into()))
 }
 
