@@ -9,6 +9,7 @@ use solidcraft_geom::Vec2;
 use solidcraft_sketch::{ConstraintKind, Curve, CurveKind, Shape, Sketch, intersections, intersections_within};
 
 use super::sketch::{add_c, edit, ids_of, solve_current};
+use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, bool_, expr, num, req_expr, req_vec2, str_, string_list, vec2, vec2_list};
 use crate::{Result, Session};
@@ -2070,7 +2071,7 @@ fn offset(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn break_offset(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.offset.break";
-    let sketch = super::sketch::target_sketch(s, p, cmd)?;
+    let sketch = sketch_store::target(s, p, cmd)?;
     let (out, info) = edit(s, p, cmd, true, |sk, doc| {
         let output = str_(p, "curve").ok_or_else(|| bad(cmd, "`curve` must name an offset output"))?;
         let record = sk.freeform_offsets.iter().position(|record| record.output == output);
@@ -2090,7 +2091,7 @@ fn break_offset(s: &mut Session, p: &Value) -> Result<Value> {
         if !rep.keeps_orientation() {
             return Err(bad(cmd, rep.failure(|_| "cannot break an offset with conflicting dimensions".into())));
         }
-        sk.validate_periodic_splines()?;
+        sketch_store::checked(sk)?;
         if let Some(association) = sk
             .offsets
             .iter()

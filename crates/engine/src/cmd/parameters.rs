@@ -7,7 +7,7 @@ use solidcraft_doc::FeatureKind;
 use solidcraft_doc::expr::{self, Kind};
 use solidcraft_sketch::{Analysis, ConstraintKind, CurveKind, Hold, Sketch, solve_with};
 
-use super::CommandSpec;
+use super::{CommandSpec, sketch_store};
 use crate::params::{bad, bool_, str_};
 use crate::{EngineError, Result, Session};
 
@@ -189,7 +189,7 @@ fn keep_dimension_start(s: &mut Session, name: &str) {
     }
     let vals = s.doc.evaluation_values();
     for (id, start) in targets {
-        let Ok(stored) = s.doc.sketch(id) else { continue };
+        let Ok(stored) = sketch_store::read(&s.doc, id) else { continue };
         let mut trial = stored.clone();
         if s.doc.apply_dimension_values(&vals, &mut trial).is_err() {
             continue;
@@ -199,12 +199,13 @@ fn keep_dimension_start(s: &mut Session, name: &str) {
         if !solve_with(&mut trial, &hold, Some(&reference), Analysis::StatusOnly, None).keeps_orientation() {
             continue;
         }
-        if let Ok(stored) = s.doc_mut().sketch_mut(id)
-            && stored.points.len() == trial.points.len()
-        {
-            for (p, q) in stored.points.iter_mut().zip(&trial.points) {
+        if stored.points.len() == trial.points.len() {
+            // Only the points move: the stored dimensions keep their own values.
+            let mut kept = stored.clone();
+            for (p, q) in kept.points.iter_mut().zip(&trial.points) {
                 p.pos = q.pos;
             }
+            let _ = sketch_store::write(s.doc_mut(), id, kept);
         }
     }
 }
