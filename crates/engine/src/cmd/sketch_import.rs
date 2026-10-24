@@ -9,6 +9,7 @@ use solidcraft_sketch::{CurveKind, LinkKind, LinkSource, Sketch};
 
 use super::CommandSpec;
 use super::sketch::{edit, ids_of};
+use super::sketch_store;
 use crate::params::{bad, num, str_, vec2};
 use crate::{EngineError, Result, Session};
 
@@ -141,12 +142,13 @@ fn insert(s: &mut Session, p: &Value, cmd: &str, svg: bool) -> Result<Value> {
         Ok((ids_of(sk, &cs), texts))
     })?;
     // Text becomes sketch text.
-    let id = s.active_sketch.ok_or_else(|| bad(cmd, "no sketch"))?;
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch"))?;
     let mut n_text = 0;
     for t in texts {
         if let Geom2::Text { text, at, height, angle } = t {
+            // Not `sketch_store::update`: a text that can't be linked is skipped, not refused.
             let mut doc = (*s.doc).clone();
-            let mut sk = doc.sketch(id)?.clone();
+            let mut sk = sketch_store::read(&doc, id)?.clone();
             if super::sketch_project::add_link(
                 s,
                 &doc,
@@ -157,7 +159,7 @@ fn insert(s: &mut Session, p: &Value, cmd: &str, svg: bool) -> Result<Value> {
             )
             .is_ok()
             {
-                *doc.sketch_mut(id)? = sk;
+                sketch_store::write(&mut doc, id, sk)?;
                 *s.doc_mut() = doc;
                 n_text += 1;
             }

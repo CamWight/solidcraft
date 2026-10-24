@@ -862,6 +862,7 @@ impl Session {
     /// Show the sketch a live frame changed, leaving the features after it as they were last
     /// evaluated (marked stale); a full `refresh` when the model cannot show it that way.
     fn refresh_live(&mut self, edit: LiveEdit) {
+        // design-only: a live drag shows the design's sketch in the model.
         let sketch = self.doc.sketch(edit.sketch).ok().cloned();
         if sketch.is_some_and(|sketch| self.model.show_live_sketch(edit.sketch, sketch, edit.report)) {
             self.revision += 1;
@@ -910,6 +911,7 @@ impl Session {
             }
         }
         for (id, sketch) in updated {
+            // design-only: a parameter edit rewrites the design's pattern-quantity sketches.
             *self.doc_mut().sketch_mut(id)? = sketch;
         }
         self.refresh();
@@ -1064,6 +1066,7 @@ impl Session {
             _ => None,
         };
         let Some(sk) = named.or(self.active_sketch).or(before.active_sketch) else { return v };
+        // design-only: a command's `created` compares two snapshots of the design.
         let Ok(after) = self.doc.sketch(sk) else { return v };
         out.insert("created".into(), cmd::sketch_created(before.doc.sketch(sk).ok(), after));
         v
