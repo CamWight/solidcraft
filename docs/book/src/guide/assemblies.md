@@ -353,6 +353,9 @@ description; **Change Part Size** renumbers them, keeping a field you changed yo
   rows. `total_occurrences` counts the children too, so it is the same either way.
 - `component` lists one subassembly's parts instead of the design's.
 
+A list walks at most 64 levels and 100,000 placements in all, the children of folded parts
+included; a larger assembly is refused rather than listed in part.
+
 A component's **bill of materials type** (`bom_type`, a part property set with
 `component.metadata.set {component, bom_type}`) decides how it counts in the assemblies it is
 placed in. Without one it is `normal`.
@@ -380,8 +383,11 @@ Rows are sorted by part number (rows without one come last) and hold `item`, `pa
 `description`, `revision`, `bom_type`, `count`, `definition` (the component names), `material`,
 `components` (their ids) and `properties`, with `total_occurrences` beside them. `material` names the
 physical materials of the definition's own bodies (`Physical Material`, the ones mass is worked out from;
-an unassigned body's is `Default`), with `; ` between several; a free property such as a material grade
-stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
+an unassigned body's is `Default`), with `; ` between several. A row that stands for an assembly (a
+subassembly at the top level, a purchased or inseparable part with parts inside it, a folded part) names a
+material only when everything it weighs shares it, so a frame of steel and aluminium parts is blank and a
+bought bearing of steel parts reads Steel; giving the component a physical material gives it to all its
+bodies. A free property such as a material grade stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
 what is placed inside it except what the list shows as rows of their own beside it, so the rows of any
 list add up to the assembly. At the top level a row weighs all it holds. In parts only a part's contents
 are rows of their own, so it weighs its own bodies, except a folded part (its row is the kit), a purchased
