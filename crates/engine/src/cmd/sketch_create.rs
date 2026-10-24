@@ -13,6 +13,7 @@ macro_rules! text_style_doc {
 }
 
 use super::sketch::{add_c, circumcircle, edit, ids_of, mark_construction, req_parg, result, slot};
+use super::sketch_store;
 use super::{CommandSpec, in_sketch};
 use crate::params::{bad, num, req_vec2, str_, string_list};
 use crate::{Result, Session};
@@ -262,20 +263,19 @@ fn text(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, AT_MUST));
     }
     let src = text_source(&s.doc, p, cmd, None)?;
-    let id = s.active_sketch.ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
-    let mut doc = (*s.doc).clone();
-    let mut sk = doc.sketch(id)?.clone();
-    // A text needs nothing outside its sketch (a path is one of its curves).
-    let geom = sk.text_source_geometry(&src).map_err(|e| bad(cmd, e.to_string()))?;
-    if geom.is_empty() {
-        return Err(bad(cmd, "the text makes no outline"));
-    }
-    let guide = guide(&mut sk, &src);
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
     let exprs = text_exprs_json(&src);
-    let l = sk.add_link(LinkKind::Text, src, &geom)?;
-    let curves = ids_of(&sk, &sk.link_curves(&l));
-    *doc.sketch_mut(id)? = sk;
-    *s.doc_mut() = doc;
+    let (l, curves, guide) = sketch_store::update(s, id, |_, _, sk| {
+        // A text needs nothing outside its sketch (a path is one of its curves).
+        let geom = sk.text_source_geometry(&src).map_err(|e| bad(cmd, e.to_string()))?;
+        if geom.is_empty() {
+            return Err(bad(cmd, "the text makes no outline"));
+        }
+        let guide = guide(sk, &src);
+        let l = sk.add_link(LinkKind::Text, src, &geom)?;
+        let curves = ids_of(sk, &sk.link_curves(&l));
+        Ok((l, curves, guide))
+    })?;
     let mut out = json!({"link": l, "curves": curves, "guide": guide});
     if let Some(exprs) = exprs {
         out["exprs"] = exprs;
@@ -350,23 +350,20 @@ const MAX_TEXT_EDITS: usize = 1000;
 
 fn edit_text(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.edit_text";
-    let id = s.active_sketch.ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
-    let mut doc = (*s.doc).clone();
-    let mut sk = doc.sketch(id)?.clone();
-    // The numbers its expressions give now (a parameter may have changed since the sketch was
-    // last stored); one that cannot be evaluated is left as it was, to be replaced by this edit.
-    let _ = doc.apply_text_values(&doc.param_values().0, &mut sk);
-    let out = apply_text_edits(&mut sk, &doc, p)?;
-    *doc.sketch_mut(id)? = sk;
-    *s.doc_mut() = doc;
-    Ok(out)
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
+    sketch_store::update(s, id, |_, doc, sk| {
+        // The numbers its expressions give now (a parameter may have changed since the sketch was
+        // last stored); one that cannot be evaluated is left as it was, to be replaced by this edit.
+        let _ = doc.apply_text_values(&doc.param_values().0, sk);
+        apply_text_edits(sk, doc, p)
+    })
 }
 
 /// One frame of an interactive resize or rotation: the sketch is solved and shown, the
 /// features after it keep their last result until `sketch.drag_end` evaluates the model.
 fn edit_text_live(s: &mut Session, p: &Value) -> Result<(Value, Option<crate::LiveEdit>)> {
     let cmd = "sketch.edit_text";
-    let id = s.active_sketch.ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
+    let id = sketch_store::active(s).ok_or_else(|| bad(cmd, "no sketch is being edited"))?;
     let (out, report) = super::sketch::edit_solved(s, id, false, solidcraft_sketch::Analysis::Full, |sk, doc| {
         Ok((apply_text_edits(sk, doc, p)?, super::sketch::Left::Unsolved))
     })?;

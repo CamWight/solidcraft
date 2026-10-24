@@ -83,6 +83,7 @@ mod sketch_import;
 mod sketch_inspect;
 mod sketch_modify;
 mod sketch_project;
+mod sketch_store;
 mod surface;
 mod surface_analysis;
 mod surface_boundary;
