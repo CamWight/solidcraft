@@ -3,32 +3,37 @@ use solidcraft_geom::drawing_sheet::{Margins, Orientation, PaperSize, SheetSize}
 
 use super::*;
 
+/// The seed every test drawing's ids come from.
+const SEED: u64 = 3890;
+
 /// A profile of its own: ISO 5457's filing margin and trimming marks, which the built-in leaves off.
 fn own_border() -> DrawingBorderProfile {
     DrawingBorderProfile { filing_margin: true, trimming_mark_mm: Some([10.0, 5.0]), ..DrawingBorderProfile::iso() }
 }
 
-/// Three designs on two sheets, objects 1 to 5: sheet 1 (A3, the ISO border) documents component 7
-/// of source 2; sources 2, 3 and 4; sheet 5 (A4 portrait, a border of its own, 600 dpi, left out of
-/// printing) documents source 3. Source 4 is on no sheet yet.
+/// Three designs on two sheets: the first sheet (A3, the ISO border) documents component 7 of the
+/// first design; the second (A4 portrait, a border of its own, 600 dpi, left out of printing)
+/// documents the second design. The third design is on no sheet yet.
 fn plate() -> Drawing {
+    let mut id_source = IdSource::seeded(SEED);
     let a3 = drawing_sheet::Sheet::standard(PaperSize::A3, Orientation::Landscape);
-    let mut d = Drawing::new("Plate assembly", "en-GB", "Assembly", a3, Some(DrawingBorderProfile::iso())).unwrap();
+    let mut d = Drawing::new("Plate assembly", "en-GB", "Assembly", a3, Some(DrawingBorderProfile::iso()), &mut id_source).unwrap();
     for path in ["plate.solidcraft", "../parts/bolt.solidcraft", "bracket.solidcraft"] {
-        let id = d.allocate_id().unwrap();
+        let id = d.allocate_id(&mut id_source).unwrap();
         d.sources.push(Source { id, path: path.into() });
     }
-    let id = d.allocate_id().unwrap();
+    let (plate_id, bolt_id) = (d.sources[0].id, d.sources[1].id);
+    let id = d.allocate_id(&mut id_source).unwrap();
     d.sheets.push(Arc::new(Sheet {
         id,
         name: "Bolt".into(),
         sheet: drawing_sheet::Sheet::standard(PaperSize::A4, Orientation::Portrait),
         border: Some(own_border()),
         dpi: 600.0,
-        documents: Some(SheetComponent { source: 3, component: 0 }),
+        documents: Some(SheetComponent { source: bolt_id, component: 0 }),
         excluded: Excluded { count: false, print: true },
     }));
-    Arc::make_mut(&mut d.sheets[0]).documents = Some(SheetComponent { source: 2, component: 7 });
+    Arc::make_mut(&mut d.sheets[0]).documents = Some(SheetComponent { source: plate_id, component: 7 });
     d.properties.set("author", json!("Jane Doe")).unwrap();
     d.units = Units::Fixed { unit: "in".into() };
     d.validate().unwrap();
@@ -37,7 +42,8 @@ fn plate() -> Drawing {
 
 /// One A4 sheet that documents nothing, no sources: the base the caps grow from.
 fn bare() -> Drawing {
-    Drawing::new("Bare", "en", "Sheet", drawing_sheet::Sheet::standard(PaperSize::A4, Orientation::Landscape), None).unwrap()
+    let a4 = drawing_sheet::Sheet::standard(PaperSize::A4, Orientation::Landscape);
+    Drawing::new("Bare", "en", "Sheet", a4, None, &mut IdSource::seeded(SEED)).unwrap()
 }
 
 fn file(d: &Drawing) -> Value {
@@ -60,8 +66,9 @@ fn refused(d: &Drawing, edit: impl FnOnce(&mut Value)) -> String {
     refusal(&v)
 }
 
-/// A drawing reads back as it was saved, and save, open and save again writes the same bytes. The
-/// file holds each field under the record's name for it.
+/// A drawing reads back as it was saved, and save, open and save again writes the same bytes, as
+/// does another run from the same seed. The file holds each field under the record's name for it,
+/// ids as their 13 characters, and no counter.
 #[test]
 fn a_drawing_reads_back_as_saved_and_saves_the_same_bytes_again() {
     let d = plate();
@@ -69,25 +76,31 @@ fn a_drawing_reads_back_as_saved_and_saves_the_same_bytes_again() {
     let reopened = Drawing::from_json(&saved).unwrap();
     assert_eq!(reopened, d);
     assert_eq!(reopened.to_json(), saved);
+    assert_eq!(plate().to_json(), saved, "a seeded run makes the same drawing");
     let v = file(&d);
+    let [plate_id, bolt_id, bracket_id] = [0, 1, 2].map(|i| ids::encode(d.sources[i].id));
+    let [assembly_id, bolt_sheet_id] = [0, 1].map(|i| ids::encode(d.sheets[i].id));
+    assert_eq!(assembly_id, "1ge30wkvq38r0", "the seed's first id, as splitmix64 gives it");
     assert_eq!(v["format"], DRAWING.format_string(DRAWING.current()));
     assert_eq!(v.get("format_pending").is_some(), !DRAWING.pending_names().is_empty());
-    assert_eq!((&v["name"], &v["next_id"], &v["language"]), (&json!("Plate assembly"), &json!(6), &json!("en-GB")));
+    assert_eq!(v.get("next_id"), None);
+    assert_eq!((&v["name"], &v["language"]), (&json!("Plate assembly"), &json!("en-GB")));
     assert_eq!(
         v["sources"],
-        json!([{"id": 2, "path": "plate.solidcraft"}, {"id": 3, "path": "../parts/bolt.solidcraft"}, {"id": 4, "path": "bracket.solidcraft"}])
+        json!([{"id": plate_id, "path": "plate.solidcraft"}, {"id": bolt_id, "path": "../parts/bolt.solidcraft"}, {"id": bracket_id, "path": "bracket.solidcraft"}])
     );
     assert_eq!(v["properties"], json!({"author": "Jane Doe"}));
     assert_eq!(v["units"], json!({"fixed": {"unit": "in"}}));
+    assert_eq!((&v["sheets"][0]["id"], &v["sheets"][0]["dpi"]), (&json!(assembly_id), &json!(300.0)));
     assert_eq!(v["sheets"][0]["sheet"], json!({"size": {"standard": "a3"}, "orientation": "landscape"}));
-    assert_eq!(v["sheets"][0]["documents"], json!({"source": 2, "component": 7}));
-    assert_eq!((&v["sheets"][0]["dpi"], &v["sheets"][0]["excluded"]), (&json!(300.0), &json!({"count": false, "print": false})));
+    assert_eq!(v["sheets"][0]["documents"], json!({"source": plate_id, "component": 7}));
+    assert_eq!(v["sheets"][0]["excluded"], json!({"count": false, "print": false}));
     assert_eq!(
         v["sheets"][1],
         json!({
-            "id": 5, "name": "Bolt", "sheet": {"size": {"standard": "a4"}, "orientation": "portrait"},
+            "id": bolt_sheet_id, "name": "Bolt", "sheet": {"size": {"standard": "a4"}, "orientation": "portrait"},
             "border": serde_json::to_value(own_border()).unwrap(), "dpi": 600.0,
-            "documents": {"source": 3, "component": 0}, "excluded": {"count": false, "print": true}
+            "documents": {"source": bolt_id, "component": 0}, "excluded": {"count": false, "print": true}
         })
     );
 }
@@ -101,10 +114,10 @@ fn a_file_may_leave_out_what_has_a_default() {
         "name": "Bracket",
         "sources": [],
         "language": "de",
-        "sheets": [{"id": 1, "name": "Blatt 1", "sheet": {"size": {"standard": "a3"}}}]
+        "sheets": [{"id": "0000000000001", "name": "Blatt 1", "sheet": {"size": {"standard": "a3"}}}]
     });
     let d = read(&minimal).unwrap();
-    assert_eq!((d.next_id, &d.units, d.properties.is_empty()), (2, &Units::FollowModel, true));
+    assert_eq!((d.sheets[0].id, &d.units, d.properties.is_empty()), (1, &Units::FollowModel, true));
     let sheet = &d.sheets[0];
     assert_eq!(sheet.sheet, drawing_sheet::Sheet::standard(PaperSize::A3, Orientation::Landscape));
     assert_eq!((sheet.border, sheet.dpi, sheet.documents, sheet.excluded), (None, DEFAULT_DPI, None, Excluded::default()));
@@ -133,7 +146,7 @@ fn every_cap_holds_on_both_sides() {
     let sheets = |n: u64| {
         let one = |id: u64| {
             let mut s = sheet.clone();
-            s["id"] = id.into();
+            s["id"] = json!(ids::encode(id));
             s
         };
         Value::Array((1..=n).map(one).collect())
@@ -142,16 +155,17 @@ fn every_cap_holds_on_both_sides() {
     for n in [0, 1001] {
         assert_eq!(refusal(&with("sheets", sheets(n))), "damaged drawing: a drawing has 1 to 1000 sheets", "{n} sheets");
     }
-    // Sources from id 2, the sheet being 1.
-    let sources = |n: u64| Value::Array((2..2 + n).map(|id| json!({"id": id, "path": format!("part{id}.solidcraft")})).collect());
+    // Sources from id 1: the sheet's id is the seed's, far from them.
+    let sources = |n: u64| Value::Array((1..=n).map(|id| json!({"id": ids::encode(id), "path": format!("part{id}.solidcraft")})).collect());
     assert_eq!(read(&with("sources", sources(64))).unwrap().sources.len(), 64);
     assert_eq!(refusal(&with("sources", sources(65))), "damaged drawing: a drawing draws at most 64 designs");
-    let path = |p: &str| refusal(&with("sources", json!([{"id": 2, "path": p}])));
+    let path = |p: &str| refusal(&with("sources", json!([{"id": ids::encode(1), "path": p}])));
     for fits in ["a".repeat(4096), "é".repeat(2048), "/".into()] {
         assert_eq!(path(fits.as_str()), "read", "{} bytes", fits.len());
     }
+    let rule = "damaged drawing: source 0000000000001: a design's path is 1 to 4096 bytes, without NUL";
     for broken in ["a".repeat(4097), "é".repeat(2048) + "a", String::new(), "plate\0.solidcraft".into()] {
-        assert_eq!(path(broken.as_str()), "damaged drawing: source 2: a design's path is 1 to 4096 bytes, without NUL", "{} bytes", broken.len());
+        assert_eq!(path(broken.as_str()), rule, "{} bytes", broken.len());
     }
     let names = |name: &str| {
         let mut sheet_named = base.clone();
@@ -162,8 +176,9 @@ fn every_cap_holds_on_both_sides() {
         assert_eq!(names(fits.as_str()), ("read".to_string(), "read".to_string()), "{} bytes", fits.len());
     }
     let rule = "name is 1 to 256 bytes, not only spaces, without control characters";
+    let sheet_id = ids::encode(bare().sheets[0].id);
     for broken in ["x".repeat(257), "é".repeat(128) + "a", String::new(), " ".into(), "two\nlines".into(), "bell\u{7}".into(), "nul\0".into()] {
-        let expected = (format!("damaged drawing: the drawing's {rule}"), format!("damaged drawing: sheet 1: its {rule}"));
+        let expected = (format!("damaged drawing: the drawing's {rule}"), format!("damaged drawing: sheet {sheet_id}: its {rule}"));
         assert_eq!(names(broken.as_str()), expected, "{broken:?}");
     }
 }
@@ -238,25 +253,39 @@ fn a_border_is_saved_as_a_copy_of_its_profile() {
 #[test]
 fn damaged_files_are_refused_and_never_patched() {
     let d = plate();
-    // Two objects with one id, of one kind and of two kinds, and the id 0.
-    assert_eq!(refused(&d, |v| v["sources"][1]["id"] = json!(2)), "damaged drawing: two objects have the id 2");
-    assert_eq!(refused(&d, |v| v["sheets"][1]["id"] = json!(1)), "damaged drawing: two objects have the id 1");
-    assert_eq!(refused(&d, |v| v["sources"][2]["id"] = json!(5)), "damaged drawing: two objects have the id 5");
-    assert_eq!(refused(&d, |v| v["sources"][2]["id"] = json!(0)), "damaged drawing: an object has the id 0: ids start at 1");
+    let plate_id = ids::encode(d.sources[0].id);
+    let [assembly_id, bolt_sheet_id] = [0, 1].map(|i| ids::encode(d.sheets[i].id));
+    // Two objects with one id, of one kind and of two kinds.
+    assert_eq!(refused(&d, |v| v["sources"][1]["id"] = json!(plate_id)), format!("damaged drawing: two objects have the id {plate_id}"));
+    assert_eq!(refused(&d, |v| v["sheets"][1]["id"] = json!(assembly_id)), format!("damaged drawing: two objects have the id {assembly_id}"));
+    assert_eq!(refused(&d, |v| v["sources"][2]["id"] = json!(bolt_sheet_id)), format!("damaged drawing: two objects have the id {bolt_sheet_id}"));
+    // An id that isn't one, where an object has it and where a reference names it; no number form,
+    // and no counter.
+    let not_an_id = "damaged drawing: an id is 13 characters of lowercase Crockford base32, not all 0";
+    for text in ["0000000000000", "FZZZZZZZZZZZZ", "000000000001", "0000000000001 ", "000000000000o", "g000000000000"] {
+        assert_eq!(refused(&d, |v| v["sources"][2]["id"] = json!(text)), not_an_id, "{text:?}");
+        assert_eq!(refused(&d, |v| v["sheets"][1]["documents"]["source"] = json!(text)), not_an_id, "{text:?}");
+    }
+    assert!(refused(&d, |v| v["sources"][2]["id"] = json!(5)).starts_with("damaged drawing: invalid type"));
+    assert!(refused(&d, |v| v["next_id"] = json!(6)).contains("unknown field `next_id`"));
+    let mut in_memory = d.clone();
+    in_memory.sources[2].id = 0;
+    assert_eq!(in_memory.validate().unwrap_err().to_string(), "an object has the id 0, which is never one");
     // A reference to nothing, or to an object of another kind; a source a sheet documents removed.
-    for missing in [99, 5] {
-        let expected = format!("damaged drawing: sheet 5: it documents source {missing}, which the drawing doesn't have");
+    for missing in [ids::encode(99), assembly_id.clone()] {
+        let expected = format!("damaged drawing: sheet {bolt_sheet_id}: it documents source {missing}, which the drawing doesn't have");
         assert_eq!(refused(&d, |v| v["sheets"][1]["documents"]["source"] = json!(missing)), expected);
     }
     let without_plate = refused(&d, |v| {
         v["sources"].as_array_mut().unwrap().remove(0);
     });
-    assert_eq!(without_plate, "damaged drawing: sheet 1: it documents source 2, which the drawing doesn't have");
+    assert_eq!(without_plate, format!("damaged drawing: sheet {assembly_id}: it documents source {plate_id}, which the drawing doesn't have"));
     // The paper, its border and its resolution, through the sheet's own rules.
     let custom = |sides: Value| refused(&d, |v| v["sheets"][0]["sheet"]["size"] = json!({"custom": {"sides_mm": sides}}));
     assert_eq!(custom(json!([5000.0, 0.5])), "read");
     for sides in [json!([5000.1, 100.0]), json!([0.0, 100.0]), json!([-1.0, 100.0])] {
-        assert_eq!(custom(sides), "damaged drawing: sheet 1: drawing sheet: a custom side is finite, above 0 and at most 5000 mm");
+        let expected = format!("damaged drawing: sheet {assembly_id}: drawing sheet: a custom side is finite, above 0 and at most 5000 mm");
+        assert_eq!(custom(sides), expected);
     }
     let why = custom(json!([1e10, 100.0]));
     assert!(why.starts_with("damaged drawing: the number ") && why.ends_with(" is out of range"), "checked before the record: {why}");
@@ -264,22 +293,23 @@ fn damaged_files_are_refused_and_never_patched() {
     assert!(Drawing::from_json(&nan).unwrap_err().to_string().starts_with("not a SolidCraft drawing: "), "NaN isn't JSON");
     assert_eq!(
         refused(&d, |v| v["sheets"][1]["border"]["margins"]["top_mm"] = json!(-1.0)),
-        "damaged drawing: sheet 5: drawing sheet: a margin is finite and 0 to 5000 mm"
+        format!("damaged drawing: sheet {bolt_sheet_id}: drawing sheet: a margin is finite and 0 to 5000 mm")
     );
     for dpi in [25.0, 2400.0] {
         assert_eq!(refused(&d, |v| v["sheets"][1]["dpi"] = json!(dpi)), "read", "{dpi}");
     }
     for dpi in [24.9, 2400.1, 0.0, -300.0] {
-        assert_eq!(refused(&d, |v| v["sheets"][1]["dpi"] = json!(dpi)), "damaged drawing: sheet 5: its pictures are 25 to 2400 dpi", "{dpi}");
+        let expected = format!("damaged drawing: sheet {bolt_sheet_id}: its pictures are 25 to 2400 dpi");
+        assert_eq!(refused(&d, |v| v["sheets"][1]["dpi"] = json!(dpi)), expected, "{dpi}");
     }
     // In memory, where NaN can be, the same rules.
     let mut in_memory = plate();
     Arc::make_mut(&mut in_memory.sheets[1]).dpi = f64::NAN;
-    assert_eq!(in_memory.validate().unwrap_err().to_string(), "sheet 5: its pictures are 25 to 2400 dpi");
+    assert_eq!(in_memory.validate().unwrap_err().to_string(), format!("sheet {bolt_sheet_id}: its pictures are 25 to 2400 dpi"));
     let sheet = Arc::make_mut(&mut in_memory.sheets[1]);
     sheet.dpi = DEFAULT_DPI;
     sheet.sheet.size = SheetSize::Custom { sides_mm: [f64::NAN, 100.0] };
-    assert!(in_memory.validate().unwrap_err().to_string().starts_with("sheet 5: drawing sheet: a custom side"));
+    assert!(in_memory.validate().unwrap_err().to_string().starts_with(&format!("sheet {bolt_sheet_id}: drawing sheet: a custom side")));
     // An unknown field anywhere.
     let unknown: [fn(&mut Value); 8] = [
         |v| v["views"] = json!([]),
@@ -336,41 +366,29 @@ fn damaged_files_are_refused_and_never_patched() {
     assert_eq!(Drawing::from_json(&(at_cap + " ")).unwrap_err().to_string(), "drawing too large (at most 16 MiB)");
 }
 
-/// One counter for every object: reading raises it above every id, whatever the file's counter
-/// says, and an object's id is never given again once it is removed, before a save or after one.
+/// A run never gives an id twice: not one in use, and not a removed object's. Only another run from
+/// the same seed, which tests and replays start from the same file, can give a removed id again.
 #[test]
-fn the_id_counter_is_raised_on_read_and_never_rewound() {
-    let d = plate();
-    assert_eq!((d.ids().collect::<Vec<_>>(), d.next_id), (vec![2, 3, 4, 1, 5], 6));
-    let stale = |counter: Option<u64>| {
-        let mut v = file(&d);
-        match counter {
-            Some(n) => v["next_id"] = json!(n),
-            None => {
-                v.as_object_mut().unwrap().remove("next_id");
-            }
-        }
-        read(&v).unwrap()
-    };
-    for counter in [None, Some(0), Some(1), Some(5)] {
-        assert_eq!(stale(counter).next_id, 6, "{counter:?}");
+fn a_run_never_gives_an_id_twice() {
+    let mut id_source = IdSource::seeded(SEED);
+    let a4 = drawing_sheet::Sheet::standard(PaperSize::A4, Orientation::Landscape);
+    let mut d = Drawing::new("Ids", "en", "Sheet", a4, None, &mut id_source).unwrap();
+    let mut given = BTreeSet::from([d.sheets[0].id]);
+    for _ in 0..MAX_SOURCES {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        d.sources.push(Source { id, path: "part.solidcraft".into() });
+        assert!(given.insert(id), "{id:#x} given twice");
     }
-    assert_eq!(stale(Some(10)).next_id, 10, "a counter above every id stays");
-    // Read with a stale counter, then its highest object removed: that id stays taken.
-    let mut cut = stale(Some(0));
-    cut.sheets.pop();
-    assert_eq!(cut.allocate_id().unwrap(), 6);
-    // Removed, saved and reopened: the saved counter keeps it taken.
-    let mut removed = plate();
-    removed.sheets.pop();
-    let mut reopened = Drawing::from_json(&removed.to_json()).unwrap();
-    assert_eq!((reopened.allocate_id().unwrap(), reopened.allocate_id().unwrap()), (6, 7));
-    // The top of the id space: an object there is refused; a counter there opens and gives nothing.
-    assert_eq!(refused(&d, |v| v["sources"][2]["id"] = json!(u64::MAX)), "damaged drawing: the id space is exhausted");
-    assert_eq!(refused(&d, |v| v["sources"][2]["id"] = json!(u64::MAX - 1)), "read");
-    let mut full = stale(Some(u64::MAX));
-    assert_eq!(full.allocate_id().unwrap_err().to_string(), "too many objects in the drawing");
-    assert_eq!(full.next_id, u64::MAX, "a refused allocation changes nothing");
+    let removed = d.sources.pop().unwrap().id;
+    for _ in 0..10_000 {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        assert!(id != removed && given.insert(id), "{id:#x} given twice");
+    }
+    // The same seed, from the start, over a file it made: every draw up to the removed id is in use.
+    let reopened = Drawing::from_json(&d.to_json()).unwrap();
+    let again = reopened.allocate_id(&mut IdSource::seeded(SEED)).unwrap();
+    assert!(!reopened.ids().any(|id| id == again));
+    assert_eq!(again, removed);
 }
 
 /// Properties follow the design metadata's rules: other tools' data and a well-known key of another
@@ -389,18 +407,20 @@ fn properties_are_kept_as_they_are() {
     assert!(why.starts_with("damaged drawing: the number ") && why.ends_with(" is out of range"), "{why}");
 }
 
-/// A new drawing has one sheet, id 1, follows its designs' units and renders pictures at 300 dpi;
-/// a name, language or border that breaks the rules is refused.
+/// A new drawing has one sheet, its id the source's first, follows its designs' units and renders
+/// pictures at 300 dpi; a name, language or border that breaks the rules is refused.
 #[test]
 fn a_new_drawing_has_one_sheet_and_keeps_the_rules() {
     let d = bare();
-    assert_eq!((d.next_id, d.sheets.len(), d.sheets[0].id, d.sheets[0].dpi, &d.units), (2, 1, 1, DEFAULT_DPI, &Units::FollowModel));
+    let first = IdSource::seeded(SEED).next(&BTreeSet::new()).unwrap();
+    assert_eq!((d.sheets.len(), d.sheets[0].id, d.sheets[0].dpi, &d.units), (1, first, DEFAULT_DPI, &Units::FollowModel));
     assert_eq!((d.format, d.format_pending), (DRAWING.format_string(DRAWING.current()), DRAWING.pending_names()));
     let a4 = drawing_sheet::Sheet::standard(PaperSize::A4, Orientation::Landscape);
     let thin = DrawingBorderProfile { drawing_border_line_mm: 0.0, ..DrawingBorderProfile::iso() };
     let broken = [("", "en", "Sheet", None), ("Bare", "en_GB", "Sheet", None), ("Bare", "en", "\n", None), ("Bare", "en", "Sheet", Some(thin))];
     for (name, language, sheet, border) in broken {
-        assert!(Drawing::new(name, language, sheet, a4, border).is_err(), "{name:?} {language:?} {sheet:?} {border:?}");
+        let made = Drawing::new(name, language, sheet, a4, border, &mut IdSource::seeded(SEED));
+        assert!(made.is_err(), "{name:?} {language:?} {sheet:?} {border:?}");
     }
 }
 
@@ -417,18 +437,21 @@ fn mutated_files_give_an_error_or_a_valid_drawing_never_a_panic() {
         json!(0),
         json!(-1),
         json!(1),
-        json!(5),
         json!(1e10),
         json!(u64::MAX),
         json!(""),
         json!("x".repeat(300)),
+        json!("0000000000000"),
+        json!("0000000000001"),
+        json!("fzzzzzzzzzzzz"),
+        json!("FZZZZZZZZZZZZ"),
         json!([]),
         json!({}),
         json!(true),
         json!("follow_model"),
         json!({"fixed": {"unit": "deg"}}),
     ];
-    let words = ["NaN", "1e400", "-0", "18446744073709551616", "\"", "{", "]", ",", "null", "\u{0}", "é"];
+    let words = ["NaN", "1e400", "-0", "18446744073709551616", "\"", "{", "]", ",", "null", "\u{0}", "é", "o", "I"];
     let mut seed: u64 = 0x9e37_79b9_7f4a_7c15;
     let mut rnd = move || {
         seed ^= seed << 13;
@@ -464,7 +487,7 @@ fn mutated_files_give_an_error_or_a_valid_drawing_never_a_panic() {
             String::from_utf8_lossy(&s).into_owned()
         };
         if let Ok(d) = Drawing::from_json(&text) {
-            assert!(d.validate().is_ok() && d.ids().all(|id| id < d.next_id), "{text}");
+            assert!(d.validate().is_ok() && d.ids().all(|id| id != 0), "{text}");
             assert_eq!(Drawing::from_json(&d.to_json()).unwrap(), d, "{text}");
             read_back += 1;
         }

@@ -29,6 +29,7 @@ pub use face_anchor::{FaceAnchor, FaceAttachmentStatus};
 pub mod format;
 mod format_offsets;
 mod history_names;
+pub mod ids;
 pub use format_offsets::whole_profile_selection_from_value;
 pub mod joints;
 mod lineage;

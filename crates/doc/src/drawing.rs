@@ -15,8 +15,9 @@
 //!   interface's is. **Properties** follow [`Metadata`]'s rules.
 //!
 //! The rules, which every later kind of record (views, annotations, tables) keeps too:
-//! - One id counter for every object, never rewound: removing an object never frees its id, and
-//!   reading raises `next_id` above the largest id in the file ([`Drawing::allocate_id`]).
+//! - Every object has an id of [`crate::ids`]: random, so objects added side by side never take
+//!   the same one, and written as 13 characters of base32. No two objects share an id, and a run
+//!   never gives a removed object's id again ([`Drawing::allocate_id`]).
 //! - Every reference between records is an id and must resolve: a file with one that doesn't is
 //!   damaged and refused, never patched.
 //! - 1 to [`MAX_SHEETS`] sheets and at most [`MAX_SOURCES`] sources; names of 1 to
@@ -37,6 +38,7 @@ use serde_json::Value;
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile};
 
 use crate::format::DRAWING;
+use crate::ids::{self, IdSource};
 use crate::{DocError, Metadata, Result, expr};
 
 /// The most sheets a drawing may have.
@@ -71,9 +73,6 @@ pub struct Drawing {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub format_pending: Vec<String>,
     pub name: String,
-    /// The id the next object gets ([`Drawing::allocate_id`]).
-    #[serde(default)]
-    pub next_id: u64,
     /// The designs the drawing draws.
     pub sources: Vec<Source>,
     /// The drawing's properties and other tools' data, kept as they are.
@@ -91,6 +90,7 @@ pub struct Drawing {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
+    #[serde(with = "crate::ids")]
     pub id: u64,
     /// The design file: relative to the drawing's folder once the drawing is saved, else as given
     /// (`/` separates folders).
@@ -112,6 +112,7 @@ pub enum Units {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Sheet {
+    #[serde(with = "crate::ids")]
     pub id: u64,
     pub name: String,
     /// The paper: its size and the way it lies.
@@ -132,8 +133,9 @@ pub struct Sheet {
 #[serde(deny_unknown_fields)]
 pub struct SheetComponent {
     /// The [`Source`]'s id.
+    #[serde(with = "crate::ids")]
     pub source: u64,
-    /// The component's id in that design (0: the design itself).
+    /// The component's id in that design, as the design writes it (0: the design itself).
     pub component: u64,
 }
 
@@ -153,22 +155,27 @@ fn default_dpi() -> f64 {
 
 impl Drawing {
     /// A drawing of no designs yet, named `name` and written in `language`, with one sheet named
-    /// `sheet`: the paper `paper` with a copy of `border`.
-    pub fn new(name: &str, language: &str, sheet: &str, paper: drawing_sheet::Sheet, border: Option<DrawingBorderProfile>) -> Result<Drawing> {
-        let mut drawing = Drawing {
+    /// `sheet`: the paper `paper` with a copy of `border`, its id from `id_source`.
+    pub fn new(
+        name: &str,
+        language: &str,
+        sheet: &str,
+        paper: drawing_sheet::Sheet,
+        border: Option<DrawingBorderProfile>,
+        id_source: &mut IdSource,
+    ) -> Result<Drawing> {
+        let id = id_source.next(&BTreeSet::new())?;
+        let first = Sheet { id, name: sheet.into(), sheet: paper, border, dpi: DEFAULT_DPI, documents: None, excluded: Excluded::default() };
+        let drawing = Drawing {
             format: DRAWING.format_string(DRAWING.current()),
             format_pending: DRAWING.pending_names(),
             name: name.into(),
-            next_id: 1,
             sources: Vec::new(),
             properties: Metadata::default(),
             units: Units::default(),
             language: language.into(),
-            sheets: Vec::new(),
+            sheets: vec![Arc::new(first)],
         };
-        let id = drawing.allocate_id()?;
-        let first = Sheet { id, name: sheet.into(), sheet: paper, border, dpi: DEFAULT_DPI, documents: None, excluded: Excluded::default() };
-        drawing.sheets.push(Arc::new(first));
         drawing.validate()?;
         Ok(drawing)
     }
@@ -183,14 +190,9 @@ impl Drawing {
         let (version, applied) = DRAWING.take_version(&mut v)?;
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
-        let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
+        let d: Drawing = serde_json::from_value(v).map_err(damaged)?;
         d.validate().map_err(damaged)?;
-        // `next_id` is trusted by nothing: a hand-edited or generated file may omit it or leave it
-        // stale, and an id the file holds must never be given again.
-        d.next_id = d.next_free_id().map_err(damaged)?;
-        d.format = DRAWING.format_string(DRAWING.current());
-        d.format_pending = DRAWING.pending_names();
-        Ok(d)
+        Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
 
     /// The drawing's JSON: the same bytes for the same drawing.
@@ -198,21 +200,13 @@ impl Drawing {
         serde_json::to_string_pretty(self).unwrap_or_default()
     }
 
-    /// Reserve an id from the drawing's one counter. Removing an object never rewinds it.
-    pub fn allocate_id(&mut self) -> Result<u64> {
-        let id = self.next_free_id()?;
-        self.next_id = id.checked_add(1).ok_or_else(|| DocError::Invalid("too many objects in the drawing".into()))?;
-        Ok(id)
+    /// An id for a new object: one no object of the drawing has, from `id_source`, which never
+    /// gives one twice.
+    pub fn allocate_id(&self, id_source: &mut IdSource) -> Result<u64> {
+        id_source.next(&self.ids().collect())
     }
 
-    /// The id the counter gives next: `next_id`, or above the largest id when that is higher.
-    fn next_free_id(&self) -> Result<u64> {
-        let largest = self.ids().max().unwrap_or(0);
-        let floor = largest.checked_add(1).ok_or_else(|| DocError::Invalid("the id space is exhausted".into()))?;
-        Ok(self.next_id.max(floor))
-    }
-
-    /// Every object's id, of every kind: what the one counter gives out. Each later kind adds its
+    /// Every object's id, of every kind: what a new id must differ from. Each later kind adds its
     /// own here.
     fn ids(&self) -> impl Iterator<Item = u64> {
         self.sources.iter().map(|s| s.id).chain(self.sheets.iter().map(|s| s.id))
@@ -234,17 +228,17 @@ impl Drawing {
         }
         let mut seen = BTreeSet::new();
         for id in self.ids() {
-            require(id != 0, || "an object has the id 0: ids start at 1".into())?;
-            require(seen.insert(id), || format!("two objects have the id {id}"))?;
+            require(id != 0, || "an object has the id 0, which is never one".into())?;
+            require(seen.insert(id), || format!("two objects have the id {}", ids::encode(id)))?;
         }
         for source in &self.sources {
             let path = &source.path;
             require(!path.is_empty() && path.len() <= MAX_PATH_BYTES && !path.contains('\0'), || {
-                format!("source {}: a design's path is 1 to {MAX_PATH_BYTES} bytes, without NUL", source.id)
+                format!("source {}: a design's path is 1 to {MAX_PATH_BYTES} bytes, without NUL", ids::encode(source.id))
             })?;
         }
         for sheet in &self.sheets {
-            self.check_sheet(sheet).map_err(|e| DocError::Invalid(format!("sheet {}: {e}", sheet.id)))?;
+            self.check_sheet(sheet).map_err(|e| DocError::Invalid(format!("sheet {}: {e}", ids::encode(sheet.id))))?;
         }
         Ok(())
     }
@@ -259,7 +253,8 @@ impl Drawing {
         require((MIN_DPI..=MAX_DPI).contains(&sheet.dpi), || format!("its pictures are {MIN_DPI} to {MAX_DPI} dpi"))?;
         match sheet.documents {
             Some(SheetComponent { source, .. }) => {
-                require(self.sources.iter().any(|s| s.id == source), || format!("it documents source {source}, which the drawing doesn't have"))
+                let named = || format!("it documents source {}, which the drawing doesn't have", ids::encode(source));
+                require(self.sources.iter().any(|s| s.id == source), named)
             }
             None => Ok(()),
         }
