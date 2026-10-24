@@ -266,8 +266,8 @@ pub fn group_action(app: &mut SolveApp, action: &str, p: &Value) {
             if let Ok(r) = app.run("browser.group", json!({ "component": comp, "folder": folder, "items": items }))
                 && let Some(g) = r.get("group").and_then(Value::as_u64)
             {
-                app.tree.collapsed.remove(&format!("c{comp}/{folder}"));
-                app.tree.collapsed.remove(&format!("g{g}"));
+                open_row(app, &format!("c{comp}/{folder}"));
+                open_row(app, &format!("g{g}"));
             }
         }
         "ui.ungroup" => {
@@ -544,13 +544,22 @@ pub(crate) fn picked_body(sel: &Sel) -> Option<&str> {
 }
 
 /// A pick in the viewport: the Browser, when shown, opens down to the picked body's row and
-/// scrolls to it (#3005). The body of the last item picked.
+/// scrolls to it (#3005). The body of the last item picked. A search stays (#1413): a body it
+/// found opens in it, and one it didn't leaves the tree as it is.
 pub(crate) fn reveal_pick(app: &mut SolveApp) {
     if app.ui.show_browser
         && let Some(body) = app.session.selection.last().and_then(picked_body)
+        && app.tree.search.hits().is_none_or(|hits| hits.found_body(body))
     {
         app.tree.reveal = Some(body.to_string());
     }
+}
+
+/// Opens a row for a reveal: its fold in the tree, and a fold closed during a search, so the
+/// revealed row shows either way.
+pub(crate) fn open_row(app: &mut SolveApp, key: &str) {
+    app.tree.collapsed.remove(key);
+    app.tree.search.open(key);
 }
 
 /// Whether the body being revealed is in this placement or one below it: it opens.
@@ -981,10 +990,6 @@ fn browser_rows_hugging(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Action
 fn rows_scrolling(app: &mut SolveApp, ui: &mut egui::Ui, acts: &mut Actions, shrink_height: bool) {
     prepare_model(app);
     acts.lit = Lit::of(app);
-    // Find in Browser shows the whole tree, for a body or for the feature that made a face.
-    if app.tree.reveal.is_some() || app.tree.reveal_feature.is_some() {
-        app.tree.search.clear();
-    }
     if ui.rect_contains_pointer(ui.max_rect()) && ui.input(|i| i.modifiers.command_only() && i.key_pressed(egui::Key::F)) {
         app.tree.search.focus();
     }
@@ -1048,7 +1053,7 @@ fn component_rows(app: &mut SolveApp, ui: &mut egui::Ui, id: u64, depth: usize, 
     if let Some(r) = app.tree.reveal.clone()
         && (bodies.contains(&r) || model_children(app, id).into_iter().any(|o| reveals_in_occurrence(app, &[o])))
     {
-        app.tree.collapsed.remove(&key);
+        open_row(app, &key);
     }
     let open = is_open(app, &key, true);
     let active = app.session.active_component == id;
@@ -1162,7 +1167,7 @@ fn occurrence_rows(app: &mut SolveApp, ui: &mut egui::Ui, path: Vec<u64>, depth:
     }
     let key = occurrence_key(&path);
     if reveals_in_occurrence(app, &path) {
-        app.tree.collapsed.remove(&key);
+        open_row(app, &key);
     }
     let open = is_open(app, &key, true);
     let active = app.session.active_occurrence_path.as_deref() == Some(path.as_slice())
@@ -1456,7 +1461,7 @@ pub fn restore_view(app: &mut SolveApp, name: &str) {
 pub fn save_view(app: &mut SolveApp, name: Option<&str>) -> Option<String> {
     let cam = serde_json::to_value(app.cam).ok()?;
     let r = app.run("view.save", json!({ "name": name, "camera": cam })).ok()?;
-    app.tree.collapsed.remove("namedviews");
+    open_row(app, "namedviews");
     app.tree.expanded.insert("namedviews".into());
     r.get("view").and_then(Value::as_str).map(str::to_string)
 }
@@ -1931,10 +1936,10 @@ fn folder_rows_at(app: &mut SolveApp, ui: &mut egui::Ui, comp: u64, path: Option
         && folder == "bodies"
         && let Some(e) = all.iter().find(|e| e.row_key == format!("b:{r}"))
     {
-        app.tree.collapsed.remove(&key);
-        app.tree.collapsed.remove(&format!("c{comp}"));
-        for g in app.session.doc.browser_groups.iter().filter(|g| g.items.contains(&e.key)) {
-            app.tree.collapsed.remove(&format!("g{}", g.id));
+        open_row(app, &key);
+        open_row(app, &format!("c{comp}"));
+        for g in app.session.doc.browser_groups.iter().filter(|g| g.items.contains(&e.key)).map(|g| g.id).collect::<Vec<_>>() {
+            open_row(app, &format!("g{g}"));
         }
     }
     let open = is_open(app, &key, true);

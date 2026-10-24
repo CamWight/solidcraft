@@ -52,6 +52,11 @@ impl BrowserSearch {
         self.closed.contains(key)
     }
 
+    /// Lifts a row's mark from being closed in this search, so a reveal can open it.
+    pub(crate) fn open(&mut self, key: &str) {
+        self.closed.remove(key);
+    }
+
     pub(crate) fn toggle_closed(&mut self, key: &str) {
         if !self.closed.remove(key) {
             self.closed.insert(key.to_string());
@@ -172,6 +177,11 @@ impl Hits {
     /// Does the placement at `path` list anything beneath it?
     pub(crate) fn holds(&self, path: &[u64]) -> bool {
         self.holds.contains(path)
+    }
+
+    /// Did the search find this body? By its name in the world, as a pick in the view names it.
+    pub(crate) fn found_body(&self, world: &str) -> bool {
+        self.search.found.iter().any(|f| matches!(&f.item, Some(Sel::Body { name }) if name == world))
     }
 
     pub(crate) fn joint(&self, id: u64) -> bool {

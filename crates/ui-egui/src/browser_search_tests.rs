@@ -266,14 +266,82 @@ fn ctrl_f_over_the_browser_takes_the_keyboard() {
     assert_eq!(count("Column web"), 2);
 }
 
+/// Find in Browser, the menu action, as a user runs it.
+fn find_in_browser(h: &mut Harness, params: Value) {
+    let item = crate::context_menu::act("ui.findBrowser", "Find in Browser", "list").with(params);
+    crate::context_menu::run_item(&mut h.app, &item, egui::pos2(0.0, 0.0));
+    h.frames(3);
+}
+
+/// A pick in the view, as the viewport does it: the picked body selected, then revealed.
+fn pick(h: &mut Harness, world: &str) {
+    h.app.session.selection = vec![Sel::Body { name: world.into() }];
+    crate::browser::reveal_pick(&mut h.app);
+    h.frames(3);
+}
+
+/// The bodies the search found in the placements under `first` (their names in the world).
+fn found_under(h: &Harness, first: u64) -> Vec<String> {
+    let found = &h.app.tree.search.hits().unwrap().search.found;
+    found
+        .iter()
+        .filter(|f| f.path.first() == Some(&first))
+        .filter_map(|f| match &f.item {
+            Some(Sel::Body { name }) => Some(name.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 #[test]
 fn find_in_browser_ends_the_search() {
     let mut h = assembly();
     search(&mut h, "m20");
-    h.app.tree.reveal = Some("Base plate".into());
-    h.frames(3);
+    find_in_browser(&mut h, json!({"body": "Base plate"}));
     assert!(!h.app.tree.search.on());
     assert_eq!(count("Base plate"), 1);
+}
+
+/// A pick in the view keeps the search (#1413 with #3081): the text and the results stay, and the
+/// picked body's row opens under a placement closed in the search, scrolled to.
+#[test]
+fn a_pick_during_a_search_keeps_it_and_opens_the_picked_row() {
+    let mut h = assembly();
+    let c1 = occurrence(&h, 0, "Column:1");
+    search(&mut h, "shank");
+    let (text, found) = (h.app.tree.search.text.clone(), total(&h));
+    let shank = found_under(&h, c1).first().cloned().expect("a shank under Column:1");
+    click(&mut h, &format!("fold:occurrence:{c1}"));
+    assert!(!placements().iter().any(|p| p.len() == 2 && p[0] == c1), "Column:1 closed in the search");
+    pick(&mut h, &shank);
+    assert!(h.app.tree.search.on(), "the search stays");
+    assert_eq!((h.app.tree.search.text.clone(), total(&h)), (text, found), "with its text and results");
+    assert!(placements().iter().any(|p| p.len() == 2 && p[0] == c1), "Column:1 opened for the pick");
+    assert!(!h.app.tree.search.closed(&format!("o:{c1}")));
+    assert!(h.app.tree.reveal.is_none(), "the row was drawn and scrolled to");
+    assert!(!rows().iter().any(|r| r == "Document Settings"), "still the search's rows, not the whole tree");
+}
+
+/// A pick of a body the search didn't find changes no row, and the search stays: not even the
+/// placement holding it, closed in the search though it lists other matches.
+#[test]
+fn a_pick_the_search_did_not_find_moves_no_row() {
+    let mut h = assembly();
+    let c1 = occurrence(&h, 0, "Column:1");
+    // Column:1's web, by its name in the world: in the placement the search lists, not found by it.
+    let webs = find(&h.app.session, Pattern::new("web").as_ref(), &[Kind::Body]);
+    let web = webs.found.iter().find(|f| f.path.first() == Some(&c1)).and_then(|f| f.item.clone()).unwrap();
+    let Sel::Body { name: web } = web else { panic!("{web:?}") };
+    search(&mut h, "shank");
+    click(&mut h, &format!("fold:occurrence:{c1}"));
+    let (before, folds) = (rows(), h.app.tree.collapsed.clone());
+    for body in [web.as_str(), "Base plate"] {
+        pick(&mut h, body);
+        assert!(h.app.tree.search.on(), "{body}");
+        assert_eq!(rows(), before, "{body}");
+        assert!(h.app.tree.search.closed(&format!("o:{c1}")), "{body}: a row closed in the search stays closed");
+        assert_eq!(h.app.tree.collapsed, folds, "{body}");
+    }
 }
 
 /// Find in Browser on a face opens the Features folder at the face's feature, so it ends the search too. During a
@@ -288,8 +356,7 @@ fn find_in_browser_on_a_face_ends_the_search_and_a_search_leaves_out_the_feature
         f.component == 0 && !matches!(f.kind, FeatureKind::Sketch { .. } | FeatureKind::ConstructionPlane { .. })
     };
     let feature = h.app.session.doc.features.iter().find(made_by).map(|f| f.id).unwrap();
-    crate::browser::reveal_feature(&mut h.app, feature, "Base plate");
-    h.frames(3);
+    find_in_browser(&mut h, json!({"body": "Base plate", "feature": feature}));
     assert!(!h.app.tree.search.on());
     assert!(count("Features") > 0);
 }
