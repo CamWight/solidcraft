@@ -26,9 +26,9 @@
 //! they take a lot of ink.
 //!
 //! Sizes: ISO 216 A0 to A5, Letter and Legal, ANSI A to F (ASME Y14.1), the architectural A to E
-//! and E1, and custom sizes, finite, above 0 and at most [`MAX_SIDE_MM`] a side. Title blocks, the
-//! elongated ISO sizes and the extra centring marks a sheet larger than A0 needs (one in the middle
-//! of each section to be filmed) are not here yet.
+//! and E1, and custom sizes, finite, above 0 and at most [`MAX_SIDE_MM`] a side. Title blocks sit on
+//! the drawing border ([`crate::title_block`]). The elongated ISO sizes and the extra centring marks a
+//! sheet larger than A0 needs (one in the middle of each section to be filmed) are not here yet.
 
 use serde::{Deserialize, Serialize};
 

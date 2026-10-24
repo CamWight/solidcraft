@@ -33,6 +33,7 @@ pub mod section;
 pub mod simplify;
 pub mod spline_space;
 pub mod tess;
+pub mod title_block;
 pub mod tspline;
 mod unit_vec3;
 mod vec;
