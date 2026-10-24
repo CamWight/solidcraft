@@ -1,0 +1,17 @@
+{
+  "en": {
+    "prefs.perspective_fov": "Field of view"
+  },
+  "de": {
+    "prefs.perspective_fov": "Sichtfeld"
+  },
+  "ja": {
+    "prefs.perspective_fov": "画角"
+  },
+  "ko": {
+    "prefs.perspective_fov": "시야각"
+  },
+  "zh": {
+    "prefs.perspective_fov": "视场角"
+  }
+}
