@@ -11,9 +11,10 @@ use solidcraft_sketch::Sketch;
 use crate::params::bad;
 use crate::{EngineError, Result, Session};
 
-/// The sketch a command acts on: its `sketch` param (id or name), or the sketch being edited.
+/// The sketch a command acts on: its `sketch` param (id or name), or the sketch being edited
+/// (also when `sketch` is null, as callers send an optional value they don't have).
 pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
-    if let Some(v) = p.get("sketch") {
+    if let Some(v) = p.get("sketch").filter(|v| !v.is_null()) {
         let key = match v {
             Value::Number(n) => n.to_string(),
             Value::String(x) => x.clone(),
@@ -63,12 +64,41 @@ pub(super) fn checked(sk: &Sketch) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
+    use crate::Session;
+
+    /// No `sketch`, or a null one, is the sketch being edited; anything else that isn't an id or
+    /// a name is refused (#6336: sketch.inspect's callers send null for "none given").
+    #[test]
+    fn target_reads_a_null_sketch_as_none_given() {
+        let mut s = Session::default();
+        s.execute("sketch.create", &json!({"plane": "XY"})).unwrap();
+        let active = s.active_sketch.unwrap();
+        for p in [json!({}), json!({"sketch": null})] {
+            assert_eq!(super::target(&s, &p, "test").unwrap(), active, "{p}");
+        }
+        assert!(super::target(&s, &json!({"sketch": true}), "test").is_err());
+    }
+
     /// Each sketch command finds and keeps its sketch through this store (W38.0). Outside it, the
     /// command sources (non-test code) reach a sketch directly only on a line marked
     /// `// design-only:` in the files that work on the design's own sketches.
     #[test]
     fn each_sketch_command_goes_through_the_store() {
-        const PATTERNS: [&str; 4] = [".sketch_mut(", "doc.sketch(", " d.sketch(", "active_sketch.ok_or"];
+        // Sketches read or written, and the sketch being edited taken as a value (let-else, if let,
+        // a match arm, `and_then`, `map`, `ok_or`); its state checks, assignments and snapshot copies
+        // stay allowed.
+        const PATTERNS: [&str; 8] = [
+            ".sketch_mut(",
+            "doc.sketch(",
+            " d.sketch(",
+            "active_sketch.ok_or",
+            ") = s.active_sketch",
+            "=> s.active_sketch",
+            "s.active_sketch.and_then(",
+            "s.active_sketch.map(",
+        ];
         // A motion trace's wire, a joint's curve and Redefine Sketch Plane: the design's sketches.
         const DESIGN_ONLY: [&str; 3] = ["browser.rs", "joints_inspect.rs", "motion_trace.rs"];
         let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cmd")];
