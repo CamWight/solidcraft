@@ -234,8 +234,9 @@
 //!   time `scripts/fold-format-pending.sh` moves them into the next `v<N>/`.
 //!
 //! Drawings (`solidcraft-drawing/N`, #3890) are versioned by the same code ([`Family`]) from their
-//! own first format, 1: each later change is one file in `src/drawing/format/`, in `v<N>/` or
-//! `pending/` as above, and the release script folds that folder too.
+//! own first format, 1 (the record in [`crate::drawing`]): each later change is one file in
+//! `src/drawing/format/`, in `v<N>/` or `pending/` as above, and the release script folds that
+//! folder too.
 
 use serde_json::Value;
 
@@ -336,6 +337,16 @@ impl Family<'_> {
     /// (both from [`Family::take_version`]).
     pub fn upgrade(&self, v: &mut Value, version: u32, applied: Option<&[String]>) -> Result<()> {
         self.formats.upgrade(self.noun, v, version, applied)
+    }
+
+    /// Every number a file of the family holds is in range ([`check_numbers`]), but for its
+    /// top-level `kept` field: other tools' data (a design's `metadata`, a drawing's `properties`),
+    /// kept as it is and never read as a number (#1015); parsing already bounds its nesting.
+    pub(crate) fn check_numbers(&self, v: &Value, kept: &str) -> Result<()> {
+        match v {
+            Value::Object(m) => m.iter().filter(|(k, _)| k.as_str() != kept).try_for_each(|(_, x)| check_numbers(x, self.noun, 1)),
+            v => check_numbers(v, self.noun, 0),
+        }
     }
 }
 
@@ -645,7 +656,7 @@ fn v2_to_v3(v: &mut Value) -> Result<()> {
 pub fn read(s: &str) -> Result<Document> {
     let mut v: Value = serde_json::from_str(s).map_err(|e| DocError::Invalid(format!("not a SolidCraft design: {e}")))?;
     let (version, applied) = DESIGN.take_version(&mut v)?;
-    check_design_numbers(&v)?;
+    DESIGN.check_numbers(&v, "metadata")?;
     crate::config::validate_rules_json(&v)?;
     crate::config::validate_styles_json(&v)?;
     crate::face_anchor::validate_face_anchors_json(&v)?;
@@ -1116,31 +1127,21 @@ fn validate_freeform_offsets(value: &Value) -> Result<()> {
 /// outside what the kernel's tolerances serve.
 const MAX_REAL: f64 = 1e9;
 
-/// Every number the design itself holds is in range ([`check_numbers`]). `metadata` is left
-/// alone: it is other tools' data, kept as it is and never read as a number (#1015); parsing
-/// already bounds its nesting.
-fn check_design_numbers(v: &Value) -> Result<()> {
-    match v {
-        Value::Object(m) => m.iter().filter(|(k, _)| k.as_str() != "metadata").try_for_each(|(_, x)| check_numbers(x, 1)),
-        v => check_numbers(v, 0),
-    }
-}
-
-/// Every non-integer number in the file is finite and within ±`MAX_REAL` (a damaged or hostile
-/// file is refused instead of overflowing the geometry later).
-fn check_numbers(v: &Value, depth: usize) -> Result<()> {
+/// Every non-integer number in a `noun`'s file is finite and within ±`MAX_REAL` (a damaged or
+/// hostile file is refused instead of overflowing the geometry later).
+fn check_numbers(v: &Value, noun: &str, depth: usize) -> Result<()> {
     if depth > 64 {
-        return Err(DocError::Invalid("damaged design: nested too deeply".into()));
+        return Err(DocError::Invalid(format!("damaged {noun}: nested too deeply")));
     }
     match v {
         Value::Number(n) if !(n.is_u64() || n.is_i64()) => {
             let x = n.as_f64().unwrap_or(f64::NAN);
             if !(x.is_finite() && x.abs() <= MAX_REAL) {
-                return Err(DocError::Invalid(format!("damaged design: the number {n} is out of range")));
+                return Err(DocError::Invalid(format!("damaged {noun}: the number {n} is out of range")));
             }
         }
-        Value::Array(a) => a.iter().try_for_each(|x| check_numbers(x, depth + 1))?,
-        Value::Object(m) => m.values().try_for_each(|x| check_numbers(x, depth + 1))?,
+        Value::Array(a) => a.iter().try_for_each(|x| check_numbers(x, noun, depth + 1))?,
+        Value::Object(m) => m.values().try_for_each(|x| check_numbers(x, noun, depth + 1))?,
         _ => {}
     }
     Ok(())
