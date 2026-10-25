@@ -913,8 +913,6 @@ impl Tokens {
             sketch_lost: view.sketch_lost,
             sketch_construction: view.sketch_construction,
             sketch_centerline: view.sketch_centerline,
-            triad: view.triad,
-            gizmo: view.gizmo,
             bend_up: view.bend_up,
             bend_down: view.bend_down,
             interference: view.interference,
@@ -1280,8 +1278,8 @@ mod tests {
                     (v.sketch, v.sketch_fixed, v.dimension, v.glyph_bg, v.glyph_text, v.profile_fill)
                 );
                 assert_eq!(
-                    (t.origin_plane, t.axis_x, t.cube_face, t.cube_text, t.triad, t.gizmo),
-                    (v.origin_plane, v.axis_x, v.cube_face, v.cube_text, v.triad, v.gizmo)
+                    (t.origin_plane, t.axis_x, t.cube_face, t.cube_text, t.axis_y, t.axis_z),
+                    (v.origin_plane, v.axis_x, v.cube_face, v.cube_text, v.axis_y, v.axis_z)
                 );
                 assert_eq!(
                     (t.box_window, t.section_cap, t.preview_add, t.sketch_construction, t.continuity),
