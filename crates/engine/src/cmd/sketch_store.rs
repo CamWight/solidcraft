@@ -11,16 +11,20 @@ use solidcraft_sketch::Sketch;
 use crate::params::bad;
 use crate::{EngineError, Result, Session};
 
-/// The sketch a command acts on: its `sketch` param (id or name), or the sketch being edited
-/// (also when `sketch` is null, as callers send an optional value they don't have).
+/// The sketch a command acts on: its `sketch` param, or the sketch being edited (also when
+/// `sketch` is null, as callers send an optional value they don't have). A number is an exact id;
+/// text is an id written out or a name, so a sketch named "7" is reached only as text.
 pub(super) fn target(s: &Session, p: &Value, cmd: &str) -> Result<u64> {
     if let Some(v) = p.get("sketch").filter(|v| !v.is_null()) {
-        let key = match v {
-            Value::Number(n) => n.to_string(),
-            Value::String(x) => x.clone(),
+        let (key, found) = match v {
+            Value::Number(n) => {
+                let id = n.as_u64().ok_or_else(|| bad(cmd, "`sketch` must be an id or a name"))?;
+                (id.to_string(), s.doc.feature(id))
+            }
+            Value::String(x) => (x.clone(), s.doc.find_feature(x)),
             _ => return Err(bad(cmd, "`sketch` must be an id or a name")),
         };
-        let f = s.doc.find_feature(&key).ok_or_else(|| bad(cmd, format!("no sketch `{key}`")))?;
+        let f = found.ok_or_else(|| bad(cmd, format!("no sketch `{key}`")))?;
         if !matches!(f.kind, FeatureKind::Sketch { .. }) {
             return Err(bad(cmd, format!("`{key}` is not a sketch")));
         }
@@ -64,7 +68,7 @@ pub(super) fn checked(sk: &Sketch) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
+    use serde_json::{Value, json};
 
     use crate::Session;
 
@@ -79,6 +83,43 @@ mod tests {
             assert_eq!(super::target(&s, &p, "test").unwrap(), active, "{p}");
         }
         assert!(super::target(&s, &json!({"sketch": true}), "test").is_err());
+    }
+
+    /// A number is an exact id, never a name (0xlillith on #6336): a sketch named "999999" isn't
+    /// sketch 999999, so a command given that number refuses instead of picking it, and the name
+    /// as text still finds it. Through the commands that read only ids before W38.0.
+    #[test]
+    fn target_reads_a_number_as_an_id_and_never_a_name() {
+        let mut s = Session::default();
+        s.execute("sketch.create", &json!({"plane": "XY", "name": "999999"})).unwrap();
+        let named = s.active_sketch.unwrap();
+        assert_ne!(named, 999999);
+        let c = s.execute("sketch.circle.center", &json!({"center": [0, 0], "radius": 5})).unwrap()["curves"][0].clone();
+        s.execute("sketch.finish", &json!({})).unwrap();
+        // Glyphs and the curvature inspects need a sketch being edited; it's another one.
+        s.execute("sketch.create", &json!({"plane": "XZ"})).unwrap();
+        for (cmd, p) in [
+            ("sketch.export_dxf", json!({})),
+            ("sketch.glyphs", json!({})),
+            ("inspect.curvature_comb", json!({"curves": [c]})),
+            ("inspect.minimum_radius", json!({"curves": [c]})),
+        ] {
+            let with = |sketch: Value| {
+                let mut p = p.clone();
+                p["sketch"] = sketch;
+                p
+            };
+            let e = s.execute(cmd, &with(json!(999999))).unwrap_err().to_string();
+            assert!(e.contains("no sketch `999999`"), "{cmd}: {e}");
+            s.execute(cmd, &with(json!("999999"))).unwrap_or_else(|e| panic!("{cmd} by name: {e}"));
+            s.execute(cmd, &with(json!(named))).unwrap_or_else(|e| panic!("{cmd} by id: {e}"));
+            for bad in [json!(-1), json!(1.5)] {
+                let e = s.execute(cmd, &with(bad.clone())).unwrap_err().to_string();
+                assert!(e.contains("must be an id or a name"), "{cmd} {bad}: {e}");
+            }
+        }
+        assert_eq!(super::target(&s, &json!({"sketch": "999999"}), "test").unwrap(), named);
+        assert_eq!(super::target(&s, &json!({"sketch": named.to_string()}), "test").unwrap(), named);
     }
 
     /// Each sketch command finds and keeps its sketch through this store (W38.0). Outside it, the
