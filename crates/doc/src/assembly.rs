@@ -325,6 +325,19 @@ impl Document {
         out
     }
 
+    /// Whether [`Document::placements`] reaches every placement. Its walk stops at
+    /// [`MAX_PLACEMENTS`], and a branch past [`MAX_PLACEMENT_DEPTH`] levels, so a placement it
+    /// holds may have occurrences it never walked; the walk is whole when none does.
+    pub fn placements_complete(&self) -> bool {
+        let mut children = std::collections::HashMap::<u64, usize>::new();
+        for o in &self.occurrences {
+            *children.entry(o.parent).or_default() += 1;
+        }
+        let walk = self.placements();
+        let reached = walk.iter().fold(0usize, |n, (c, _, _)| n.saturating_add(children.get(c).copied().unwrap_or(0)));
+        walk.len() == reached.saturating_add(1)
+    }
+
     /// Every body as the world shows it: its world name ("Body1", or "Body1 (Occ:2)" for a
     /// further instance), its component, the occurrence path, and the transform from the frame
     /// its geometry is in to the world.

@@ -573,6 +573,7 @@
   "cmd.drawing_properties_remove": "図面のプロパティを削除",
   "cmd.drawing_properties_set": "図面のプロパティを変更",
   "cmd.drawing_set": "図面設定",
+  "cmd.drawing_view_snapshot": "図面ビューのスナップショット",
   "cmd.edit_checkpoint": "チェックポイント",
   "cmd.edit_restore_checkpoint": "チェックポイントを復元",
   "cmd.engine_commands": "コマンドを一覧表示",
