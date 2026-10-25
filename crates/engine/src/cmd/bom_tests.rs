@@ -1122,3 +1122,201 @@ fn a_compact_assembly_of_more_bodies_than_a_count_holds_is_weighed() {
     assert!(top["rows"][0]["mass_g"].as_f64().is_some_and(f64::is_finite), "{top}");
     assert!(s.execute("assembly.bom", &json!({})).is_err(), "more placements than a list walks");
 }
+
+/// A part with a body, its part number `pn`, placed once in `parent` (0 for the design).
+fn part(s: &mut Session, name: &str, pn: &str, parent: &str) {
+    let mut p = json!({"name": name});
+    if !parent.is_empty() {
+        p["parent"] = json!(parent);
+    }
+    run(s, "component.create", p);
+    run(s, "solid.cylinder", json!({"diameter": 6, "height": 20}));
+    run(s, "component.activate", json!({"component": 0}));
+    run(s, "component.metadata.set", json!({"component": name, "part_number": pn}));
+}
+
+/// An assembly placed once in `parent`, its part number `pn`, empty until something is placed in it.
+fn subassembly(s: &mut Session, name: &str, pn: &str, parent: &str) {
+    let mut p = json!({"name": name, "activate": false});
+    if !parent.is_empty() {
+        p["parent"] = json!(parent);
+    }
+    run(s, "component.create", p);
+    run(s, "component.metadata.set", json!({"component": name, "part_number": pn}));
+}
+
+/// `n` more placements of `component` in `parent`.
+fn place(s: &mut Session, component: &str, parent: &str, n: usize) {
+    let parent = if parent.is_empty() { json!(0) } else { json!(parent) };
+    for i in 0..n {
+        run(s, "occurrence.copy", json!({"component": component, "parent": parent, "translate": [10 * (i + 1), 0, 0]}));
+    }
+}
+
+/// Every row, children included, as (item, part number, bill of materials type, each, count).
+fn deep(r: &Value) -> Vec<(String, String, String, u64, u64)> {
+    fn walk(rows: &Value, out: &mut Vec<(String, String, String, u64, u64)>) {
+        for r in rows.as_array().into_iter().flatten() {
+            let item = r["item"].as_str().map_or_else(|| r["item"].to_string(), str::to_string);
+            let each = r["each"].as_u64().unwrap_or(r["count"].as_u64().unwrap());
+            out.push((item, r["part_number"].as_str().unwrap().into(), r["bom_type"].as_str().unwrap().into(), each, r["count"].as_u64().unwrap()));
+            walk(&r["children"], out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(&r["rows"], &mut out);
+    out
+}
+
+fn deep_row(item: &str, pn: &str, bom_type: &str, each: u64, count: u64) -> (String, String, String, u64, u64) {
+    (item.into(), pn.into(), bom_type.into(), each, count)
+}
+
+/// Four bolts and a two-bolt subassembly placed twice (the study's case, 0xlillith on #3874): parts
+/// only counts 8 bolts; all levels lists the subassembly twice with its bolts under it, 2 in each
+/// and 4 in all, beside the 4 bolts of the top.
+fn bolts_and_subassemblies() -> Session {
+    let mut s = Session::default();
+    part(&mut s, "Bolt", "BOLT", "");
+    place(&mut s, "Bolt", "", 3);
+    subassembly(&mut s, "Sub", "SUB", "");
+    place(&mut s, "Bolt", "Sub", 2);
+    place(&mut s, "Sub", "", 1);
+    s
+}
+
+#[test]
+fn all_levels_lists_each_subassembly_with_its_own_rows_under_it() {
+    let mut s = bolts_and_subassemblies();
+    assert_eq!(typed(&run(&mut s, "assembly.bom", json!({}))), [row("BOLT", "normal", 8)]);
+    let all = run(&mut s, "assembly.bom", json!({"levels": "all"}));
+    assert_eq!(deep(&all), [deep_row("1", "BOLT", "normal", 4, 4), deep_row("2", "SUB", "normal", 2, 2), deep_row("2.1", "BOLT", "normal", 2, 4)]);
+    assert_eq!(all["total_occurrences"], 10, "4 + 2 + 4 placements");
+    assert_eq!(all["levels"], "all");
+    // Folding changes nothing here: every row of all levels holds what it holds.
+    let folded = run(&mut s, "assembly.bom", json!({"levels": "all", "group_children": true}));
+    assert_eq!(deep(&folded), deep(&all));
+}
+
+/// Three levels: items 1, 1.1, 1.1.1, the counts multiplied through (2 x 3 x 2), and the CSV in
+/// that order.
+#[test]
+fn all_levels_numbers_and_counts_three_levels_deep() {
+    let mut s = Session::default();
+    subassembly(&mut s, "A", "A-1", "");
+    subassembly(&mut s, "B", "B-1", "A");
+    part(&mut s, "C", "C-1", "B");
+    place(&mut s, "C", "B", 1);
+    place(&mut s, "B", "A", 2);
+    place(&mut s, "A", "", 1);
+    let all = run(&mut s, "assembly.bom", json!({"levels": "all"}));
+    assert_eq!(deep(&all), [deep_row("1", "A-1", "normal", 2, 2), deep_row("1.1", "B-1", "normal", 3, 6), deep_row("1.1.1", "C-1", "normal", 2, 12)]);
+    assert_eq!(all["total_occurrences"], 20);
+    let dir = std::env::temp_dir().join(format!("solidcraft-bom-all-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("all.csv");
+    run(&mut s, "assembly.bom", json!({"levels": "all", "path": path.to_str().unwrap()}));
+    let csv = std::fs::read_to_string(&path).unwrap();
+    let items: Vec<&str> = csv.lines().skip(1).map(|l| l.split(',').next().unwrap()).collect();
+    assert_eq!(items, ["\"1\"", "\"1.1\"", "\"1.1.1\""]);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Each type in all levels: a phantom's contents join the level it sits in, merged with the same
+/// part there; a purchased part is a row with nothing under it unless its contents are asked for;
+/// an inseparable part is a row with nothing under it; a reference is in no row, nor anything in it.
+#[test]
+fn all_levels_follows_each_bill_of_materials_type() {
+    let mut s = bolts_and_subassemblies();
+    subassembly(&mut s, "Group", "", "Sub");
+    place(&mut s, "Bolt", "Group", 1);
+    set_type(&mut s, "Group", "phantom");
+    let all = |s: &mut Session, p: Value| deep(&run(s, "assembly.bom", p));
+    assert_eq!(
+        all(&mut s, json!({"levels": "all"})),
+        [deep_row("1", "BOLT", "normal", 4, 4), deep_row("2", "SUB", "normal", 2, 2), deep_row("2.1", "BOLT", "normal", 3, 6)],
+        "the phantom's bolt joins the subassembly's two"
+    );
+    set_type(&mut s, "Sub", "purchased");
+    assert_eq!(all(&mut s, json!({"levels": "all"})), [deep_row("1", "BOLT", "normal", 4, 4), deep_row("2", "SUB", "purchased", 2, 2)]);
+    let opened = run(&mut s, "assembly.bom", json!({"levels": "all", "show_purchased_contents": true}));
+    assert_eq!(
+        deep(&opened),
+        [deep_row("1", "BOLT", "normal", 4, 4), deep_row("2", "SUB", "purchased", 2, 2), deep_row("2.1", "BOLT", "normal", 3, 6)]
+    );
+    assert_eq!(opened["total_occurrences"], 12);
+    assert_eq!(
+        all(&mut s, json!({"levels": "top", "show_purchased_contents": true})),
+        [deep_row("1", "BOLT", "normal", 4, 4), deep_row("2", "SUB", "purchased", 2, 2)]
+    );
+    set_type(&mut s, "Sub", "inseparable");
+    assert_eq!(
+        all(&mut s, json!({"levels": "all", "show_purchased_contents": true})),
+        [deep_row("1", "BOLT", "normal", 4, 4), deep_row("2", "SUB", "inseparable", 2, 2)]
+    );
+    set_type(&mut s, "Sub", "reference");
+    assert_eq!(all(&mut s, json!({"levels": "all"})), [deep_row("1", "BOLT", "normal", 4, 4)]);
+}
+
+/// Two subassemblies with one part number and different contents are two rows, each with its own
+/// (one part number's rows by name: Three before Two).
+#[test]
+fn all_levels_keeps_subassemblies_with_different_contents_apart() {
+    let mut s = Session::default();
+    part(&mut s, "Bolt", "BOLT", "");
+    subassembly(&mut s, "Two", "SUB", "");
+    place(&mut s, "Bolt", "Two", 2);
+    subassembly(&mut s, "Three", "SUB", "");
+    place(&mut s, "Bolt", "Three", 3);
+    let all = deep(&run(&mut s, "assembly.bom", json!({"levels": "all"})));
+    assert_eq!(
+        all,
+        [
+            deep_row("1", "BOLT", "normal", 1, 1),
+            deep_row("2", "SUB", "normal", 1, 1),
+            deep_row("2.1", "BOLT", "normal", 3, 3),
+            deep_row("3", "SUB", "normal", 1, 1),
+            deep_row("3.1", "BOLT", "normal", 2, 2),
+        ]
+    );
+}
+
+/// What all levels refuses: a word it doesn't know, a flag that isn't one, and an assembly larger
+/// than the walk's budget (17 definitions placed twice each: over 100,000 placements).
+#[test]
+fn all_levels_refuses_what_it_cant_list() {
+    let mut s = bolts_and_subassemblies();
+    for (p, says) in
+        [(json!({"levels": "deep"}), "`levels` is flat or top or all"), (json!({"levels": "all", "show_purchased_contents": "yes"}), "true or false")]
+    {
+        let e = s.execute("assembly.bom", &p).unwrap_err().to_string();
+        assert!(e.contains(says), "{p}: {e}");
+    }
+    let mut s = Session::default();
+    for _ in 0..17 {
+        let parent = s.active_component;
+        let component = s.doc_mut().add_component(None, parent).unwrap();
+        s.doc_mut().add_occurrence(component, parent, solidcraft_doc::IDENTITY).unwrap();
+        s.active_component = component;
+    }
+    s.active_component = 0;
+    let e = s.execute("assembly.bom", &json!({"levels": "all"})).unwrap_err().to_string();
+    assert!(e.contains("more than 100000 placements"), "{e}");
+}
+
+/// All levels gathers the rows under a row as it gathers the top: by part number two definitions
+/// of one part number under a subassembly are one row, by definition two.
+#[test]
+fn all_levels_gathers_every_level_as_the_first() {
+    let mut s = Session::default();
+    subassembly(&mut s, "Sub", "SUB", "");
+    part(&mut s, "BoltA", "BOLT", "Sub");
+    part(&mut s, "BoltB", "BOLT", "Sub");
+    let by_number = deep(&run(&mut s, "assembly.bom", json!({"levels": "all"})));
+    assert_eq!(by_number, [deep_row("1", "SUB", "normal", 1, 1), deep_row("1.1", "BOLT", "normal", 2, 2)]);
+    let by_definition = deep(&run(&mut s, "assembly.bom", json!({"levels": "all", "group_by": ["definition"]})));
+    assert_eq!(
+        by_definition,
+        [deep_row("1", "SUB", "normal", 1, 1), deep_row("1.1", "BOLT", "normal", 1, 1), deep_row("1.2", "BOLT", "normal", 1, 1)]
+    );
+}

@@ -265,8 +265,9 @@ fn kits_are_told_apart_by_what_they_hold_not_by_how_it_reads() {
     assert!(each.contains(&vec![b4, b5]) && each.contains(&vec![b6]), "{each:?}");
 }
 
-/// What a folded part holds is listed as parts only lists it, in either view, and isn't folded
-/// again: a numbered subassembly inside it is listed through its parts.
+/// What a folded part holds is listed as parts only lists it, in parts only and the first level,
+/// and isn't folded again: a numbered subassembly inside it is listed through its parts. In all
+/// levels it is listed in all levels again, so that subassembly is a row with its own rows.
 #[test]
 fn what_a_folded_part_holds_is_listed_as_parts_only_lists_it() {
     let mut doc = Document::default();
@@ -278,10 +279,18 @@ fn what_a_folded_part_holds_is_listed_as_parts_only_lists_it() {
     for (id, part_number) in [(machine, "M-1"), (gearbox, "GB-1"), (shaft, "SH-1")] {
         number(&mut doc, id, part_number);
     }
-    for v in View::ALL {
+    for v in [View::PartsOnly, View::FirstLevel] {
         let bom = listed(&doc, folded(v)).unwrap();
         assert_eq!(rows(&bom), [row("1", "Machine", Normal, 1, 1), row("1.1", "Shaft", Normal, 2, 2), row("1.2", "Pin", Normal, 1, 1)], "{v:?}");
     }
+    let all = listed(&doc, folded(View::AllLevels)).unwrap();
+    let nested = [
+        row("1", "Machine", Normal, 1, 1),
+        row("1.1", "Gearbox", Normal, 1, 1),
+        row("1.1.1", "Shaft", Normal, 2, 2),
+        row("1.1.2", "Pin", Normal, 1, 1),
+    ];
+    assert_eq!(rows(&all), nested);
 }
 
 /// Bolt (purchased) holding a nut; Frame (inseparable) holding a plate, a purchased clip and a

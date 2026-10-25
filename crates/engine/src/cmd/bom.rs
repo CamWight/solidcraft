@@ -37,7 +37,9 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     CommandSpec::new("assembly.bom", "Bill of Materials", bom).at("SOLID", "INSPECT").icon("bom").noundo().params(
         "component?: id or name (default the design); levels?: flat (default: every part at any depth, counted through its \
-         subassemblies) | top (the component's direct children, subassemblies as one row each); group_by?: [\"part_number\"] \
+         subassemblies) | top (the component's direct children, subassemblies as one row each) | all (as top, each subassembly's \
+         own rows listed under it as children, to any depth: items 1.1, 1.1.1); show_purchased_contents?: true (in all, a \
+         purchased part's contents listed under it too); group_by?: [\"part_number\"] \
          (default; components without a part number get a row per definition) | [\"definition\"]; group_children?: true (a component \
          with a part number is one row, the parts placed inside it listed under it as children: [{item, part_number, description, \
          revision, each, count, definition, material, mass_g?}], not as rows of their own); mass?: true (measures each part: \
@@ -225,7 +227,7 @@ fn request(s: &Session, p: &Value, cmd: &str) -> Result<Request> {
         Some(Value::Bool(b)) => Ok(*b),
         Some(_) => Err(bad(cmd, format!("`{k}` is true or false"))),
     };
-    Ok(Request { source, view, group, fold: flag("group_children")?, mass: flag("mass")? })
+    Ok(Request { source, view, group, fold: flag("group_children")?, mass: flag("mass")?, purchased_contents: flag("show_purchased_contents")? })
 }
 
 fn group_key(g: &str, cmd: &str) -> Result<Group> {
@@ -290,6 +292,7 @@ fn bom(s: &mut Session, p: &Value) -> Result<Value> {
     out.insert("levels".into(), json!(request.view.as_str()));
     out.insert("group_by".into(), json!([request.group.as_str()]));
     out.insert("group_children".into(), json!(request.fold));
+    out.insert("show_purchased_contents".into(), json!(request.purchased_contents));
     out.insert("mass".into(), json!(request.mass));
     if let Some(path) = str_(p, "path") {
         let format = match str_(p, "format").map(str::to_ascii_lowercase) {
