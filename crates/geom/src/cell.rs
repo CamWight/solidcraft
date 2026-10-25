@@ -27,6 +27,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::paper::MAX_COORDINATE_MM;
 use crate::{Aabb2, EPS, Vec2};
 
 /// The most parts a cell's content may have.
@@ -276,10 +277,12 @@ pub fn value_box(cell: Aabb2, label_cap_mm: Option<f64>) -> Aabb2 {
 
 /// Where `lines` lines `cap_mm` high go in `value_box`, `pitch_mm` apart, by the module's rule:
 /// the first line's anchor, each next line `pitch_mm` below the one before, and
-/// [`Warning::Height`] when the last baseline is below the box.
+/// [`Warning::Height`] when the last baseline is below the box. The box lies within the paper's
+/// coordinates ([`MAX_COORDINATE_MM`]), so the anchor is always finite.
 pub fn place_lines(value_box: Aabb2, lines: usize, cap_mm: f64, pitch_mm: f64, align: HAlign, wrap: bool) -> Result<(Vec2, Option<Warning>)> {
     let Aabb2 { min, max } = value_box;
-    require(min.is_finite() && max.is_finite() && min.x <= max.x && min.y <= max.y, "a value box is finite and not inside out")?;
+    let on_paper = [min.x, min.y, max.x, max.y].into_iter().all(|v| v.abs() <= MAX_COORDINATE_MM);
+    require(on_paper && min.x <= max.x && min.y <= max.y, "a value box is not inside out and lies within the paper's coordinates")?;
     require([cap_mm, pitch_mm].into_iter().all(|v| v.is_finite() && v > 0.0), "a cap height and a line pitch are finite and above 0")?;
     let x = match align {
         HAlign::Left => min.x,

@@ -72,7 +72,7 @@ fn lines_whose_last_baseline_is_below_the_box_warn_height() {
 
 #[test]
 fn a_hostile_value_box_cap_or_pitch_is_refused() {
-    const BOX: Invalid = Invalid("a value box is finite and not inside out");
+    const BOX: Invalid = Invalid("a value box is not inside out and lies within the paper's coordinates");
     const SIZES: Invalid = Invalid("a cap height and a line pitch are finite and above 0");
     for value_box in [
         Aabb2::EMPTY,
@@ -81,6 +81,11 @@ fn a_hostile_value_box_cap_or_pitch_is_refused() {
         rect(f64::NAN, 0.0, 10.0, 5.0),
         rect(0.0, 0.0, f64::INFINITY, 5.0),
         rect(0.0, f64::NEG_INFINITY, 10.0, 5.0),
+        // Finite and in order, but past the paper's coordinates: centred, they would overflow.
+        rect(1e308, 0.0, 1.1e308, 10.0),
+        rect(0.0, 1e308, 10.0, 1.1e308),
+        rect(0.0, 0.0, 100_000.001, 5.0),
+        rect(-100_000.001, 0.0, 10.0, 5.0),
     ] {
         assert_eq!(place_lines(value_box, 1, 2.5, 4.0, HAlign::Left, false), Err(BOX), "{value_box:?}");
     }
@@ -89,6 +94,10 @@ fn a_hostile_value_box_cap_or_pitch_is_refused() {
         assert_eq!(place_lines(TITLE_BOX, 1, 2.5, v, HAlign::Left, false), Err(SIZES), "pitch {v}");
     }
     place_lines(TITLE_BOX, 1, f64::MIN_POSITIVE, f64::MIN_POSITIVE, HAlign::Left, false).unwrap();
+    let paper = rect(-MAX_COORDINATE_MM, -MAX_COORDINATE_MM, MAX_COORDINATE_MM, MAX_COORDINATE_MM);
+    for align in [HAlign::Left, HAlign::Centre, HAlign::Right] {
+        assert!(place_lines(paper, 1, 2.5, 4.0, align, false).unwrap().0.is_finite(), "{align:?}");
+    }
 }
 
 #[test]
@@ -273,7 +282,7 @@ fn pick(rng: &mut Lcg, n: usize) -> usize {
 #[test]
 fn fuzzed_content_texts_and_boxes_never_panic_and_follow_the_rules() {
     const CHARS: [char; 14] = ['a', 'Z', '0', ' ', '\n', '\t', '\r', '\u{7f}', '\u{85}', 'é', '字', '한', '😀', '\0'];
-    const NUMBERS: [f64; 10] = [0.0, -1.0, 1e-300, 2.5, 5.0, 14.5, 1e5, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+    const NUMBERS: [f64; 13] = [0.0, -1.0, 1e-300, 2.5, 5.0, 14.5, 1e5, 1.1e5, -1e308, 1e308, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
     let string = |rng: &mut Lcg, len: usize| -> String { (0..len).map(|_| CHARS[pick(rng, CHARS.len())]).collect() };
     let number = |rng: &mut Lcg| if pick(rng, 4) == 0 { NUMBERS[pick(rng, NUMBERS.len())] } else { rng.unit() * 200.0 - 50.0 };
     let mut rng = Lcg(0x5eed);
@@ -318,7 +327,8 @@ fn fuzzed_content_texts_and_boxes_never_panic_and_follow_the_rules() {
             (number(&mut rng), number(&mut rng), number(&mut rng), number(&mut rng), number(&mut rng), number(&mut rng));
         let lines = [0, 1, 2, 5, 1000, usize::MAX][round % 6];
         let value_box = rect(x0, y0, x1, y1);
-        let sane = [x0, y0, x1, y1, cap, pitch].iter().all(|v| v.is_finite()) && x0 <= x1 && y0 <= y1 && cap > 0.0 && pitch > 0.0;
+        let on_paper = [x0, y0, x1, y1].iter().all(|v| v.abs() <= MAX_COORDINATE_MM);
+        let sane = on_paper && [cap, pitch].iter().all(|v| v.is_finite() && *v > 0.0) && x0 <= x1 && y0 <= y1;
         let placed = place_lines(value_box, lines, cap, pitch, [HAlign::Left, HAlign::Centre, HAlign::Right][round % 3], round % 2 == 0);
         assert_eq!(placed.is_ok(), sane, "{value_box:?} {cap} {pitch}");
         if let Ok((at, warning)) = placed {
