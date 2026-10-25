@@ -4726,9 +4726,9 @@ pub(crate) fn refresh_layout(app: &mut SolveApp, scale: f32) {
             }
         }
         app.viewport.layout = Some(if app.ui.layout == crate::shell::LayoutMode::Docked {
-            crate::viewport_layout::Layout::new(rect, &docks, scale, app.preferences.navigator_style)
+            crate::viewport_layout::Layout::new(rect, &docks, scale, app.preferences.navigator_style, app.ui.show_navigation_bar)
         } else {
-            crate::viewport_layout::Layout::with_content(rect, content, &docks, scale, app.preferences.navigator_style)
+            crate::viewport_layout::Layout::with_content(rect, content, &docks, scale, app.preferences.navigator_style, app.ui.show_navigation_bar)
         });
     }
 }
@@ -4912,7 +4912,7 @@ pub fn look_at_selection(app: &mut SolveApp) {
 }
 
 fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
-    if app.viewport.layout.as_ref().is_some_and(|l| !l.navigation.is_positive()) {
+    if !app.ui.show_navigation_bar || app.viewport.layout.as_ref().is_some_and(|l| !l.navigation.is_positive()) {
         return;
     }
     let t = Tokens::get();
@@ -4979,19 +4979,33 @@ fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
         }
         icons::paint_icon(&painter, br.shrink(4.0), icon, f32::from(t.icon.a()) / 255.0);
         if resp.on_hover_text(*tip).clicked() {
-            let toggle = |m: NavMode, cur: Option<NavMode>| if cur == Some(m) { None } else { Some(m) };
             match *icon {
-                "orbit" => app.viewport.nav = toggle(NavMode::Orbit, app.viewport.nav),
-                "pan" => app.viewport.nav = toggle(NavMode::Pan, app.viewport.nav),
-                "zoom" => app.viewport.nav = toggle(NavMode::Zoom, app.viewport.nav),
-                "fit" => app.animate_view("fit"),
-                "spin" => {
-                    app.cancel_view_animation();
-                    app.viewport.spin = !app.viewport.spin;
+                "orbit" | "pan" | "zoom" => {
+                    let selected = matches!(
+                        (*icon, app.viewport.nav),
+                        ("orbit", Some(NavMode::Orbit)) | ("pan", Some(NavMode::Pan)) | ("zoom", Some(NavMode::Zoom))
+                    );
+                    let _ = app.run("view.tool", json!({"tool": if selected { "none" } else { *icon }}));
                 }
-                "home" => app.animate_view("home"),
+                "fit" => {
+                    let _ = app.run("view.fit", json!({}));
+                }
+                "spin" => {
+                    let _ = app.run("view.spin", json!({}));
+                }
+                "home" => {
+                    let _ = app.run("view.home", json!({}));
+                }
                 "lookat" => look_at_selection(app),
-                "style" => app.ui.visual_style = (app.ui.visual_style + 1) % 4,
+                "style" => {
+                    let style = match app.ui.visual_style {
+                        0 => "shaded",
+                        1 => "wireframe",
+                        2 => "shaded_with_hidden_edges",
+                        _ => "shaded_with_edges",
+                    };
+                    let _ = app.run("view.visual_style", json!({"style": style}));
+                }
                 "perspective" => app.ui.perspective = !app.ui.perspective,
                 _ => menu_open = !menu_open,
             }
@@ -5024,8 +5038,14 @@ fn view_menu(app: &mut SolveApp, ui: &mut egui::Ui, button: Rect) -> bool {
             ui.label(app.tr("ui.graphics_preset"));
             crate::prefs::graphics_preset_selector(app, ui);
             ui.separator();
-            crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Grid"), &mut app.ui.show_grid);
-            crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Ground shadow"), &mut app.ui.ground_shadow);
+            let mut grid = app.ui.show_grid;
+            if crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Grid"), &mut grid).changed() {
+                let _ = app.run("view.grid", json!({"on": grid}));
+            }
+            let mut shadow = app.ui.ground_shadow;
+            if crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Ground shadow"), &mut shadow).changed() {
+                let _ = app.run("view.ground_shadow", json!({"on": shadow}));
+            }
             crate::prefs::ambient_occlusion_checkbox(app, ui, "Ambient occlusion");
             let tool = crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Show tool at cursor"), &mut app.ui.tool_cursor);
             crate::scenario::publish_handle("view:tool_cursor", tool.rect.center());

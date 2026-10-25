@@ -43,11 +43,18 @@ pub(crate) fn free_rect(view: Rect, obstacles: &[Rect]) -> Rect {
 }
 
 impl Layout {
-    pub fn new(viewport: Rect, docks: &[Rect], scale: f32, style: crate::prefs::NavigatorStyle) -> Self {
-        Self::with_content(viewport, viewport, docks, scale, style)
+    pub fn new(viewport: Rect, docks: &[Rect], scale: f32, style: crate::prefs::NavigatorStyle, show_navigation_bar: bool) -> Self {
+        Self::with_content(viewport, viewport, docks, scale, style, show_navigation_bar)
     }
 
-    pub fn with_content(viewport: Rect, content: Rect, docks: &[Rect], scale: f32, style: crate::prefs::NavigatorStyle) -> Self {
+    pub fn with_content(
+        viewport: Rect,
+        content: Rect,
+        docks: &[Rect],
+        scale: f32,
+        style: crate::prefs::NavigatorStyle,
+        show_navigation_bar: bool,
+    ) -> Self {
         let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
         let mut obstacles: Vec<_> = docks.iter().take(14).copied().filter(|r| r.is_finite()).map(|r| r.expand(4.0)).collect();
         // Navigation is anchored to the viewport, never to transient dialog space.
@@ -61,7 +68,7 @@ impl Layout {
         let nav_space = content;
         let columns = ((nav_space.width() - 10.0) / 30.0).floor().clamp(1.0, 10.0);
         let nav_height = (10.0 / columns).ceil() * 30.0;
-        let navigation = if nav_space.width() >= columns * 30.0 + 10.0 && nav_space.height() >= nav_height + 7.0 {
+        let navigation = if show_navigation_bar && nav_space.width() >= columns * 30.0 + 10.0 && nav_space.height() >= nav_height + 7.0 {
             Rect::from_center_size(pos2(nav_space.center().x, nav_space.bottom() - nav_height * 0.5 - 7.0), vec2(columns * 30.0 + 10.0, nav_height))
         } else {
             Rect::NOTHING

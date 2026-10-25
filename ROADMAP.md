@@ -18,6 +18,8 @@ Optional GPU viewport ambient occlusion is available in View settings and Graphi
 with persistent settings, Performance/Quality graphics presets (Quality combines AO, Fine tessellation and adaptive 2× supersampling; manual combinations show Custom), and the
 `view.ambient_occlusion` and `view.graphics_preset` commands. See [display settings](docs/ambient-occlusion.md).
 
+Navigation bar overhaul: view commands and canvas-aware Fit/Home registered (#6585, first task).
+
 ## Scope (owner decision, 2026-10-07)
 
 The issue batch adds preservation of blind pockets in through cuts, associative projected
