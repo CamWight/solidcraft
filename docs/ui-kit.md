@@ -120,6 +120,7 @@ table. Panel/Window/Confirm compositions also have dedicated geometry and intera
 | `assistant_entry`, `AssistantEntryState` | Application-bar chat icon with quiet, ready, busy, auth, stopped and approval count marks; caller owns state and target | `app_bar`, `agent_ok/busy`, `warning/error`, `font_badge` |
 | actions: `button`, `Button` | Secondary action: `Normal`, `Small`, or `Enabled(bool)` | native sizing, form font/control tokens |
 | `primary_button` | Accent action outside a footer | `accent`, `on_accent`, form tokens |
+| `navigation_button`, `navigation_separator`, `shortcut_keycap` | Measured navigation controls: selected icon or icon and label, menu chevron, divider and shortcut tooltip keycap | `icon`, `text/text_dim`, `hover/accent_soft`, `radius_sm`, `space_4/6/8`, `font_label`, border tokens |
 | `icon_button_at` | Icon action inside a supplied rectangle | `form_icon_inset`, `text/dim`, icon palette |
 | `button_pair`, `PairButton` | Equal secondary actions, optional icons and selected state | `form_button_height`, control/selection/icon tokens |
 | `footer`, `Footer`, `Action` | OK/Cancel with optional Apply, compute status or selected action | `form_footer/button_height`, `dialog_footer/rule`, `control_*`, `accent`, spacing |

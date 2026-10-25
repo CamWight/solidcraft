@@ -2788,3 +2788,38 @@ fn missing_linear_master_is_never_reconstructed_from_a_finished_png() {
     assert!(!temp.exists());
     assert_eq!(h.app.session.render_job_handle(id).unwrap().frame().unwrap().unwrap().png(), bytes);
 }
+
+#[test]
+fn navigation_bar_render_canvases_filter_slots_and_keep_product_fit() {
+    let mut h = Harness::new();
+    h.app.run("solid.box", json!({"length":10,"width":20,"height":5})).unwrap();
+    enter(&mut h.app, true).unwrap();
+    h.app.preferences.look_at_anim = false;
+    h.settle();
+    assert_eq!(crate::navigation_bar::canvas_caps(&h.app), crate::navigation::NavCaps::RENDER);
+    for slot in ["orbit", "pan", "zoom", "fit", "look_at", "home", "visual_style", "display"] {
+        assert!(crate::scenario::handle_at(&format!("nav:slot:{slot}")).is_some(), "{slot}");
+    }
+    let bounds = solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds;
+    h.app.cam.pan(100.0, 50.0, 600.0);
+    let mut expected = h.app.cam;
+    expected.fit(&bounds);
+    h.step(&json!({"click":{"handle":"nav:slot:fit"}})).unwrap();
+    assert_eq!(h.app.cam, expected);
+    expected.set_view(solidcraft_engine::render::StandardView::Iso);
+    expected.fit(&bounds);
+    h.step(&json!({"click":{"handle":"nav:slot:home"}})).unwrap();
+    assert_eq!(h.app.cam, expected);
+
+    let job = completed_preview(&mut h, [20, 40, 60]);
+    h.app.render_workspace.view.job = Some(job);
+    h.app.render_workspace.view.result = true;
+    h.settle();
+    assert_eq!(crate::navigation_bar::canvas_caps(&h.app), crate::navigation::NavCaps { orbit: false, pick: false });
+    for slot in ["orbit", "look_at", "visual_style"] {
+        assert!(crate::scenario::handle_at(&format!("nav:slot:{slot}")).is_none(), "{slot}");
+    }
+    for slot in ["pan", "zoom", "fit", "home", "display"] {
+        assert!(crate::scenario::handle_at(&format!("nav:slot:{slot}")).is_some(), "{slot}");
+    }
+}

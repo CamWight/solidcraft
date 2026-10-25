@@ -1,7 +1,6 @@
 //! The 3D viewport: navigation, GPU (or CPU fallback) rendering, picking, overlays, the axis
 //! view and the navigation bar.
 
-use crate::fonts::RichTextExt as _;
 use crate::ui_kit::{Container, Surface};
 use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Shape, Stroke, pos2, vec2};
 use serde_json::json;
@@ -3133,7 +3132,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     let t = Tokens::get();
     let rect = ui.max_rect();
     app.viewport.rect = Some(rect);
-    refresh_layout(app, ui.ctx().pixels_per_point());
+    refresh_layout(app, ui.ctx());
     let resp = ui.interact(rect, ui.id().with("viewport"), Sense::click_and_drag());
     let flat = crate::dialogs_sheet::flat_active(app);
     if !flat {
@@ -3827,7 +3826,7 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
     crate::sketch_dims::show(app, ui, &proj);
     crate::select_other::show(app, ui.ctx());
     axis_view(app, ui, rect);
-    nav_bar(app, ui, rect);
+    crate::navigation_bar_view::show(app, ui, rect);
     agent_chip(app, ui, overlay_rect);
     // The notices first, so the 3D mouse picture can keep clear of them.
     let toasts = transient_messages(app, ui, rect);
@@ -4706,7 +4705,7 @@ pub(crate) fn scene_palette(dark: bool, mode: crate::theme::ColorVision) -> soli
     }
 }
 
-pub(crate) fn refresh_layout(app: &mut SolveApp, scale: f32) {
+pub(crate) fn refresh_layout(app: &mut SolveApp, ctx: &egui::Context) {
     if let Some(rect) = app.viewport.rect {
         let docks = crate::shell::covered_rects(app);
         let mut content = crate::shell::content_rect(app, rect);
@@ -4725,11 +4724,15 @@ pub(crate) fn refresh_layout(app: &mut SolveApp, scale: f32) {
                 content.max.x = (chat.left() - crate::shell::SHELL_GAP).clamp(content.left(), content.right());
             }
         }
-        app.viewport.layout = Some(if app.ui.layout == crate::shell::LayoutMode::Docked {
-            crate::viewport_layout::Layout::new(rect, &docks, scale, app.preferences.navigator_style, app.ui.show_navigation_bar)
-        } else {
-            crate::viewport_layout::Layout::with_content(rect, content, &docks, scale, app.preferences.navigator_style, app.ui.show_navigation_bar)
-        });
+        let navigation = if app.ui.show_navigation_bar { crate::navigation_bar_view::measured(app, ctx, content).rect } else { Rect::NOTHING };
+        app.viewport.layout = Some(crate::viewport_layout::Layout::with_content(
+            rect,
+            content,
+            &docks,
+            ctx.pixels_per_point(),
+            app.preferences.navigator_style,
+            navigation,
+        ));
     }
 }
 
@@ -4900,7 +4903,6 @@ pub(crate) fn nearest_quarter_turn(yaw: f64) -> f64 {
     }
 }
 
-/// Navigation bar (bottom centre).
 /// Turn the view to face the selected planar face or plane, else the active sketch; asked again
 /// while it already faces it, from the other side (#1886).
 pub fn look_at_selection(app: &mut SolveApp) {
@@ -4909,174 +4911,6 @@ pub fn look_at_selection(app: &mut SolveApp) {
     } else {
         crate::dialogs::look_at_sketch_again(app);
     }
-}
-
-fn nav_bar(app: &mut SolveApp, ui: &mut egui::Ui, rect: Rect) {
-    if !app.ui.show_navigation_bar || app.viewport.layout.as_ref().is_some_and(|l| !l.navigation.is_positive()) {
-        return;
-    }
-    let t = Tokens::get();
-    let items: [(&str, &str); 10] = [
-        (
-            "orbit",
-            if app.preferences.nav == crate::prefs::TOUCHPAD_NAV {
-                crate::i18n::tr("nav.touchpad.orbit")
-            } else if app.preferences.nav == crate::prefs::OPENSCAD_NAV {
-                "Orbit (left drag on empty space; Shift+left drag box-selects)"
-            } else if app.preferences.free_orbit {
-                "Orbit (right drag)"
-            } else {
-                "Orbit (right drag; hold Shift to snap)"
-            },
-        ),
-        ("spin", "Continuous orbit (stops at the next click or key)"),
-        ("pan", if app.preferences.nav == crate::prefs::TOUCHPAD_NAV { crate::i18n::tr("nav.touchpad.pan") } else { "Pan (drag; or middle drag)" }),
-        ("zoom", if app.preferences.nav == crate::prefs::TOUCHPAD_NAV { crate::i18n::tr("nav.touchpad.zoom") } else { "Zoom (drag; or wheel)" }),
-        ("fit", "Fit (F6)"),
-        ("lookat", "Look At the selected face or plane (or the active sketch) (Ctrl+8)"),
-        ("home", "Home view"),
-        ("perspective", "Perspective / orthographic"),
-        ("style", "Visual style: shaded with edges, shaded, wireframe, shaded with hidden edges"),
-        ("settings", "View settings: grid, ground shadow, ambient occlusion, agent cursor"),
-    ];
-    let menu_id = ui.id().with("nav_view_menu");
-    let mut menu_open = ui.data(|d| d.get_temp::<bool>(menu_id)).unwrap_or(false);
-    let w = items.len() as f32 * 30.0 + 10.0;
-    let bar = app.viewport.layout.as_ref().map(|l| l.navigation).unwrap_or_else(|| {
-        let available = crate::shell::bottom_overlay_rect(app, rect);
-        Rect::from_center_size(pos2(available.center().x, available.bottom() - 22.0), vec2(w, 30.0))
-    });
-    crate::scenario::publish_rect("nav:outer", bar);
-    let active = ui.rect_contains_pointer(bar)
-        || ui.rect_contains_pointer(axis_rect(app, rect))
-        || app.viewport.axis_drag.is_some()
-        || app.viewport.nav.is_some()
-        || app.viewport.modifier_nav.is_some()
-        || app.viewport.spin
-        || menu_open;
-    let mut painter = ui.painter_at(rect);
-    painter.set_opacity(if active || app.preferences.navigator_style == crate::prefs::NavigatorStyle::Axes { 1.0 } else { 0.45 });
-    let surface = Container::new(ui.ctx(), Surface::Navigation).frame(ui.ctx(), t.overlay, crate::frame::Side::Left);
-    Container::paint_frame(&painter, surface, bar.shrink(surface.stroke.width));
-    let columns = ((bar.width() - 10.0) / 30.0).round().clamp(1.0, 10.0) as usize;
-    for (i, (icon, tip)) in items.iter().enumerate() {
-        let br = Rect::from_min_size(
-            pos2(bar.left() + 5.0 + (i % columns) as f32 * 30.0, bar.top() + 2.0 + (i / columns) as f32 * 30.0),
-            vec2(26.0, 26.0),
-        );
-        let resp = ui.interact(br, ui.id().with(("nav", *icon)), Sense::click());
-        let active = match *icon {
-            "orbit" => app.viewport.nav == Some(NavMode::Orbit),
-            "pan" => app.viewport.nav == Some(NavMode::Pan),
-            "zoom" => app.viewport.nav == Some(NavMode::Zoom),
-            "perspective" => app.ui.perspective,
-            "settings" => menu_open,
-            "spin" => app.viewport.spin,
-            _ => false,
-        };
-        if active || resp.hovered() {
-            painter.rect_filled(br, t.radius_sm, if active { t.accent_soft } else { t.hover });
-        }
-        icons::paint_icon(&painter, br.shrink(4.0), icon, f32::from(t.icon.a()) / 255.0);
-        if resp.on_hover_text(*tip).clicked() {
-            match *icon {
-                "orbit" | "pan" | "zoom" => {
-                    let selected = matches!(
-                        (*icon, app.viewport.nav),
-                        ("orbit", Some(NavMode::Orbit)) | ("pan", Some(NavMode::Pan)) | ("zoom", Some(NavMode::Zoom))
-                    );
-                    let _ = app.run("view.tool", json!({"tool": if selected { "none" } else { *icon }}));
-                }
-                "fit" => {
-                    let _ = app.run("view.fit", json!({}));
-                }
-                "spin" => {
-                    let _ = app.run("view.spin", json!({}));
-                }
-                "home" => {
-                    let _ = app.run("view.home", json!({}));
-                }
-                "lookat" => look_at_selection(app),
-                "style" => {
-                    let style = match app.ui.visual_style {
-                        0 => "shaded",
-                        1 => "wireframe",
-                        2 => "shaded_with_hidden_edges",
-                        _ => "shaded_with_edges",
-                    };
-                    let _ = app.run("view.visual_style", json!({"style": style}));
-                }
-                "perspective" => app.ui.perspective = !app.ui.perspective,
-                _ => menu_open = !menu_open,
-            }
-        }
-        if *icon == "settings" {
-            crate::scenario::publish_handle("nav:view", br.center());
-            if menu_open {
-                menu_open = view_menu(app, ui, br);
-            }
-        }
-    }
-    ui.data_mut(|d| d.insert_temp(menu_id, menu_open));
-}
-
-/// The View settings above the navigation bar's last button: grid, ground shadow, the tool at
-/// the cursor and the agent cursor (#35). False once it should close (a click outside it).
-fn view_menu(app: &mut SolveApp, ui: &mut egui::Ui, button: Rect) -> bool {
-    let t = crate::theme::Tokens::get();
-    // A preset dropdown extends beyond this menu; let it consume its own clicks.
-    let child_popup_open = egui::Popup::is_any_open(ui.ctx());
-    let area = Container::new(ui.ctx(), Surface::Popup)
-        .area(egui::Id::new("sc_view_menu"))
-        .order(egui::Order::Foreground)
-        .pivot(Align2::RIGHT_BOTTOM)
-        .fixed_pos(button.right_top() - vec2(0.0, 6.0));
-    let r = area.show(ui.ctx(), |ui| {
-        Container::popup_frame(ui.style()).show(ui, |ui| {
-            ui.set_width(220.0);
-            ui.label(egui::RichText::new(crate::i18n::tr_label("VIEW")).semibold().color(crate::theme::Tokens::get().text).size(t.font_caption));
-            ui.label(app.tr("ui.graphics_preset"));
-            crate::prefs::graphics_preset_selector(app, ui);
-            ui.separator();
-            let mut grid = app.ui.show_grid;
-            if crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Grid"), &mut grid).changed() {
-                let _ = app.run("view.grid", json!({"on": grid}));
-            }
-            let mut shadow = app.ui.ground_shadow;
-            if crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Ground shadow"), &mut shadow).changed() {
-                let _ = app.run("view.ground_shadow", json!({"on": shadow}));
-            }
-            crate::prefs::ambient_occlusion_checkbox(app, ui, "Ambient occlusion");
-            let tool = crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Show tool at cursor"), &mut app.ui.tool_cursor);
-            crate::scenario::publish_handle("view:tool_cursor", tool.rect.center());
-            ui.separator();
-            let s = &mut app.ui.agent_cursor;
-            let show = crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Show Agent Cursor"), &mut s.show);
-            crate::scenario::publish_handle("view:agent_cursor", show.rect.center());
-            ui.add_enabled_ui(s.show, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(crate::i18n::tr_label("Speed"));
-                    crate::agent_cursor::speed_slider(ui, &mut s.speed);
-                });
-                crate::ui_kit::checkbox(ui, crate::i18n::tr_label("Follow camera (Look At sketches)"), &mut s.follow_camera);
-            });
-            // The agent chat panel, once the chat is turned on in Preferences.
-            if crate::agent_chat::shown(app) {
-                ui.separator();
-                let mut open = app.agent_chat.open;
-                let r = crate::ui_kit::checkbox(ui, &crate::agent_chat::panel_tip(), &mut open);
-                crate::scenario::publish_handle("view:agent_chat", r.rect.center());
-                if r.changed() {
-                    app.agent_chat.open = open;
-                    app.preferences.agent_chat_minimized &= !open;
-                }
-            }
-        });
-    });
-    let clicked_out = !child_popup_open
-        && ui.input(|i| i.pointer.any_pressed())
-        && ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| !r.response.rect.contains(p) && !button.contains(p));
-    !clicked_out
 }
 
 #[cfg(test)]

@@ -559,6 +559,9 @@ preference_settings! {
     language: String = "en".into(), 0;
     /// Shared workspace composition; system windows and popups retain their purpose.
     layout: crate::shell::LayoutMode = Default::default(), PAGE_INTERFACE;
+    /// Ordered view controls and their appearance.
+    #[serde(default)]
+    navigation_bar: crate::navigation_bar::NavigationBar = Default::default(), PAGE_INTERFACE;
     /// Show command names beneath ribbon icons, independently of workspace layout.
     ribbon_labels: bool = true, PAGE_INTERFACE;
     /// Interface scale (1 = 100 %).
@@ -2185,6 +2188,9 @@ pub fn set(app: &mut SolveApp, p: &serde_json::Value) -> Result<serde_json::Valu
     {
         return Err("`viewport_theme` must be theme, light or dark".into());
     }
+    if let Some(value) = p.get("navigation_bar") {
+        crate::navigation_bar::validate(value)?;
+    }
     let new: Prefs = migrate(serde_json::from_value(cur).map_err(|e| e.to_string())?);
     if !UNITS.contains(&new.default_units.as_str()) {
         return Err(format!("units must be one of {}", UNITS.join(", ")));
@@ -2276,6 +2282,86 @@ pub(crate) fn reveal_preference(h: &mut crate::scenario::Harness, handle: &str) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn navigation_bar_preferences_round_trip_and_recover_hostile_fields() {
+        use crate::navigation_bar::{Idle, Labels, NavigationBar, Position, Size};
+        use serde_json::json;
+        assert_eq!(super::lenient(&json!({})).navigation_bar, NavigationBar::default());
+        let p = super::lenient(&json!({"navigation_bar": {
+            "slots":["pan", "future_slot", "pan", "separator", "separator", "separator", "separator", "separator", 7, "fit"],
+            "position":"bottom_left", "size":"regular", "labels":"labels", "idle":"hide"
+        }}));
+        assert_eq!(p.navigation_bar.slots, ["pan", "future_slot", "separator", "separator", "separator", "separator", "fit"]);
+        assert_eq!(
+            (p.navigation_bar.position, p.navigation_bar.size, p.navigation_bar.labels, p.navigation_bar.idle),
+            (Position::BottomLeft, Size::Regular, Labels::Labels, Idle::Hide)
+        );
+        let saved = serde_json::to_value(&p).unwrap();
+        assert_eq!(serde_json::from_value::<super::Prefs>(saved).unwrap(), p);
+        for field in ["position", "size", "labels", "idle"] {
+            let mut value = serde_json::to_value(&p).unwrap();
+            value["navigation_bar"][field] = json!({"wrong":"type"});
+            let mut expected = p.clone();
+            match field {
+                "position" => expected.navigation_bar.position = Position::default(),
+                "size" => expected.navigation_bar.size = Size::default(),
+                "labels" => expected.navigation_bar.labels = Labels::default(),
+                _ => expected.navigation_bar.idle = Idle::default(),
+            }
+            assert_eq!(super::lenient(&value), expected, "{field}");
+            value["navigation_bar"][field] = json!("unknown");
+            assert_eq!(super::lenient(&value), expected, "{field}");
+        }
+        for value in [json!(null), json!(7), json!([]), json!({"slots":false})] {
+            assert_eq!(super::lenient(&json!({"navigation_bar":value})).navigation_bar, NavigationBar::default());
+        }
+        let ids: Vec<_> = (0..100).map(|i| format!("future_{i}")).collect();
+        let limited = super::lenient(&json!({"navigation_bar":{"slots":ids}}));
+        assert_eq!(limited.navigation_bar.slots.len(), crate::navigation_bar::MAX_SLOTS);
+        assert_eq!(limited.navigation_bar.slots.last().map(String::as_str), Some("future_15"));
+        let ids: Vec<_> = ["pan".to_owned(), "pan".to_owned()].into_iter().chain((0..20).map(|i| format!("future_{i}"))).collect();
+        let limited = super::lenient(&json!({"navigation_bar":{"slots":ids}}));
+        assert_eq!(limited.navigation_bar.slots.len(), crate::navigation_bar::MAX_SLOTS);
+        assert_eq!(limited.navigation_bar.slots.last().map(String::as_str), Some("future_14"));
+    }
+
+    #[test]
+    fn navigation_bar_control_reads_writes_validates_and_restores() {
+        use crate::navigation_bar::NavigationBar;
+        use serde_json::json;
+        let mut h = crate::scenario::Harness::new();
+        let initial = h.call("ui.prefs", json!({}));
+        assert_eq!(initial["result"]["navigation_bar"], serde_json::to_value(NavigationBar::default()).unwrap());
+        let edit = json!({"navigation_bar":{"slots":["zoom", "future", "zoom", "display"], "position":"bottom_right", "size":"regular", "labels":"labels", "idle":"always"}});
+        h.call("ui.prefs", json!({"open":"Interface"}));
+        let reply = h.call("ui.prefs", edit);
+        assert_eq!(reply["ok"], true, "{reply}");
+        assert_eq!(reply["result"]["navigation_bar"]["slots"], json!(["zoom", "future", "display"]));
+        let before = h.app.preferences.clone();
+        for bad in [
+            json!(null),
+            json!({"slots":"fit"}),
+            json!({"slots":[7]}),
+            json!({"position":"top"}),
+            json!({"size":true}),
+            json!({"labels":"text"}),
+            json!({"idle":10}),
+            json!({"unknown":true}),
+        ] {
+            assert!(super::control(&mut h.app, &json!({"navigation_bar":bad,"zoom_reverse":true})).is_err());
+            assert_eq!(h.app.preferences, before, "failed updates are atomic");
+        }
+        let mut restored = crate::SolveApp::new(Default::default(), Default::default());
+        restored.load_prefs(&h.app.prefs());
+        assert_eq!(restored.preferences.navigation_bar, before.navigation_bar);
+        h.call("ui.prefs", json!({"button":"cancel"}));
+        assert_eq!(h.app.preferences.navigation_bar, NavigationBar::default());
+        h.call("ui.prefs", json!({"open":"Interface","navigation_bar":{"slots":[]}}));
+        assert!(h.app.preferences.navigation_bar.slots.is_empty());
+        h.call("ui.prefs", json!({"button":"defaults"}));
+        assert_eq!(h.app.preferences.navigation_bar, NavigationBar::default());
+    }
+
     #[test]
     fn the_ghost_position_defaults_round_trips_and_reads_tolerantly() {
         use super::SpaceMouseGhost::{LeftViewport as Current, LeftWindow as Left, RightViewport as Right};
@@ -4349,17 +4435,6 @@ mod ui_scale_regression_tests {
         h.call("ui.prefs", json!({"button":"cancel"}));
         assert_eq!(h.app.preferences.ui_scale, 1.0, "Cancel restores the original scale");
         assert_eq!(h.ctx.zoom_factor(), 1.0);
-    }
-}
-
-/// Both display-setting surfaces dispatch the same programmatic command.
-pub(crate) fn ambient_occlusion_checkbox(app: &mut SolveApp, ui: &mut egui::Ui, label: &str) {
-    let mut enabled = app.preferences.ambient_occlusion;
-    let response = ui_kit::checkbox(ui, crate::i18n::tr_label(label), &mut enabled)
-        .on_hover_text(crate::i18n::tr_label("Soft shading where opaque surfaces meet. Requires the GPU viewport."));
-    crate::scenario::publish_handle("view:ambient_occlusion", response.rect.center());
-    if response.changed() {
-        let _ = app.run("view.ambient_occlusion", json!({"enabled": enabled}));
     }
 }
 

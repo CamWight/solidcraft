@@ -370,6 +370,8 @@ completed drawings publish atomically. The browser still exports synchronously.
 
 ## View navigation
 
+- Navigation bar slots (#6585): stored order and appearance, command-driven controls, canvas availability and single-row overflow.
+
 - Navigation has an opt-in Free orbit preference for mouse and 3D-mouse rotation through
   both poles with roll. It defaults off, preserving existing preset snapping and pole limits.
   The SolidWorks face menu offers Normal to Selection (`view.normal_to`), shared with Look At

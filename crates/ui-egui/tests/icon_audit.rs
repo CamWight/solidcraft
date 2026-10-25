@@ -170,6 +170,18 @@ fn requested_menu_icons_have_artwork_and_match_manifest() {
     collect(&mut h, "initial browser and timeline", &mut requested);
     assistant(&mut h, &mut requested);
 
+    let navigation = h.app.preferences.navigation_bar.clone();
+    h.call("ui.prefs", json!({"navigation_bar":{"slots":["orbit","pan","zoom","spin","fit","look_at","home","visual_style","projection","display","grid","ground_shadow","ambient_occlusion"]}}));
+    collect(&mut h, "navigation catalogue", &mut requested);
+    h.call("ui.prefs", json!({"navigation_bar":navigation}));
+
+    for (handle, surface) in [("nav:slot:visual_style", "navigation visual styles"), ("nav:view", "navigation display")] {
+        click(&mut h, handle);
+        h.frames(3);
+        collect(&mut h, surface, &mut requested);
+        click(&mut h, handle);
+    }
+
     ribbon(&mut h, &mut requested);
     h.app.start("inspect.colored_components");
     h.frames(2);

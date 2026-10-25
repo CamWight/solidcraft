@@ -16,6 +16,7 @@ mod history;
 mod layout;
 mod menu;
 mod metrics;
+mod navigation;
 pub(crate) mod panel;
 mod preferences;
 mod preferences_assistant;
@@ -48,6 +49,7 @@ pub(crate) use history::*;
 pub(crate) use layout::*;
 pub(crate) use menu::{Menu, MenuItem, rename_menu, workspace_menu};
 pub(crate) use metrics::{ContentWidth, header_height, row_height, table_row_height};
+pub(crate) use navigation::*;
 pub use panel::Window;
 pub(crate) use panel::{ComputeStatus, FeatureOptions, Panel, Part, WindowPage, panel_header_hover};
 #[cfg(test)]
