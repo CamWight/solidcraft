@@ -2797,8 +2797,11 @@ fn navigation_bar_render_canvases_filter_slots_and_keep_product_fit() {
     h.app.preferences.look_at_anim = false;
     h.settle();
     assert_eq!(crate::navigation_bar::canvas_caps(&h.app), crate::navigation::NavCaps::RENDER);
-    for slot in ["orbit", "pan", "zoom", "fit", "look_at", "home", "visual_style", "display"] {
+    for slot in ["orbit", "pan", "zoom", "fit", "home", "display"] {
         assert!(crate::scenario::handle_at(&format!("nav:slot:{slot}")).is_some(), "{slot}");
+    }
+    for slot in ["look_at", "visual_style"] {
+        assert!(crate::scenario::handle_at(&format!("nav:slot:{slot}")).is_none(), "{slot} is hidden in Render");
     }
     let bounds = solidcraft_engine::product_scene::extract(&h.app.session).unwrap().bounds;
     h.app.cam.pan(100.0, 50.0, 600.0);

@@ -362,9 +362,20 @@ fn navigation_bar_tool_radio_group_and_overflow_execute_in_list_order() {
     h.settle();
     let bar = crate::scenario::rect_of("nav:outer").unwrap();
     assert_eq!(bar, h.app.viewport.layout.as_ref().unwrap().navigation);
-    assert_eq!(bar.height(), 30.0);
-    assert!(crate::scenario::rect_of("nav:more").is_some());
+    let metrics = crate::ui_kit::NavigationMetrics::for_size(crate::navigation_bar::Size::Regular);
+    assert_eq!(h.app.preferences.navigation_bar.size, crate::navigation_bar::Size::Regular);
+    assert_eq!(bar.height(), metrics.height());
+    let more = crate::scenario::rect_of("nav:more").unwrap();
+    assert_eq!(more.size(), egui::vec2(metrics.button, metrics.button));
     let visible: Vec<_> = crate::scenario::handles("nav:slot:").into_iter().map(|(id, _)| id).collect();
+    assert!(!visible.is_empty() && visible.len() < h.app.preferences.navigation_bar.slots.len());
+    assert_eq!(visible, h.app.preferences.navigation_bar.slots.iter().take(visible.len()).map(|id| format!("nav:slot:{id}")).collect::<Vec<_>>());
+    for handle in &visible {
+        let slot = crate::scenario::rect_of(handle).unwrap();
+        assert_eq!(slot.center().y, more.center().y, "one row: {handle}");
+        assert_eq!(slot.height(), metrics.button);
+    }
+    assert!(!visible.iter().any(|handle| handle == "nav:slot:zoom"), "the final slot folds into More");
     h.step(&json!({"click":{"handle":"nav:more"}})).unwrap();
     let all: Vec<_> = crate::scenario::handles("nav:slot:").into_iter().map(|(id, _)| id).collect();
     assert_eq!(all, h.app.preferences.navigation_bar.slots.iter().map(|id| format!("nav:slot:{id}")).collect::<Vec<_>>());

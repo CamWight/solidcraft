@@ -83,6 +83,7 @@ pub(super) fn interface(app: &mut SolveApp, ui: &mut egui::Ui, t: &Tokens) {
             ui_kit::layout_preview,
         );
     });
+    super::navbar::show(app, ui);
     ui_kit::settings_section(ui, "scale", app.tr("prefs.scale_text"), |ui| {
         ui_kit::settings_pair(
             ui,

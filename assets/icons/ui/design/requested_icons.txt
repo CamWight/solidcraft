@@ -1,5 +1,6 @@
 accessibility	false
 activate	false
+agent_chat	false
 align	false
 appearance	false
 arc3	false
@@ -82,6 +83,7 @@ decal	false
 delete	false
 delete_face	false
 dimension	false
+dots	false
 draft	false
 draft_analysis	false
 drive	false
@@ -209,6 +211,11 @@ section	false
 select	false
 send	false
 settings	false
+settings_keyboard	false
+settings_monitor	false
+settings_mouse	false
+settings_palette	false
+settings_plug	false
 sheet_rules	false
 shell	false
 shield	false

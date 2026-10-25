@@ -370,6 +370,7 @@ completed drawings publish atomically. The browser still exports synchronously.
 
 ## View navigation
 
+- Navigation bar customisation (#6585): approved light/dark bar and settings geometry, live position preview, accessible reordering and per-menu display options.
 - Navigation bar slots (#6585): stored order and appearance, command-driven controls, canvas availability and single-row overflow.
 
 - Navigation has an opt-in Free orbit preference for mouse and 3D-mouse rotation through
