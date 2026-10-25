@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <title>Parts</title>
-  <path d="M20 28 L31.5 34.5 L31.5 47.5 L20 54 L8.5 47.5 L8.5 34.5Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
-  <path d="M44 11 L55.5 17.5 L55.5 30.5 L44 37 L32.5 30.5 L32.5 17.5Z" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M23.34 7 L40.66 17 L23.34 27 L6.02 17ZM6.02 17 L23.34 27 L23.34 47 L6.02 37Z" fill="none" stroke="currentColor" stroke-width="4.2" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M40.66 17 L57.98 27 L40.66 37 L23.34 27ZM23.34 27 L40.66 37 L40.66 57 L23.34 47ZM57.98 27 L40.66 37 L40.66 57 L57.98 47Z" fill="currentColor" stroke="currentColor" stroke-width="1" stroke-linejoin="round" stroke-linecap="round"/>
 </svg>
