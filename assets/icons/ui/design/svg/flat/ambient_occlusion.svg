@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Ambient occlusion</title>
+  <path d="M13 10L13 51L54 51" fill="none" stroke="currentColor" stroke-width="5.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M25.61 47.86A13 13 0 0 0 16.14 38.39M37.26 44.95A25 25 0 0 0 19.05 26.74M48.9 42.05A37 37 0 0 0 21.95 15.1" fill="none" stroke="currentColor" stroke-width="3.8" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Ground shadow</title>
+  <path d="M55 49C55 53.42 44.7 57 32 57C19.3 57 9 53.42 9 49C9 44.58 19.3 41 32 41C44.7 41 55 44.58 55 49Z" fill="none" stroke="currentColor" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M32 12 L43.5 18.5 L43.5 31.5 L32 38 L20.5 31.5 L20.5 18.5Z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Components</title>
+  <path d="M14 8L50 8A6 6 0 0 1 56 14L56 50A6 6 0 0 1 50 56L14 56A6 6 0 0 1 8 50L8 14A6 6 0 0 1 14 8Z" fill="none" stroke="currentColor" stroke-width="4.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M23 27.6 L32.2 32.8 L32.2 43.2 L23 48.4 L13.8 43.2 L13.8 32.8Z" fill="currentColor" stroke="currentColor" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M41 15.6 L50.2 20.8 L50.2 31.2 L41 36.4 L31.8 31.2 L31.8 20.8Z" fill="currentColor" stroke="currentColor" stroke-width="0.6" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

@@ -38,7 +38,7 @@ fn navigation_sample(ui: &mut Ui, size: crate::navigation_bar::Size) {
     for (id, icon, kind, selected, width) in [
         ("pan", "pan", crate::navigation_bar::Kind::Tool, true, metrics.button),
         ("fit", "fit", crate::navigation_bar::Kind::Action, false, metrics.button),
-        ("visual_style", "style", crate::navigation_bar::Kind::Menu, false, menu_width),
+        ("visual_style", "style_shaded_edges", crate::navigation_bar::Kind::Menu, false, menu_width),
     ] {
         let bounds = egui::Rect::from_min_size(egui::pos2(x, rect.top() + inset), vec2(width, metrics.button));
         navigation_button(
@@ -60,12 +60,12 @@ const ELEMENTS: &[Element] = &[
     element!("navigation_popup", |ui, _| {
         navigation_menu(ui, NAV_POPUP_WIDTH, |ui| {
             navigation_menu_heading(ui, "Visual style");
-            let mut row = NavigationMenuRow::new("shaded", "Shaded", "style");
+            let mut row = NavigationMenuRow::new("shaded", "Shaded", "style_shaded");
             row.selected = true;
             row.show(ui);
             navigation_menu_separator(ui);
             NavigationMenuRow::new("fit", "Fit", "fit").show(ui);
-            let mut later = NavigationMenuRow::new("translucent", "Translucent", "style");
+            let mut later = NavigationMenuRow::new("translucent", "Translucent", "style_translucent");
             later.enabled = false;
             later.detail = Some("Later");
             later.show(ui);

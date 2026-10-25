@@ -6,6 +6,26 @@ use serde_json::Value;
 pub const MAX_SLOTS: usize = 16;
 pub const MAX_SEPARATORS: usize = 4;
 
+// Reserved for the selection-mode slot in #6326; no runtime consumer yet.
+#[cfg(test)]
+pub(crate) const SELECTION_MODE_ICONS: &[(&str, &str)] = &[
+    ("faces_edges", "select_faces_edges"),
+    ("bodies", "select_bodies"),
+    ("features", "select_features"),
+    ("parts", "select_parts"),
+    ("components", "select_components"),
+    ("sketch", "select_sketch"),
+];
+
+pub(crate) fn visual_style_icon(style: u8) -> &'static str {
+    match style {
+        1 => "style_shaded",
+        2 => "style_wireframe",
+        3 => "style_hidden_edges",
+        _ => "style_shaded_edges",
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Action,
@@ -45,12 +65,12 @@ pub(crate) const CATALOGUE: &[Slot] = &[
     slot!("fit", Action, "fit", Some("view.fit")),
     slot!("look_at", Action, "lookat", Some("view.normal_to")),
     slot!("home", Action, "home", Some("view.home")),
-    slot!("visual_style", Menu, "style", Some("view.visual_style")),
+    slot!("visual_style", Menu, "style_shaded_edges", Some("view.visual_style")),
     slot!("projection", Toggle, "perspective", None),
-    slot!("display", Menu, "settings", None),
-    slot!("grid", Toggle, "style", Some("view.grid")),
-    slot!("ground_shadow", Toggle, "style", Some("view.ground_shadow")),
-    slot!("ambient_occlusion", Toggle, "settings", Some("view.ambient_occlusion")),
+    slot!("display", Menu, "display", None),
+    slot!("grid", Toggle, "grid", Some("view.grid")),
+    slot!("ground_shadow", Toggle, "ground_shadow", Some("view.ground_shadow")),
+    slot!("ambient_occlusion", Toggle, "ambient_occlusion", Some("view.ambient_occlusion")),
     slot!("separator", Separator, "", None),
 ];
 
@@ -59,6 +79,10 @@ pub(crate) fn find(id: &str) -> Option<&'static Slot> {
 }
 
 impl Slot {
+    pub(crate) fn current_icon(&self, visual_style: u8) -> &'static str {
+        if self.id == "visual_style" { visual_style_icon(visual_style) } else { self.icon }
+    }
+
     pub(crate) fn available(&self, caps: NavCaps) -> bool {
         if !caps.orbit {
             return !matches!(self.id, "orbit" | "spin" | "look_at" | "projection" | "visual_style");

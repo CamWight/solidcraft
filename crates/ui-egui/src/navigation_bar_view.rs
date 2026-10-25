@@ -337,7 +337,7 @@ pub(crate) fn paint_row(
                         let button = ui_kit::NavigationButton {
                             id: slot.id,
                             kind: slot.kind,
-                            icon: slot.icon,
+                            icon: slot.current_icon(app.ui.visual_style),
                             label: slot_text(app, slot),
                             selected: if editing.is_some() { false } else { selected(app, slot.id) || open == slot.id },
                             labels: if slot.kind == Kind::Menu {
@@ -414,7 +414,7 @@ fn style_menu(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
     let mut chosen = false;
     for (index, style) in ["shaded_with_edges", "shaded", "wireframe", "shaded_with_hidden_edges"].into_iter().enumerate() {
         let label = format!("navbar.style.{style}");
-        let mut item = ui_kit::NavigationMenuRow::new(style, app.tr(&label), "style");
+        let mut item = ui_kit::NavigationMenuRow::new(style, app.tr(&label), navigation_bar::visual_style_icon(index as u8));
         item.selected = app.ui.visual_style == index as u8;
         let response = item.show(ui);
         crate::scenario::publish_target(&format!("nav:style:{style}"), response.rect);
@@ -424,7 +424,7 @@ fn style_menu(app: &mut SolveApp, ui: &mut egui::Ui) -> bool {
         }
     }
     ui_kit::navigation_menu_separator(ui);
-    let mut later = ui_kit::NavigationMenuRow::new("translucent", app.tr("navbar.translucent"), "style");
+    let mut later = ui_kit::NavigationMenuRow::new("translucent", app.tr("navbar.translucent"), "style_translucent");
     later.enabled = false;
     later.detail = Some(app.tr("navbar.later"));
     later.show(ui);
@@ -440,7 +440,7 @@ fn overflow_menu(app: &mut SolveApp, ui: &mut egui::Ui, slots: &[&Slot], open: &
             crate::scenario::publish_target(&format!("nav:slot:{}", slot.id), bounds);
             continue;
         }
-        let mut item = ui_kit::NavigationMenuRow::new(slot.id, app.tr(slot.label), slot.icon);
+        let mut item = ui_kit::NavigationMenuRow::new(slot.id, app.tr(slot.label), slot.current_icon(app.ui.visual_style));
         if matches!(slot.kind, Kind::Tool | Kind::Toggle) {
             item.selected = selected(app, slot.id);
         }
@@ -490,7 +490,7 @@ fn display_menu(app: &mut SolveApp, ui: &mut egui::Ui) {
     heading(ui, app.tr("navbar.show"));
     for id in ["grid", "ground_shadow", "ambient_occlusion"] {
         let Some(slot) = navigation_bar::find(id) else { continue };
-        let mut item = NavigationMenuRow::new(slot.id, app.tr(slot.label), slot.icon);
+        let mut item = NavigationMenuRow::new(slot.id, app.tr(slot.label), slot.current_icon(app.ui.visual_style));
         item.selected = selected(app, slot.id);
         let response = item.show(ui);
         crate::scenario::publish_target(&format!("view:{id}"), response.rect);

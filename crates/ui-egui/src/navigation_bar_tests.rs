@@ -4,6 +4,32 @@ use egui::{Rect, pos2, vec2};
 use serde_json::json;
 
 #[test]
+fn selection_mode_icons_resolve_to_real_masters() {
+    assert_eq!(SELECTION_MODE_ICONS.len(), 6);
+    for (mode, icon) in SELECTION_MODE_ICONS {
+        let resolved = crate::icon_svg::resolve(icon);
+        assert!(!resolved.placeholder, "{mode}: {icon}");
+        assert_eq!(resolved.master, *icon);
+    }
+}
+
+#[test]
+fn slot_icons_follow_current_style_and_display_toggle_meanings() {
+    let slot = find("visual_style").unwrap();
+    for (style, icon) in [(0, "style_shaded_edges"), (1, "style_shaded"), (2, "style_wireframe"), (3, "style_hidden_edges")] {
+        assert_eq!(slot.current_icon(style), icon);
+        let resolved = crate::icon_svg::resolve(icon);
+        assert!(!resolved.placeholder, "{style}: {icon}");
+        assert_eq!(resolved.master, if style == 0 { "style" } else { icon });
+    }
+    assert_eq!(slot.current_icon(u8::MAX), "style_shaded_edges");
+    assert!(!crate::icon_svg::resolve("style_translucent").placeholder);
+    for id in ["display", "grid", "ground_shadow", "ambient_occlusion"] {
+        assert_eq!(find(id).unwrap().current_icon(2), id);
+    }
+}
+
+#[test]
 fn slot_catalogue_uses_registered_commands_and_existing_icons() {
     let mut ids = std::collections::BTreeSet::new();
     for slot in CATALOGUE {
