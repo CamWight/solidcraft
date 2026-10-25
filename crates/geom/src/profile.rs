@@ -58,6 +58,42 @@ pub const MAX_BEZIER_CTRL: usize = MAX_BEZIER_DEGREE + 1;
 /// continuity order a blend curve can be built for (4 = G4).
 pub const MAX_DERIVATIVE_ORDER: usize = 4;
 
+/// A similarity of the plane: a point is scaled by `scale` (above 0) about the origin, turned
+/// `angle` radians counter-clockwise, then moved by `shift`. It keeps shapes and the direction
+/// curves turn in, so an arc stays an arc ([`Seg2::similar`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Similarity2 {
+    scale: f64,
+    angle: f64,
+    shift: Vec2,
+    /// The angle's cosine and sine times the scale, worked out once rather than per point.
+    cos: f64,
+    sin: f64,
+}
+
+impl Similarity2 {
+    /// `None` unless `scale` is finite and above 0 and `angle` and `shift` are finite.
+    pub fn new(scale: f64, angle: f64, shift: Vec2) -> Option<Similarity2> {
+        if !(scale.is_finite() && scale > 0.0 && angle.is_finite() && shift.is_finite()) {
+            return None;
+        }
+        let (sin, cos) = angle.sin_cos();
+        Some(Similarity2 { scale, angle, shift, cos: cos * scale, sin: sin * scale })
+    }
+
+    pub fn scale(&self) -> f64 {
+        self.scale
+    }
+
+    pub fn angle(&self) -> f64 {
+        self.angle
+    }
+
+    pub fn apply(&self, p: Vec2) -> Vec2 {
+        Vec2::new(self.cos * p.x - self.sin * p.y, self.sin * p.x + self.cos * p.y) + self.shift
+    }
+}
+
 /// A Bézier segment over `pts` (2…[`MAX_BEZIER_CTRL`] points): a line, a cubic or a higher-degree
 /// piece. A quadratic becomes a conic of weight 1.
 pub fn bezier(pts: &[Vec2]) -> Option<Seg2> {
@@ -372,6 +408,31 @@ impl Seg2 {
                 q[..=k].reverse();
                 Seg2::Bezier { n, p: q }
             }
+        }
+    }
+    /// The segment with each control point mapped by `f`: exact for any affine map of lines,
+    /// Béziers and conics. An arc is returned as it is: only a similarity keeps it an arc
+    /// ([`Seg2::similar`]), and callers that mirror one handle it themselves.
+    pub fn map_controls(&self, f: impl Fn(Vec2) -> Vec2) -> Seg2 {
+        match *self {
+            Seg2::Line { a, b } => Seg2::Line { a: f(a), b: f(b) },
+            Seg2::Cubic { p0, p1, p2, p3 } => Seg2::Cubic { p0: f(p0), p1: f(p1), p2: f(p2), p3: f(p3) },
+            Seg2::Conic { a, apex, b, w } => Seg2::Conic { a: f(a), apex: f(apex), b: f(b), w },
+            Seg2::Bezier { n, mut p } => {
+                p.iter_mut().take(usize::from(n) + 1).for_each(|q| *q = f(*q));
+                Seg2::Bezier { n, p }
+            }
+            arc @ Seg2::Arc { .. } => arc,
+        }
+    }
+    /// The segment moved by the similarity `m`, exactly: an arc's centre maps, its radius scales
+    /// and its start turns; every other kind maps its control points.
+    pub fn similar(&self, m: &Similarity2) -> Seg2 {
+        match *self {
+            Seg2::Arc { center, radius, start, sweep } => {
+                Seg2::Arc { center: m.apply(center), radius: radius * m.scale(), start: start + m.angle(), sweep }
+            }
+            _ => self.map_controls(|p| m.apply(p)),
         }
     }
     pub fn length(&self) -> f64 {
