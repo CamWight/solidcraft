@@ -389,6 +389,36 @@ fn a_phantom_counts_what_it_holds_in_its_parent_merged_with_the_same_parts() {
     assert_eq!(typed(&run(&mut s, "assembly.bom", json!({"levels": "top"}))), [row("SC-6", "normal", 11)]);
 }
 
+/// Kits with one part number fold into one row only when what they hold is the same, its bill of
+/// materials types included: a kit holding a bought bolt isn't the kit holding a made one.
+#[test]
+fn kits_with_one_part_number_fold_together_only_when_their_contents_types_match() {
+    let mut s = Session::default();
+    for (kit, bolt) in [("KitA", "BoltA"), ("KitB", "BoltB")] {
+        run(&mut s, "component.create", json!({"name": kit, "activate": false}));
+        run(&mut s, "component.create", json!({"name": bolt, "parent": kit}));
+        run(&mut s, "solid.cylinder", json!({"diameter": 6, "height": 20}));
+        run(&mut s, "component.activate", json!({"component": 0}));
+        run(&mut s, "component.metadata.set", json!({"component": kit, "part_number": "KIT"}));
+        run(&mut s, "component.metadata.set", json!({"component": bolt, "part_number": "BOLT"}));
+    }
+    // Each kit row: its count, and each child's definition, count in one kit and count in all.
+    let kits = |s: &mut Session| -> Vec<(u64, Vec<(String, u64, u64)>)> {
+        let r = run(s, "assembly.bom", json!({"group_children": true}));
+        let child = |c: &Value| (c["definition"].as_str().unwrap().to_string(), c["each"].as_u64().unwrap(), c["count"].as_u64().unwrap());
+        r["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| (k["count"].as_u64().unwrap(), k["children"].as_array().unwrap().iter().map(child).collect()))
+            .collect()
+    };
+    let same = kits(&mut s);
+    assert_eq!((same.len(), same[0].0, same[0].1.len(), same[0].1[0].1, same[0].1[0].2), (1, 2, 1, 1, 2), "{same:?}");
+    set_type(&mut s, "BoltB", "purchased");
+    assert_eq!(kits(&mut s), [(1, vec![("BoltA".into(), 1, 1)]), (1, vec![("BoltB".into(), 1, 1)])]);
+}
+
 #[test]
 fn a_purchased_part_keeps_what_is_placed_inside_it_out_of_the_list() {
     let mut s = bolts();

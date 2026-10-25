@@ -319,13 +319,15 @@ fn counts(ix: &Index, root: u64, levels: Levels, fold: bool, cmd: &str) -> Resul
     Ok(out)
 }
 
-/// How a kit reads when rows are compared: its parts by part number (else definition) and count.
-fn kit_key(s: &Session, kit: &BTreeMap<u64, u64>) -> String {
+/// How a kit reads when rows are compared: its parts by part number (else definition), bill of
+/// materials type and count, so a kit holding a bought bolt isn't the kit holding a made one.
+fn kit_key(s: &Session, ix: &Index, kit: &BTreeMap<u64, u64>) -> String {
     let mut parts: Vec<String> = kit
         .iter()
         .map(|(id, n)| {
             let pn = s.doc.components.iter().find(|c| c.id == *id).and_then(|c| c.metadata.part_number()).unwrap_or_default();
-            if pn.is_empty() { format!("#{id}×{n}") } else { format!("{pn}×{n}") }
+            let bom_type = ix.bom_type(*id).as_str();
+            if pn.is_empty() { format!("#{id} {bom_type}×{n}") } else { format!("{pn} {bom_type}×{n}") }
         })
         .collect();
     parts.sort();
@@ -343,7 +345,7 @@ fn rows(s: &Session, ix: &Index, counts: &BTreeMap<u64, u64>, group: Group, kits
         // Without a part number a definition is its own row; parts with different contents
         // (a bolt with or without its nut) or different bill of materials types are different rows.
         let k = match group {
-            Group::PartNumber if !part_number.is_empty() => (part_number.clone(), kit_key(s, &kit), 0, bom_type),
+            Group::PartNumber if !part_number.is_empty() => (part_number.clone(), kit_key(s, ix, &kit), 0, bom_type),
             _ => (String::new(), String::new(), *id, bom_type),
         };
         let row = grouped.entry(k).or_insert_with(|| Row {
