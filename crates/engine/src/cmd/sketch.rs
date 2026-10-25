@@ -2070,7 +2070,7 @@ fn c_midpoint(s: &mut Session, p: &Value) -> Result<Value> {
 /// moves when the point can't.
 fn line_stays(s: &Session, p: &Value, cmd: &str) -> Value {
     let swapped = (|| {
-        let sk = s.doc.sketch(target_sketch(s, p, cmd).ok()?).ok()?;
+        let sk = sketch_store::read(&s.doc, sketch_store::target(s, p, cmd).ok()?).ok()?;
         let (a, b) = (p.get("a")?.as_str()?, p.get("b")?.as_str()?);
         let line = sk.curve_index(b).filter(|c| matches!(sk.curves.get(*c).map(|c| &c.kind), Some(CurveKind::Line { .. })));
         (sk.curve_index(a).is_none() && sk.resolve_point(a).is_some() && line.is_some()).then(|| {
