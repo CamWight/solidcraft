@@ -163,6 +163,7 @@ fn execute(app: &mut SolveApp, id: &str, params: Value) -> Result<Value, String>
                 | "view.history_layout"
                 | "browser.expand_all"
                 | "browser.collapse_all"
+                | "select.mode"
         )
         && app.session.active_sketch.is_none()
         && app.session.world_state().bodies.len() == 1
@@ -475,6 +476,8 @@ fn dispatch(app: &mut SolveApp, ctx: &egui::Context, method: &str, p: &Value) ->
                     match (VIS.iter().find(|(camel, _)| camel == k), k.as_str()) {
                         (Some((_, snake)), _) => vo.insert(snake.to_string(), v.clone()),
                         (None, "showOrigin") => vo.insert("origin_hidden".into(), shown(v)),
+                        // The older name: Bodies on, or Faces & edges (#4255).
+                        (None, "pickBodies") => o.insert("pickMode".into(), json!(if v.as_bool() == Some(true) { "bodies" } else { "faces" })),
                         (None, "showSketches") => {
                             sketches = Some(v.as_bool().ok_or_else(|| "`showSketches` must be true or false".to_string()));
                             None

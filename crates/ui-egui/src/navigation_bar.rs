@@ -1,21 +1,25 @@
 //! Stored navigation slots and their catalogue. Painting lives in `navigation_bar_view`.
-use crate::{SolveApp, navigation::NavCaps};
+use crate::{SolveApp, UiState, navigation::NavCaps};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solidcraft_engine::PickMode;
 
 pub const MAX_SLOTS: usize = 16;
 pub const MAX_SEPARATORS: usize = 4;
 
-// Reserved for the selection-mode slot in #6326; no runtime consumer yet.
-#[cfg(test)]
-pub(crate) const SELECTION_MODE_ICONS: &[(&str, &str)] = &[
-    ("faces_edges", "select_faces_edges"),
-    ("bodies", "select_bodies"),
-    ("features", "select_features"),
-    ("parts", "select_parts"),
-    ("components", "select_components"),
-    ("sketch", "select_sketch"),
+/// Each selection mode's icon, in the order the selection-mode menu lists them.
+pub(crate) const SELECTION_MODE_ICONS: &[(PickMode, &str)] = &[
+    (PickMode::Faces, "select_faces_edges"),
+    (PickMode::Bodies, "select_bodies"),
+    (PickMode::Features, "select_features"),
+    (PickMode::Parts, "select_parts"),
+    (PickMode::Components, "select_components"),
+    (PickMode::Sketch, "select_sketch"),
 ];
+
+pub(crate) fn selection_mode_icon(mode: PickMode) -> &'static str {
+    SELECTION_MODE_ICONS.iter().find(|(m, _)| *m == mode).map_or("select_faces_edges", |(_, icon)| icon)
+}
 
 pub(crate) fn visual_style_icon(style: u8) -> &'static str {
     match style {
@@ -65,6 +69,7 @@ pub(crate) const CATALOGUE: &[Slot] = &[
     slot!("fit", Action, "fit", Some("view.fit")),
     slot!("look_at", Action, "lookat", Some("view.normal_to")),
     slot!("home", Action, "home", Some("view.home")),
+    slot!("selection_mode", Menu, "select_faces_edges", Some("select.mode")),
     slot!("visual_style", Menu, "style_shaded_edges", Some("view.visual_style")),
     slot!("projection", Toggle, "perspective", None),
     slot!("display", Menu, "display", None),
@@ -78,12 +83,40 @@ pub(crate) fn find(id: &str) -> Option<&'static Slot> {
     CATALOGUE.iter().find(|slot| slot.id == id)
 }
 
+/// Where the bar is shown: the page's camera, and whether a sketch is open on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Canvas {
+    pub caps: NavCaps,
+    pub sketch: bool,
+}
+
+impl From<NavCaps> for Canvas {
+    fn from(caps: NavCaps) -> Self {
+        Canvas { caps, sketch: false }
+    }
+}
+
 impl Slot {
-    pub(crate) fn current_icon(&self, visual_style: u8) -> &'static str {
-        if self.id == "visual_style" { visual_style_icon(visual_style) } else { self.icon }
+    /// The icon for the slot's current value: a menu that holds a setting shows it.
+    pub(crate) fn current_icon(&self, ui: &UiState) -> &'static str {
+        match self.id {
+            "visual_style" => visual_style_icon(ui.visual_style),
+            "selection_mode" => selection_mode_icon(ui.pick_mode),
+            _ => self.icon,
+        }
     }
 
-    pub(crate) fn available(&self, caps: NavCaps) -> bool {
+    /// A menu whose button can show its current value beside the icon ("Shows: Icon and value").
+    pub(crate) fn shows_value(&self) -> bool {
+        matches!(self.id, "visual_style" | "selection_mode")
+    }
+
+    pub(crate) fn available(&self, canvas: impl Into<Canvas>) -> bool {
+        let Canvas { caps, sketch } = canvas.into();
+        // A click picks from the model only where it can be picked, and an open sketch picks its own geometry.
+        if self.id == "selection_mode" {
+            return caps.pick && !sketch;
+        }
         if !caps.orbit {
             return !matches!(self.id, "orbit" | "spin" | "look_at" | "projection" | "visual_style");
         }
@@ -102,6 +135,10 @@ pub(crate) fn canvas_caps(app: &SolveApp) -> NavCaps {
     } else {
         NavCaps::MODEL
     }
+}
+
+pub(crate) fn canvas(app: &SolveApp) -> Canvas {
+    Canvas { caps: canvas_caps(app), sketch: app.session.active_sketch.is_some() }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +211,7 @@ pub struct NavigationBar {
 impl Default for NavigationBar {
     fn default() -> Self {
         Self {
-            slots: ["orbit", "pan", "zoom", "separator", "fit", "look_at", "home", "separator", "visual_style", "display"]
+            slots: ["orbit", "pan", "zoom", "separator", "fit", "look_at", "home", "separator", "selection_mode", "visual_style", "display"]
                 .into_iter()
                 .map(str::to_owned)
                 .collect(),

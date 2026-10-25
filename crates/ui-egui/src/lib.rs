@@ -204,6 +204,7 @@ pub mod save_job;
 pub mod scenario;
 pub mod select_other;
 pub mod selection;
+pub(crate) mod selection_mode;
 pub mod shell;
 #[cfg(test)]
 mod shell_face_sketch_ui_tests;
@@ -305,8 +306,8 @@ pub struct UiState {
     pub dark: bool,
     /// Selection filter: kinds a click doesn't pick (`vertices`, `edges`, `faces`, `sketch`).
     pub pick_off: Vec<String>,
-    /// A click on a face picks its whole body.
-    pub pick_bodies: bool,
+    /// What a click on the model picks (#4255, `select.mode`).
+    pub pick_mode: solidcraft_engine::PickMode,
     /// 0: shaded with edges, 1: shaded, 2: wireframe, 3: shaded with hidden edges.
     pub visual_style: u8,
     /// A soft shadow on the ground under the model (seen from above).
@@ -335,7 +336,7 @@ impl Default for UiState {
             palette_open: false,
             dark: true,
             pick_off: Vec::new(),
-            pick_bodies: false,
+            pick_mode: Default::default(),
             visual_style: 0,
             ground_shadow: true,
             up_axis: Default::default(),
@@ -779,7 +780,7 @@ impl SolveApp {
             "grid": self.ui.show_grid,
             "navigation_bar": self.ui.show_navigation_bar,
             "perspective": self.ui.perspective,
-            "pick_bodies": self.ui.pick_bodies,
+            "pick_mode": self.ui.pick_mode,
             "auto_project": self.session.auto_project,
             "visual_style": self.ui.visual_style,
             "browser_collapsed": self.tree.collapsed,
@@ -819,8 +820,8 @@ impl SolveApp {
         if let Some(p) = flag("perspective") {
             self.ui.perspective = p;
         }
-        if let Some(b) = flag("pick_bodies") {
-            self.ui.pick_bodies = b;
+        if let Some(mode) = selection_mode::from_prefs(&v) {
+            self.ui.pick_mode = mode;
         }
         if let Some(a) = flag("auto_project") {
             self.session.auto_project = a;
@@ -947,6 +948,11 @@ impl SolveApp {
                 if let Some(collapsed) = v.get("collapsed").and_then(Value::as_bool) {
                     self.preferences.timeline_collapsed = collapsed;
                 }
+            }
+            if id == "select.mode"
+                && let Some(mode) = v.get("mode").and_then(|m| serde_json::from_value(m.clone()).ok())
+            {
+                self.ui.pick_mode = mode;
             }
             if matches!(id, "view.ambient_occlusion" | "view.graphics_preset") {
                 self.preferences.ambient_occlusion = v.get("enabled").and_then(Value::as_bool).unwrap_or(false);
