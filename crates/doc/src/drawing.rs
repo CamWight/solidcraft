@@ -195,9 +195,14 @@ impl Drawing {
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
 
-    /// The drawing's JSON: the same bytes for the same drawing.
-    pub fn to_json(&self) -> String {
-        serde_json::to_string_pretty(self).unwrap_or_default()
+    /// The drawing's JSON: the same bytes for the same drawing. JSON longer than a read takes
+    /// ([`MAX_DRAWING_BYTES`]) is refused, so every drawing saved opens again: other tools'
+    /// properties are kept as they came, and indenting them can make a drawing that read in
+    /// under the limit save over it.
+    pub fn to_json(&self) -> Result<String> {
+        let text = serde_json::to_string_pretty(self).map_err(|e| DocError::Invalid(format!("drawing not saved: {e}")))?;
+        require(text.len() <= MAX_DRAWING_BYTES, || format!("drawing too large to save (at most {} MiB)", MAX_DRAWING_BYTES >> 20))?;
+        Ok(text)
     }
 
     /// An id for a new object: one no object of the drawing has, from `id_source`, which never

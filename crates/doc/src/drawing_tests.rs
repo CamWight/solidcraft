@@ -47,7 +47,7 @@ fn bare() -> Drawing {
 }
 
 fn file(d: &Drawing) -> Value {
-    serde_json::from_str(&d.to_json()).unwrap()
+    serde_json::from_str(&d.to_json().unwrap()).unwrap()
 }
 
 fn read(file: &Value) -> Result<Drawing> {
@@ -72,11 +72,11 @@ fn refused(d: &Drawing, edit: impl FnOnce(&mut Value)) -> String {
 #[test]
 fn a_drawing_reads_back_as_saved_and_saves_the_same_bytes_again() {
     let d = plate();
-    let saved = d.to_json();
+    let saved = d.to_json().unwrap();
     let reopened = Drawing::from_json(&saved).unwrap();
     assert_eq!(reopened, d);
-    assert_eq!(reopened.to_json(), saved);
-    assert_eq!(plate().to_json(), saved, "a seeded run makes the same drawing");
+    assert_eq!(reopened.to_json().unwrap(), saved);
+    assert_eq!(plate().to_json().unwrap(), saved, "a seeded run makes the same drawing");
     let v = file(&d);
     let [plate_id, bolt_id, bracket_id] = [0, 1, 2].map(|i| ids::encode(d.sources[i].id));
     let [assembly_id, bolt_sheet_id] = [0, 1].map(|i| ids::encode(d.sheets[i].id));
@@ -289,7 +289,7 @@ fn damaged_files_are_refused_and_never_patched() {
     }
     let why = custom(json!([1e10, 100.0]));
     assert!(why.starts_with("damaged drawing: the number ") && why.ends_with(" is out of range"), "checked before the record: {why}");
-    let nan = d.to_json().replacen("600.0", "NaN", 1);
+    let nan = d.to_json().unwrap().replacen("600.0", "NaN", 1);
     assert!(Drawing::from_json(&nan).unwrap_err().to_string().starts_with("not a SolidCraft drawing: "), "NaN isn't JSON");
     assert_eq!(
         refused(&d, |v| v["sheets"][1]["border"]["margins"]["top_mm"] = json!(-1.0)),
@@ -352,7 +352,10 @@ fn damaged_files_are_refused_and_never_patched() {
     let design_format = crate::format::format_string(crate::format::FORMAT);
     assert_eq!(Drawing::from_json(&design).unwrap_err().to_string(), format!("not a SolidCraft drawing (format `{design_format}`)"));
     let drawing_format = DRAWING.format_string(current);
-    assert_eq!(crate::Document::from_json(&d.to_json()).unwrap_err().to_string(), format!("not a SolidCraft design (format `{drawing_format}`)"));
+    assert_eq!(
+        crate::Document::from_json(&d.to_json().unwrap()).unwrap_err().to_string(),
+        format!("not a SolidCraft design (format `{drawing_format}`)")
+    );
     // Not an object, not JSON, nested too deeply, too large.
     assert_eq!(Drawing::from_json("[]").unwrap_err().to_string(), "not a SolidCraft drawing (expected a JSON object)");
     assert!(Drawing::from_json("").unwrap_err().to_string().starts_with("not a SolidCraft drawing: "));
@@ -360,7 +363,7 @@ fn damaged_files_are_refused_and_never_patched() {
     assert_eq!(refused(&d, |v| v["views"] = deep), "damaged drawing: nested too deeply");
     let deeper = format!("{{\"format\": \"{drawing_format}\", \"views\": {}1{}}}", "[".repeat(200), "]".repeat(200));
     assert!(Drawing::from_json(&deeper).unwrap_err().to_string().starts_with("not a SolidCraft drawing: "));
-    let text = d.to_json();
+    let text = d.to_json().unwrap();
     let at_cap = text.clone() + &" ".repeat(MAX_DRAWING_BYTES - text.len());
     assert_eq!(Drawing::from_json(&at_cap).unwrap(), d);
     assert_eq!(Drawing::from_json(&(at_cap + " ")).unwrap_err().to_string(), "drawing too large (at most 16 MiB)");
@@ -385,7 +388,7 @@ fn a_run_never_gives_an_id_twice() {
         assert!(id != removed && given.insert(id), "{id:#x} given twice");
     }
     // The same seed, from the start, over a file it made: every draw up to the removed id is in use.
-    let reopened = Drawing::from_json(&d.to_json()).unwrap();
+    let reopened = Drawing::from_json(&d.to_json().unwrap()).unwrap();
     let again = reopened.allocate_id(&mut IdSource::seeded(SEED)).unwrap();
     assert!(!reopened.ids().any(|id| id == again));
     assert_eq!(again, removed);
@@ -405,6 +408,26 @@ fn properties_are_kept_as_they_are() {
     v["sheets"][0]["dpi"] = json!(1e300);
     let why = refusal(&v);
     assert!(why.starts_with("damaged drawing: the number ") && why.ends_with(" is out of range"), "{why}");
+}
+
+/// A drawing whose JSON would be over the read limit isn't saved. Other tools' properties are kept
+/// as they came, and indenting them can grow a file read in under the limit past it, so the save
+/// refuses rather than write a file that won't open: every drawing saved opens again.
+#[test]
+fn a_drawing_too_large_to_reopen_is_not_saved() {
+    let file = |zeros: usize| {
+        let items = vec!["0"; zeros].join(",");
+        let sheet = r#"{"id":"0000000000001","name":"S","sheet":{"size":{"standard":"a4"}}}"#;
+        let format = DRAWING.format_string(1);
+        format!(
+            r#"{{"format":"{format}","name":"A","sources":[],"language":"en","sheets":[{sheet}],"properties":{{"com.example":{{"items":[{items}]}}}}}}"#
+        )
+    };
+    // The case found in review (#3891): 2,000,000 zeros read in at about 4 MB and indent past 16 MiB.
+    let big = Drawing::from_json(&file(2_000_000)).unwrap();
+    assert_eq!(big.to_json().unwrap_err().to_string(), "drawing too large to save (at most 16 MiB)");
+    let small = Drawing::from_json(&file(100_000)).unwrap();
+    assert_eq!(Drawing::from_json(&small.to_json().unwrap()).unwrap(), small);
 }
 
 /// A new drawing has one sheet, its id the source's first, follows its designs' units and renders
@@ -429,7 +452,7 @@ fn a_new_drawing_has_one_sheet_and_keeps_the_rules() {
 /// rules and reads back as it saves.
 #[test]
 fn mutated_files_give_an_error_or_a_valid_drawing_never_a_panic() {
-    let good = plate().to_json();
+    let good = plate().to_json().unwrap();
     let tree: Value = serde_json::from_str(&good).unwrap();
     let nodes = count(&tree) as u64;
     let lies = [
@@ -488,7 +511,7 @@ fn mutated_files_give_an_error_or_a_valid_drawing_never_a_panic() {
         };
         if let Ok(d) = Drawing::from_json(&text) {
             assert!(d.validate().is_ok() && d.ids().all(|id| id != 0), "{text}");
-            assert_eq!(Drawing::from_json(&d.to_json()).unwrap(), d, "{text}");
+            assert_eq!(Drawing::from_json(&d.to_json().unwrap()).unwrap(), d, "{text}");
             read_back += 1;
         }
     }
