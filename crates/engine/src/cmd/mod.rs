@@ -32,6 +32,7 @@ mod construct;
 mod delete;
 mod diagnostics;
 mod drawing;
+mod drawing_sheet;
 mod drawing_view;
 mod edit;
 mod face;
@@ -338,6 +339,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(view_navigation::COMMANDS.iter());
     v.extend(view_dxf::COMMANDS.iter());
     v.extend(drawing::COMMANDS.iter());
+    v.extend(drawing_sheet::COMMANDS.iter());
     v.extend(drawing_view::COMMANDS.iter());
     v.extend(diagnostics::COMMANDS.iter());
     v.extend(render::COMMANDS.iter());
