@@ -29,17 +29,21 @@ pub enum View {
     PartsOnly,
     /// Structured, first level: the assembly's direct contents, a subassembly as one row.
     FirstLevel,
+    /// Structured, all levels: the assembly's direct contents, each subassembly a row with its own
+    /// contents listed under it, to any depth (1, 1.1, 1.1.1).
+    AllLevels,
 }
 
 impl View {
     /// Every view, in the order commands and documentation list them.
-    pub const ALL: [View; 2] = [View::PartsOnly, View::FirstLevel];
+    pub const ALL: [View; 3] = [View::PartsOnly, View::FirstLevel, View::AllLevels];
 
     /// The word commands use (`assembly.bom`'s `levels`).
     pub fn as_str(self) -> &'static str {
         match self {
             View::PartsOnly => "flat",
             View::FirstLevel => "top",
+            View::AllLevels => "all",
         }
     }
 
@@ -89,6 +93,9 @@ pub struct Request {
     pub fold: bool,
     /// Weigh each row and the assembly: every part is measured, so it is asked for.
     pub mass: bool,
+    /// In all levels, what a purchased part holds is listed under it too (it is still one row,
+    /// weighed whole).
+    pub purchased_contents: bool,
 }
 
 /// A component as one placement counts: its id and the bill of materials type it counts as there.
@@ -172,7 +179,8 @@ pub struct Row {
     /// The placements it counts, by occurrence path from the assembly listed, in path order.
     pub members: Vec<Vec<u64>>,
     pub mass: Mass,
-    /// What one of a folded part holds, as parts only lists it.
+    /// What one of it holds, listed under it: a folded part's contents as parts only lists them,
+    /// or in all levels a subassembly's own rows.
     pub children: Vec<Row>,
 }
 
@@ -332,7 +340,9 @@ impl<'a> Tree<'a> {
 
     /// The rows of one level: the placements `at` (positions in `entries`), gathered as `group`
     /// says, listed under the rows `parents` names, `per` of them in all (1 for the assembly).
-    fn level(&self, entries: &[Entry], kids: &[Vec<usize>], at: &[usize], group: Group, parents: &[Member], per: u64) -> Vec<Row> {
+    /// The rows under these are gathered as `under` says.
+    #[allow(clippy::too_many_arguments)]
+    fn level(&self, entries: &[Entry], kids: &[Vec<usize>], at: &[usize], group: Group, under: Group, parents: &[Member], per: u64) -> Vec<Row> {
         let mut grouped: BTreeMap<GroupKey, Vec<usize>> = BTreeMap::new();
         for &i in at {
             let Some(entry) = entries.get(i) else { continue };
@@ -340,7 +350,7 @@ impl<'a> Tree<'a> {
             let kit = self.kit(entries, kids.get(i).map_or(&[], Vec::as_slice));
             grouped.entry(GroupKey { part, bom_type: entry.member.bom_type, kit }).or_default().push(i);
         }
-        let mut rows: Vec<Row> = grouped.values().filter_map(|members| self.row(entries, kids, members, parents, per)).collect();
+        let mut rows: Vec<Row> = grouped.values().filter_map(|members| self.row(entries, kids, members, under, parents, per)).collect();
         // By part number; rows without one after them, by name; one part's rows by type.
         rows.sort_by(|a, b| {
             (a.part_number.is_empty(), &a.part_number, &a.names, &a.components, a.bom_type).cmp(&(
@@ -369,8 +379,9 @@ impl<'a> Tree<'a> {
         kit
     }
 
-    /// One row: the placements `members` (positions in `entries`) of one part, type and kit.
-    fn row(&self, entries: &[Entry], kids: &[Vec<usize>], members: &[usize], parents: &[Member], per: u64) -> Option<Row> {
+    /// One row: the placements `members` (positions in `entries`) of one part, type and kit, with
+    /// the rows under it gathered as `under` says.
+    fn row(&self, entries: &[Entry], kids: &[Vec<usize>], members: &[usize], under: Group, parents: &[Member], per: u64) -> Option<Row> {
         let listed: Vec<&Entry> = members.iter().filter_map(|&i| entries.get(i)).collect();
         let first = listed.first()?;
         let mut components: Vec<u64> = listed.iter().map(|e| e.member.component).collect();
@@ -380,7 +391,7 @@ impl<'a> Tree<'a> {
         let count = listed.len() as u64;
         let mut paths: Vec<Vec<u64>> = listed.iter().map(|e| e.path.clone()).collect();
         paths.sort_unstable();
-        // What a folded part holds is listed under it, gathered by part number in any list.
+        // What one of it holds is listed under it.
         let inside: Vec<usize> = members.iter().flat_map(|&i| kids.get(i).into_iter().flatten().copied()).collect();
         let mut chain = parents.to_vec();
         chain.push(member);
@@ -402,7 +413,7 @@ impl<'a> Tree<'a> {
             each: count / per.max(1),
             members: paths,
             mass: Mass::NotAsked,
-            children: self.level(entries, kids, &inside, Group::PartNumber, &chain, count),
+            children: self.level(entries, kids, &inside, under, under, &chain, count),
         };
         for (i, c) in row.components.iter().filter_map(|id| self.components.get(id)).enumerate() {
             let m = &c.metadata;
@@ -555,6 +566,9 @@ struct Shape {
     bodies: bool,
     /// It is a part with a part number in a list that folds.
     folded: bool,
+    /// What it holds is listed under it if it is purchased ([`Request::purchased_contents`], all
+    /// levels).
+    open_purchased: bool,
 }
 
 /// How one placement counts.
@@ -572,10 +586,11 @@ struct Step {
 
 /// How a placement counts in `view`: the one rule every list and every mass read. A reference
 /// counts nowhere and nothing inside it does; a phantom has no row and what it holds counts where
-/// it is placed; a purchased part is one row with nothing inside it listed; an inseparable part
-/// is one row, and in parts only its purchased parts are listed beside it; a normal part is a row
-/// at the first level, and in parts only a subassembly is listed through its parts unless it has
-/// bodies of its own. A folded part is one row holding all it holds.
+/// it is placed; a purchased part is one row with nothing inside it listed (in all levels, its
+/// contents under it when asked); an inseparable part is one row, and in parts only its purchased
+/// parts are listed beside it; a normal part is a row in the structured views, in all levels with
+/// what it holds under it, and in parts only a subassembly is listed through its parts unless it
+/// has bodies of its own. A folded part is one row holding all it holds.
 fn classify(view: View, walk: Walk, bom_type: BomType, shape: Shape) -> Step {
     let nothing = Step { row: false, inside: None, kit: false, holds: Holds::All };
     let row = |holds| Step { row: true, holds, ..nothing };
@@ -583,16 +598,20 @@ fn classify(view: View, walk: Walk, bom_type: BomType, shape: Shape) -> Step {
     match (bom_type, walk) {
         (BomType::Reference, _) => nothing,
         (BomType::Phantom, _) => Step { inside: Some(walk), ..nothing },
+        (BomType::Purchased, Walk::Listed) if view == View::AllLevels && shape.open_purchased => {
+            Step { inside: contents(Walk::Listed), kit: true, ..row(Holds::All) }
+        }
         (BomType::Purchased, _) => row(Holds::All),
         (_, Walk::PurchasedOnly) => Step { inside: contents(Walk::PurchasedOnly), ..nothing },
         (BomType::Inseparable, Walk::Listed) => match view {
             View::PartsOnly => Step { inside: contents(Walk::PurchasedOnly), ..row(Holds::AllButPurchased) },
-            View::FirstLevel => row(Holds::All),
+            View::FirstLevel | View::AllLevels => row(Holds::All),
         },
         (BomType::Normal, Walk::Listed) if shape.folded => Step { inside: contents(Walk::Listed), kit: true, ..row(Holds::All) },
         (BomType::Normal, Walk::Listed) => match view {
             View::PartsOnly => Step { row: !shape.contents || shape.bodies, inside: contents(Walk::Listed), kit: false, holds: Holds::Own },
             View::FirstLevel => row(Holds::All),
+            View::AllLevels => Step { inside: contents(Walk::Listed), kit: true, ..row(Holds::All) },
         },
     }
 }
@@ -637,14 +656,20 @@ fn walk(tree: &Tree, request: &Request) -> Result<Vec<Entry>> {
                 return Err(too_big());
             }
             let component = placed.member.component;
-            // What a folded part holds is listed as parts only lists it, and isn't folded again.
+            // What a folded part holds is listed as parts only lists it, and isn't folded again; in
+            // all levels what any row holds is listed in all levels again.
             let (view, folds) = match frame.kit {
+                Some(_) if request.view == View::AllLevels => (View::AllLevels, false),
                 Some(_) => (View::PartsOnly, false),
                 None => (request.view, request.fold),
             };
             let numbered = tree.components.get(&component).is_some_and(|c| c.metadata.part_number().is_some());
-            let shape =
-                Shape { contents: tree.children.contains_key(&component), bodies: tree.bodies.contains_key(&component), folded: folds && numbered };
+            let shape = Shape {
+                contents: tree.children.contains_key(&component),
+                bodies: tree.bodies.contains_key(&component),
+                folded: folds && numbered,
+                open_purchased: request.purchased_contents,
+            };
             let step = classify(view, frame.walk, placed.member.bom_type, shape);
             let mut path = frame.path.clone();
             path.push(placed.occurrence);
@@ -676,7 +701,11 @@ pub fn list(tree: &mut Tree, request: &Request) -> Result<Bom> {
         }
     }
     let top: Vec<usize> = entries.iter().enumerate().filter(|(_, e)| e.kit.is_none()).map(|(i, _)| i).collect();
-    let mut bom = Bom { source: request.source, rows: tree.level(&entries, &kids, &top, request.group, &[], 1), total: Total::default() };
+    // What a folded part holds is gathered by part number in any list; all levels gathers every
+    // level as it gathers the first.
+    let under = if request.view == View::AllLevels { request.group } else { Group::PartNumber };
+    let rows = tree.level(&entries, &kids, &top, request.group, under, &[], 1);
+    let mut bom = Bom { source: request.source, rows, total: Total::default() };
     tree.name_materials(&mut bom.rows)?;
     if request.mass {
         tree.weigh_rows(&mut bom.rows)?;
