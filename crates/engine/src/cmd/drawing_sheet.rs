@@ -3,8 +3,9 @@
 //! its name.
 //!
 //! A new sheet takes the paper, border and resolution of the sheet it follows, so a drawing's
-//! sheets match unless told otherwise. Changing a sheet's paper changes only the paper: regrowing
-//! its border and moving what is on it is S5's.
+//! sheets match unless told otherwise. Changing a sheet's paper regrows its border and zones,
+//! which nothing on it is saved against, and moves nothing (S5): the answer lists the sheet's views
+//! whose boundary the new paper leaves outside its drawing space.
 
 use std::sync::Arc;
 
@@ -16,6 +17,7 @@ use solidcraft_geom::drawing_sheet::{Orientation, SheetSize};
 use super::CommandSpec;
 use crate::params::{bad, num, str_};
 use crate::schema::drawing_sheet::{SheetAddParams, SheetDeleteParams, SheetName, SheetReorderParams, SheetSetParams, SheetsResult};
+use crate::schema::drawing_view::OutsideResult;
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
@@ -45,7 +47,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(output_schema_for::<SheetsResult>)
         .params(
             "sheet: id or name; name?, size?, orientation?, dpi?; documents?: {source: id, component: id (0 the design)} or null; \
-             excluded?: {count?, print?} → the drawing's sheets. One undo step, none when nothing changes.",
+             excluded?: {count?, print?} → the drawing's sheets, and after a change of paper `outside`: the sheet's views whose \
+             boundary leaves its drawing space (none is moved). One undo step, none when nothing changes.",
         ),
     CommandSpec::new("drawing.sheet.reorder", "Reorder Sheets", crate::checked!("drawing.sheet.reorder", REORDER, reorder))
         .icon("reorder")
@@ -63,10 +66,11 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("sheet: id or name (a drawing keeps at least one) → the drawing's sheets. One undo step."),
 ];
 
-/// The drawing's sheets, as each command answers (`sheet`: the one `drawing.sheet.add` made).
-fn answer(s: &Session, cmd: &str, sheet: Option<u64>) -> Result<Value> {
+/// The drawing's sheets, as each command answers (`sheet`: the one `drawing.sheet.add` made;
+/// `outside`: the views `drawing.sheet.set`'s paper leaves outside).
+fn answer(s: &Session, cmd: &str, sheet: Option<u64>, outside: Vec<OutsideResult>) -> Result<Value> {
     let sheets = s.drawing(cmd)?.sheets.iter().map(|sheet| SheetName { id: ids::encode(sheet.id), name: sheet.name.clone() }).collect();
-    let reply = SheetsResult { sheet: sheet.map(ids::encode), sheets, param_warnings: Vec::new() };
+    let reply = SheetsResult { sheet: sheet.map(ids::encode), sheets, outside, param_warnings: Vec::new() };
     serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
 }
 
@@ -129,17 +133,23 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         d.sheets.insert(after + 1, Arc::new(sheet));
         Ok(())
     })?;
-    answer(s, cmd, Some(id))
+    answer(s, cmd, Some(id), Vec::new())
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "drawing.sheet.set";
-    s.edit_drawing(cmd, |d| {
+    let (id, paper) = s.edit_drawing(cmd, |d| {
         let at = sheet_at(cmd, d, p, "sheet")?;
-        let sheet = d.sheets.get_mut(at).ok_or_else(|| bad(cmd, "no such sheet"))?;
-        apply(cmd, Arc::make_mut(sheet), p)
+        let sheet = Arc::make_mut(d.sheets.get_mut(at).ok_or_else(|| bad(cmd, "no such sheet"))?);
+        let was = sheet.sheet;
+        apply(cmd, sheet, p)?;
+        Ok((sheet.id, sheet.sheet != was))
     })?;
-    answer(s, cmd, None)
+    // Only a change of paper moves the drawing space; each view measured once.
+    let d = s.drawing(cmd)?;
+    let on: Vec<u64> = if paper { d.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect() } else { Vec::new() };
+    let outside = super::drawing_view::outside_results(crate::drawing_view::outside(s, d, &on, cmd)?);
+    answer(s, cmd, None, outside)
 }
 
 fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
@@ -165,7 +175,7 @@ fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
         d.sheets = sheets;
         Ok(())
     })?;
-    answer(s, cmd, None)
+    answer(s, cmd, None, Vec::new())
 }
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
@@ -178,7 +188,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         d.sheets.remove(at);
         Ok(())
     })?;
-    answer(s, cmd, None)
+    answer(s, cmd, None, Vec::new())
 }
 
 #[cfg(test)]

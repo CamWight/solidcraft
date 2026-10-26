@@ -392,8 +392,22 @@ pub struct ToSheetResult {
     pub sheet: String,
     /// Every view moved or made: the view's first, then the views lined up with it.
     pub views: Vec<String>,
+    /// Those of them whose boundary leaves the sheet's drawing space; none is moved back in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<OutsideResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
+}
+
+/// A view whose boundary leaves its sheet's drawing space, and where it sits.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct OutsideResult {
+    pub view: String,
+    pub boundary_mm: BoxResult,
+    /// With nothing to measure, why its boundary is the placeholder's, as `extents.provenance`
+    /// names it in `drawing.view.inspect`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unmeasured: Option<&'static str>,
 }
 
 /// A view's extents on its own plane, in model millimetres.

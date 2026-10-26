@@ -42,6 +42,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile};
+use solidcraft_geom::{Aabb2, Vec2};
 
 use crate::format::DRAWING;
 use crate::ids::{self, IdSource};
@@ -163,6 +164,18 @@ pub struct Excluded {
     pub count: bool,
     /// Printing and exporting every sheet.
     pub print: bool,
+}
+
+impl Sheet {
+    /// Where the sheet's drawing goes, in paper millimetres: inside its drawing border, or the
+    /// whole paper when it has none. Nothing on a sheet is saved against its border, so a change
+    /// of paper regrows the border and its zones by itself.
+    pub fn drawing_space(&self) -> Result<Aabb2> {
+        match &self.border {
+            Some(border) => Ok(border.layout(&self.sheet).map_err(from_sheet)?.drawing_border),
+            None => Ok(Aabb2 { min: Vec2::ZERO, max: self.sheet.size_mm().map_err(from_sheet)? }),
+        }
+    }
 }
 
 fn default_dpi() -> f64 {

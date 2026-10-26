@@ -266,6 +266,21 @@ fn a_border_is_saved_as_a_copy_of_its_profile() {
     assert_eq!(read(&edited).unwrap().sheets[0].border, None, "no drawing border");
 }
 
+/// A sheet's drawing goes inside its drawing border: 10 mm in from each edge with the ISO border,
+/// 20 mm on the left with a filing margin, and the whole paper with no border.
+#[test]
+fn a_sheets_drawing_space_is_inside_its_border_or_the_whole_paper() {
+    let d = plate();
+    let space = |sheet: &Sheet| sheet.drawing_space().map(|b| (b.min, b.max)).unwrap();
+    assert_eq!(space(&d.sheets[0]), (Vec2::new(10.0, 10.0), Vec2::new(410.0, 287.0)), "A3 landscape, ISO");
+    assert_eq!(space(&d.sheets[1]), (Vec2::new(20.0, 10.0), Vec2::new(200.0, 287.0)), "A4 portrait, filing margin");
+    let bare = Sheet { border: None, ..(*d.sheets[0]).clone() };
+    assert_eq!(space(&bare), (Vec2::ZERO, Vec2::new(420.0, 297.0)), "no border");
+    let low = drawing_sheet::Sheet { size: SheetSize::Custom { sides_mm: [20.5, 297.0] }, ..d.sheets[0].sheet };
+    let narrow = Sheet { sheet: low, ..(*d.sheets[0]).clone() };
+    assert!(narrow.drawing_space().is_err(), "margins that leave no drawing space");
+}
+
 /// What reading refuses: each damage the rules name, refused rather than patched, and files this
 /// build can't read.
 #[test]

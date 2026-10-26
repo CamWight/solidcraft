@@ -539,3 +539,62 @@ fn a_view_with_nothing_to_measure_gets_a_placeholder() {
     let (mut sketch_only, [front, ..]) = three_views_of(sketch_only);
     assert_box(&placeholder(&mut sketch_only, front, "no_bodies"), [140.0, 140.0], [160.0, 160.0]);
 }
+
+/// What a reply lists as outside its sheet's drawing space, and those views' ids.
+fn outside(reply: &Value) -> (Vec<Value>, Vec<u64>) {
+    let listed = reply.get("outside").map_or(Vec::new(), |o| o.as_array().unwrap().clone());
+    let views = listed.iter().map(|v| ids::decode(v["view"].as_str().unwrap()).unwrap()).collect();
+    (listed, views)
+}
+
+fn sheet_set(s: &mut Session, sheet: u64, mut p: Value) -> Value {
+    p["sheet"] = json!(ids::encode(sheet));
+    let reply = run(s, "drawing.sheet.set", p);
+    let schema = output_schema_for::<crate::schema::drawing_sheet::SheetsResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    reply
+}
+
+/// A change of paper moves no view and lists those it leaves outside the drawing space (S5, #3875).
+/// On A3 the three views fit; on A4, either way up, the right and top views leave it (the right
+/// view reaches x 312.5, past A4's 287), and stay where they were. A border through the right
+/// view's edge leaves it inside; a tenth of a millimetre less paper puts it outside. A change of name
+/// checks nothing, undo brings the paper back, a view moved or copied to a smaller sheet is listed
+/// when it leaves the drawing space there, and a view with nothing to measure is listed by its
+/// placeholder, saying why.
+#[test]
+fn a_change_of_paper_lists_the_views_it_leaves_outside_and_moves_none() {
+    let (mut s, [front, right, top]) = three_views();
+    let sheet = saved(&s, front).sheet;
+    let places = |s: &Session| [front, right, top].map(|v| saved(s, v).place);
+    let before = places(&s);
+    let (listed, views) = outside(&sheet_set(&mut s, sheet, json!({"size": {"standard": "a4"}})));
+    assert_eq!(views, [right, top]);
+    assert_box(&listed[0], [287.5, 145.0], [312.5, 155.0]);
+    assert_box(&listed[1], [287.5, 225.0], [312.5, 275.0]);
+    assert_eq!(places(&s), before, "nothing moves");
+    assert_eq!(outside(&sheet_set(&mut s, sheet, json!({"orientation": "portrait"}))).1, [right, top]);
+    let up_to = sheet_set(&mut s, sheet, json!({"size": {"custom": {"sides_mm": [322.5, 297.0]}}, "orientation": "landscape"}));
+    assert!(up_to.get("outside").is_none(), "a view on the border is inside: {up_to}");
+    assert_eq!(outside(&sheet_set(&mut s, sheet, json!({"size": {"custom": {"sides_mm": [322.4, 297.0]}}}))).1, [right, top]);
+    assert!(sheet_set(&mut s, sheet, json!({"name": "Views"})).get("outside").is_none(), "only a change of paper checks");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    let paper = s.drawing("test").unwrap().sheets[0].sheet;
+    assert_eq!(paper.size, solidcraft_geom::drawing_sheet::SheetSize::Custom { sides_mm: [322.5, 297.0] });
+    let added = run(&mut s, "drawing.sheet.add", json!({"size": {"standard": "a4"}, "orientation": "portrait"}));
+    let a4 = ids::decode(added["sheet"].as_str().unwrap()).unwrap();
+    let moved = to_sheet(&mut s, MOVE, json!({"view": ids::encode(top), "sheet": ids::encode(a4), "position_mm": [150.0, 280.0]}));
+    let (listed, views) = outside(&moved);
+    assert_eq!(views, [top]);
+    assert_box(&listed[0], [137.5, 255.0], [162.5, 305.0]);
+    let copied = to_sheet(&mut s, COPY, json!({"view": ids::encode(top), "sheet": ids::encode(a4), "position_mm": [100.0, 100.0]}));
+    assert!(copied.get("outside").is_none(), "{copied}");
+    // Nothing to measure: the design places more than a view walks.
+    for level in 0..=MAX_PLACEMENT_DEPTH as u64 + 1 {
+        nest(&mut s, level);
+    }
+    let (listed, views) = outside(&sheet_set(&mut s, sheet, json!({"size": {"standard": "a4"}})));
+    assert_eq!((views, listed[0]["unmeasured"].as_str()), (vec![right], Some("past_walk_limit")));
+    assert_box(&listed[0], [290.0, 140.0], [310.0, 160.0]);
+}

@@ -8,7 +8,8 @@
 //!
 //! `drawing.view.move_to_sheet` and `drawing.view.copy_to_sheet` (#4816) put a saved view on a
 //! sheet: the views lined up with it go with it, and keep their places beside it. A copy is
-//! independent of the views it was copied from (Cameron, 2026-10-26).
+//! independent of the views it was copied from (Cameron, 2026-10-26). Each lists the views it puts
+//! outside the sheet's drawing space and moves none back in (#3875 S5).
 //!
 //! The view's settings are `doc::drawing_view::ViewSettings`; its basis, scale and map onto
 //! paper are `geom::drawing_view`'s. Without a scale it takes the largest ISO 5455 scale at
@@ -30,11 +31,12 @@ use solidcraft_geom::{Aabb2, Vec2};
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
-use crate::drawing_view::{Extents, Unmeasured};
+use crate::drawing_view::{Extents, OnSheet, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
     BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult, MoveParams,
-    PlaceParam, ScaleResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewResult, ViewSet,
+    OutsideResult, PlaceParam, ScaleResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewResult,
+    ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -77,14 +79,14 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&MOVE_CONTRACT)
         .output(output_schema_for::<ToSheetResult>)
-        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for its centre (default: where it is, or the sheet's centre for a view lined up with its parent); break_alignment?: true to move a view lined up with its parent, which is then placed apart → {view, sheet, views: [it, then the views lined up with it, which go with it]}. One undo step, none for the sheet it is on."),
+        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for its centre (default: where it is, or the sheet's centre for a view lined up with its parent); break_alignment?: true to move a view lined up with its parent, which is then placed apart → {view, sheet, views: [it, then the views lined up with it, which go with it], outside?: [those whose boundary leaves the sheet's drawing space, none moved back in]}. One undo step, none for the sheet it is on."),
     CommandSpec::new(COPY, "Copy View to Sheet", crate::checked!("drawing.view.copy_to_sheet", COPY_CONTRACT, copy_to_sheet))
         .icon("copy")
         .in_drawing()
         .doc_only()
         .contract(&COPY_CONTRACT)
         .output(output_schema_for::<ToSheetResult>)
-        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for the copy's centre (default the sheet's centre); with_linked?: the views lined up with it copied too, lined up with the copy (true), or not (false); needed when it has any → {view: the copy, sheet, views: [the copies, its first]}. A copy follows none of the views it was copied from: a projected view copied alone becomes a base view, looking the way it did, with the settings it had. One undo step."),
+        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for the copy's centre (default the sheet's centre); with_linked?: the views lined up with it copied too, lined up with the copy (true), or not (false); needed when it has any → {view: the copy, sheet, views: [the copies, its first], outside?: [those whose boundary leaves the sheet's drawing space]}. A copy follows none of the views it was copied from: a projected view copied alone becomes a base view, looking the way it did, with the settings it had. One undo step."),
 ];
 
 fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
@@ -309,6 +311,16 @@ fn changed_fields(a: &View, b: &View) -> Vec<String> {
 }
 
 /// Extents as the replies give them: measured on the display mesh, or a placeholder's and why.
+/// The views [`crate::drawing_view::outside`] lists, as the commands answer them.
+pub(super) fn outside_results(outside: Vec<(u64, OnSheet)>) -> Vec<OutsideResult> {
+    let result = |(id, placed): (u64, OnSheet)| OutsideResult {
+        view: ids::encode(id),
+        boundary_mm: BoxResult { min: placed.boundary.min.into(), max: placed.boundary.max.into() },
+        unmeasured: placed.unmeasured.map(Unmeasured::name),
+    };
+    outside.into_iter().map(result).collect()
+}
+
 fn extents_result(extents: &Extents, unmeasured: Option<Unmeasured>) -> ExtentsResult {
     ExtentsResult {
         min: extents.model.min.into(),
@@ -379,7 +391,8 @@ fn move_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
         }
         Ok((sheet, moved))
     })?;
-    to_sheet_answer(id, sheet, &views)
+    let outside = crate::drawing_view::outside(s, s.drawing(MOVE)?, &views, MOVE)?;
+    to_sheet_answer(id, sheet, &views, outside)
 }
 
 fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
@@ -436,14 +449,16 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(sheet)
     })?;
     let first = copies.first().copied().unwrap_or_default();
-    to_sheet_answer(first, sheet, &copies)
+    let outside = crate::drawing_view::outside(s, s.drawing(COPY)?, &copies, COPY)?;
+    to_sheet_answer(first, sheet, &copies, outside)
 }
 
-fn to_sheet_answer(view: u64, sheet: u64, views: &[u64]) -> Result<Value> {
+fn to_sheet_answer(view: u64, sheet: u64, views: &[u64], outside: Vec<(u64, OnSheet)>) -> Result<Value> {
     let reply = ToSheetResult {
         view: ids::encode(view),
         sheet: ids::encode(sheet),
         views: views.iter().map(|v| ids::encode(*v)).collect(),
+        outside: outside_results(outside),
         param_warnings: Vec::new(),
     };
     serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))

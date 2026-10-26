@@ -8,9 +8,9 @@
 use std::fmt;
 
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::{MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS};
+use solidcraft_doc::{MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, ids};
 use solidcraft_geom::drawing_view::{Scale, ViewFrame};
-use solidcraft_geom::{Aabb2, Plane, Vec2};
+use solidcraft_geom::{Aabb2, EPS, Plane, Vec2};
 
 use crate::params::bad;
 use crate::{Result, Session};
@@ -111,4 +111,22 @@ pub fn on_sheet(s: &Session, drawing: &Drawing, id: u64, cmd: &str) -> Result<On
         }
     };
     Ok(OnSheet { boundary: boundary(view.basis, scale, &shown, centre, cmd)?, extents, unmeasured })
+}
+
+/// Each of `views` of `drawing` (one of `s`'s design's) whose boundary leaves its sheet's drawing
+/// space ([`solidcraft_doc::drawing::Sheet::drawing_space`]), sides included, with where it sits:
+/// what a change of paper or a move to another sheet leaves outside. Nothing is moved.
+pub fn outside(s: &Session, drawing: &Drawing, views: &[u64], cmd: &str) -> Result<Vec<(u64, OnSheet)>> {
+    let mut out = Vec::new();
+    for &id in views {
+        let view = drawing.views.iter().find(|v| v.id == id).ok_or_else(|| bad(cmd, format!("no view {}", ids::encode(id))))?;
+        let sheet = drawing.sheets.iter().find(|s| s.id == view.sheet).ok_or_else(|| bad(cmd, format!("no sheet {}", ids::encode(view.sheet))))?;
+        // A view drawn up to the border, its sides on it, is inside: the margin takes rounding.
+        let space = sheet.drawing_space().map_err(|e| bad(cmd, e.to_string()))?.inflated(EPS);
+        let placed = on_sheet(s, drawing, id, cmd)?;
+        if !(space.contains(placed.boundary.min) && space.contains(placed.boundary.max)) {
+            out.push((id, placed));
+        }
+    }
+    Ok(out)
 }
