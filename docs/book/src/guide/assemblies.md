@@ -331,7 +331,7 @@ revision, other tools' data under a reverse-DNS key (the same rules as the desig
 properties), and free text properties such as a material grade or a finish. Every occurrence of
 the component shares them, Paste New copies them, and they are saved with the component.
 `component.metadata {component}` reads them and
-`component.metadata.set {component, part_number?, description?, revision?, bom_type?, values?, properties?}`
+`component.metadata.set {component, part_number?, description?, revision?, bom_type?, material?, values?, properties?}`
 changes them in one undo step (an empty value removes a field). The root component is the
 design itself: its properties are `document.metadata`'s. Standard parts (`parts.insert`) get a
 part number from their standard and size (`ISO 4762 M6x20`, or a bearing's designation) and a
@@ -393,8 +393,14 @@ physical materials of the definition's own bodies (`Physical Material`, the ones
 an unassigned body's is `Default`), with `; ` between several. A row that stands for an assembly (a
 subassembly at the top level, a purchased or inseparable part with parts inside it, a folded part) names a
 material only when everything it weighs shares it, so a frame of steel and aluminium parts is blank and a
-bought bearing of steel parts reads Steel. A physical material is set on bodies; a component has none
-of its own yet. A free property such as a material grade stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
+bought bearing of steel parts reads Steel. A physical material is set on bodies. A **static material**
+(`component.metadata.set {component, material}`, any text) is what a component's rows say instead, at
+every level and in every view, and those rows carry `static: ["material"]`. It also stands for the part
+in the one material an assembly around it shares, so two parts typed in as S355 make their frame read
+S355. Where several definitions share a row, the first one's static material wins. It doesn't change
+the mass, which still comes from the bodies, and clearing it (empty or null) brings the worked-out
+material back.
+A free property such as a material grade stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
 what is placed inside it except what the list shows as rows of their own beside it, so the rows of any
 list add up to the assembly. It adds `total_mass_g` beside the rows too: what the assembly weighs, measured
 from the design rather than added up from the rows. At the top level a row weighs all it holds. In parts only a part's contents
@@ -403,7 +409,7 @@ one (all it holds) and an inseparable one (all but its purchased parts). A refer
 nothing. Every part is measured for it, once per definition, so it takes longer. It is `null` when nothing
 in the part has a body, a body can't be measured, or the definitions sharing the row's part number weigh
 differently (by more than the measurement can tell apart: one part modelled two ways weighs the same). `path` writes them to a `.csv` file
-(the columns item, part_number, description, revision, count and definition, every field
+(the columns item, part_number, description, revision, count, definition and material, every field
 quoted; children follow their row) or a `.json` file. The window lists the same rows, switches
 between the levels and groupings and shows children under their part, edits a picked row's part
 number, description and revision, and exports them. Changing part properties or a bill of

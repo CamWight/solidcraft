@@ -134,9 +134,9 @@ fn csv_quotes_every_field_and_json_writes_the_rows() {
     let text = std::fs::read_to_string(&csv).unwrap();
     assert_eq!(
         text,
-        "\"item\",\"part_number\",\"description\",\"revision\",\"count\",\"definition\"\n\
-         \"1\",\"PL-100\",\"Plate, 3 mm\",\"B\",\"3\",\"Plate\"\n\
-         \"2\",\"PN-040\",\"Pin \"\"short\"\", 4 mm\",\"\",\"2\",\"Pin\"\n"
+        "\"item\",\"part_number\",\"description\",\"revision\",\"count\",\"definition\",\"material\"\n\
+         \"1\",\"PL-100\",\"Plate, 3 mm\",\"B\",\"3\",\"Plate\",\"Default\"\n\
+         \"2\",\"PN-040\",\"Pin \"\"short\"\", 4 mm\",\"\",\"2\",\"Pin\",\"Default\"\n"
     );
     let json_path = dir.join("bom.json");
     run(&mut s, "assembly.bom", json!({"path": json_path, "levels": "top"}));
@@ -848,16 +848,7 @@ fn the_rows_of_every_list_add_up_to_the_assembly() {
 /// only: they are counted in no other row, so without it the rows wouldn't add up.
 #[test]
 fn a_phantoms_own_bodies_are_a_row_of_their_own() {
-    let mut s = Session::default();
-    run(&mut s, "component.create", json!({"name": "Kit"}));
-    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Cube"}));
-    run(&mut s, "component.create", json!({"name": "Part", "parent": "Kit"}));
-    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 3, "body_name": "Plate"}));
-    run(&mut s, "component.activate", json!({"component": 0}));
-    for (body, material) in [("Cube", "Steel"), ("Plate", "Aluminum")] {
-        run(&mut s, "material.assign", json!({"bodies": [body], "material": material}));
-    }
-    set_type(&mut s, "Kit", "phantom");
+    let mut s = phantom_kit("");
     let assembly = run(&mut s, "component.properties", json!({"component": "root"}))["total"]["mass_g"].as_f64().unwrap();
     for levels in ["flat", "top", "all"] {
         let r = run(&mut s, "assembly.bom", json!({"levels": levels, "mass": true}));
@@ -866,6 +857,231 @@ fn a_phantoms_own_bodies_are_a_row_of_their_own() {
         let listed: f64 = r["rows"].as_array().unwrap().iter().map(|row| row["mass_g"].as_f64().unwrap()).sum();
         assert!((listed - assembly).abs() < 1e-6 * assembly, "{levels}: {listed} g listed, {assembly} g in all");
     }
+}
+
+/// A phantom kit with a steel cube of 10 of its own (7.85 g), holding a part: an aluminium plate,
+/// 40 x 20 x 3 (6.48 g). Placed in `parent`, an assembly made for it, or the design when empty.
+fn phantom_kit(parent: &str) -> Session {
+    let mut s = Session::default();
+    let mut kit = json!({"name": "Kit"});
+    if !parent.is_empty() {
+        run(&mut s, "component.create", json!({"name": parent, "activate": false}));
+        kit["parent"] = json!(parent);
+    }
+    run(&mut s, "component.create", kit);
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Cube"}));
+    run(&mut s, "component.create", json!({"name": "Part", "parent": "Kit"}));
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 3, "body_name": "Plate"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    for (body, material) in [("Cube", "Steel"), ("Plate", "Aluminum")] {
+        run(&mut s, "material.assign", json!({"bodies": [body], "material": material}));
+    }
+    set_type(&mut s, "Kit", "phantom");
+    s
+}
+
+/// Each row's definition, material, mass and static values, the rows under it next.
+fn statics(r: &Value) -> Vec<(String, String, Option<f64>, Value)> {
+    let rows = r["rows"].as_array().unwrap().iter().flat_map(|r| std::iter::once(r).chain(r["children"].as_array().into_iter().flatten()));
+    rows.map(|r| {
+        (r["definition"].as_str().unwrap().into(), r["material"].as_str().unwrap().into(), grams(r), r.get("static").cloned().unwrap_or_default())
+    })
+    .collect()
+}
+
+fn typed_in(definition: &str, material: &str, grams: Option<f64>) -> (String, String, Option<f64>, Value) {
+    (definition.into(), material.into(), grams, json!(["material"]))
+}
+
+fn worked_out(definition: &str, material: &str, grams: Option<f64>) -> (String, String, Option<f64>, Value) {
+    (definition.into(), material.into(), grams, Value::Null)
+}
+
+/// A static material is what a component's rows say in every view and at every level, over its
+/// bodies' materials or an assembly's blank; it doesn't change what anything weighs, and clearing it
+/// brings the worked-out material back.
+#[test]
+fn a_static_material_is_what_every_list_says_until_it_is_cleared() {
+    let mut s = frame();
+    run(&mut s, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
+    let undo = s.undo.len();
+    s.evaluations = 0;
+    let r = run(&mut s, "component.metadata.set", json!({"component": "Block", "material": "S355 flat bar"}));
+    assert_eq!(r["changed"], json!(["material"]));
+    assert_eq!((s.undo.len(), s.evaluations), (undo + 1, 0), "one undo step, no geometry");
+    run(&mut s, "component.metadata.set", json!({"component": "Frame", "values": {"material": "Welded frame"}}));
+    assert_eq!(run(&mut s, "component.metadata", json!({"component": "Frame"}))["material"], "Welded frame");
+    let bom = |s: &mut Session, p: Value| statics(&run(s, "assembly.bom", p));
+    // Parts only: the block over its own steel; the frame isn't a row.
+    let block = typed_in("Block", "S355 flat bar", Some(392.5));
+    let bracket = worked_out("Bracket", "Aluminum; Steel", Some(14.33));
+    let spacer = worked_out("Spacer", "Default", Some(1.29));
+    let grease = worked_out("Grease", "", None);
+    assert_eq!(bom(&mut s, json!({"mass": true})), [block.clone(), bracket.clone(), grease.clone(), spacer.clone()]);
+    // Structured: over the frame's blank (steel and aluminium); folded, the block under it too.
+    let frame = typed_in("Frame", "Welded frame", Some(799.33));
+    assert_eq!(bom(&mut s, json!({"levels": "top", "mass": true})), [frame.clone(), bracket.clone(), grease.clone(), spacer.clone()]);
+    let folded = bom(&mut s, json!({"group_children": true, "mass": true}));
+    assert_eq!(folded, [frame.clone(), block.clone(), bracket.clone(), bracket.clone(), grease.clone(), spacer.clone()]);
+    // All levels: the frame, and under it the block.
+    let all = bom(&mut s, json!({"levels": "all", "mass": true}));
+    assert_eq!(all, [frame.clone(), block.clone(), bracket.clone(), bracket.clone(), grease.clone(), spacer.clone()]);
+    // The JSON and CSV files show what the rows show.
+    let dir = scratch("static-material");
+    let path = dir.join("bom.json");
+    run(&mut s, "assembly.bom", json!({"levels": "all", "mass": true, "path": path}));
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(statics(&file), all);
+    let path = dir.join("bom.csv");
+    run(&mut s, "assembly.bom", json!({"levels": "all", "path": path}));
+    let csv = std::fs::read_to_string(&path).unwrap();
+    let column: Vec<&str> = csv.lines().skip(1).filter_map(|l| l.rsplit(",\"").next()).map(|m| m.trim_end_matches('"')).collect();
+    assert_eq!(column, ["Welded frame", "S355 flat bar", "Aluminum; Steel", "Aluminum; Steel", "", "Default"], "{csv}");
+    // Saved with the component and read back.
+    let path = dir.join("frame.solidcraft");
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    let mut back = Session::default();
+    run(&mut back, "doc.open", json!({"path": path}));
+    assert_eq!(bom(&mut back, json!({"levels": "all", "mass": true})), all);
+    // Cleared, by empty text or null: the worked-out materials again.
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "material": ""}));
+    run(&mut s, "component.metadata.set", json!({"component": "Frame", "material": null}));
+    assert_eq!(bom(&mut s, json!({"levels": "top"}))[0], worked_out("Frame", "", None));
+    assert_eq!(bom(&mut s, json!({}))[0], worked_out("Block", "Steel", None));
+    // A static material of the longest text a property takes.
+    let longest = "m".repeat(solidcraft_doc::metadata::MAX_TEXT_BYTES);
+    run(&mut s, "component.metadata.set", json!({"component": "Spacer", "material": longest}));
+    assert_eq!(bom(&mut s, json!({}))[3], typed_in("Spacer", &longest, None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A phantom's static material is its own bodies' row's (it has no other); what it holds keeps its
+/// own. A mesh part takes one too, and still weighs (or can't be weighed) as its mesh does.
+#[test]
+fn a_static_material_names_a_phantoms_own_row_and_a_mesh_part() {
+    let mut s = phantom_kit("");
+    run(&mut s, "component.metadata.set", json!({"component": "Kit", "material": "Cast iron"}));
+    for levels in ["flat", "top", "all"] {
+        let r = run(&mut s, "assembly.bom", json!({"levels": levels, "mass": true}));
+        assert_eq!(statics(&r), [typed_in("Kit", "Cast iron", Some(7.85)), worked_out("Part", "Aluminum", Some(6.48))], "{levels}");
+    }
+    run(&mut s, "component.metadata.set", json!({"component": "Part", "material": "6082-T6"}));
+    assert_eq!(statics(&run(&mut s, "assembly.bom", json!({"mass": true})))[1], typed_in("Part", "6082-T6", Some(6.48)));
+
+    let dir = scratch("static-mesh");
+    // A 10 mm square at z = 10 facing down: open, it measures inside out, so its mass is unknown.
+    let facet = |t: [[i32; 2]; 3]| {
+        let v: String = t.iter().map(|[x, y]| format!("vertex {x} {y} 10\n")).collect();
+        format!("facet normal 0 0 0\nouter loop\n{v}endloop\nendfacet\n")
+    };
+    let stl = format!("solid square\n{}{}endsolid square\n", facet([[0, 0], [0, 10], [10, 10]]), facet([[0, 0], [10, 10], [10, 0]]));
+    let path = dir.join("Mesh.stl");
+    std::fs::write(&path, stl).unwrap();
+    let mut s = Session::default();
+    run(&mut s, "file.insert_mesh", json!({"path": path}));
+    run(&mut s, "component.metadata.set", json!({"component": "Mesh", "material": "PA12"}));
+    assert_eq!(statics(&run(&mut s, "assembly.bom", json!({"mass": true}))), [typed_in("Mesh", "PA12", None)]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A static material stands for its part in what an assembly around it shares, so the bill of
+/// materials says one thing about the part everywhere; a phantom's names its own bodies only.
+#[test]
+fn a_static_material_stands_for_its_part_in_what_an_assembly_shares() {
+    let top = |s: &mut Session, definition: &str| -> String {
+        let r = run(s, "assembly.bom", json!({"levels": "top"}));
+        let row = r["rows"].as_array().unwrap().iter().find(|r| r["definition"] == definition).cloned();
+        row.and_then(|r| r["material"].as_str().map(str::to_string)).unwrap_or_else(|| panic!("no {definition} row: {r}"))
+    };
+    let mut s = frame();
+    // Steel blocks and a bracket of aluminium and steel: no one material.
+    assert_eq!(top(&mut s, "Frame"), "");
+    for part in ["Block", "Bracket"] {
+        run(&mut s, "component.metadata.set", json!({"component": part, "material": "S355"}));
+    }
+    assert_eq!(top(&mut s, "Frame"), "S355", "both parts say S355");
+    // A bracket of plain steel beside S355 blocks: two materials.
+    run(&mut s, "component.metadata.set", json!({"component": "Bracket", "material": null}));
+    run(&mut s, "material.assign", json!({"bodies": ["Plate"], "material": "Steel"}));
+    assert_eq!(top(&mut s, "Frame"), "");
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "material": null}));
+    assert_eq!(top(&mut s, "Frame"), "Steel", "the worked-out materials again");
+
+    // A crate holding a phantom kit (its own steel cube, holding an aluminium plate).
+    let mut s = phantom_kit("Crate");
+    run(&mut s, "component.metadata.set", json!({"component": "Kit", "material": "Cast iron"}));
+    assert_eq!(top(&mut s, "Crate"), "", "the kit's cube is cast iron, its plate still aluminium");
+    run(&mut s, "component.metadata.set", json!({"component": "Part", "material": "Cast iron"}));
+    assert_eq!(top(&mut s, "Crate"), "Cast iron");
+
+    // A frame of a steel block and an aluminium plate, inside a pallet: its static material stands
+    // for all it holds.
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Pallet", "activate": false}));
+    run(&mut s, "component.create", json!({"name": "Frame", "parent": "Pallet", "activate": false}));
+    for (part, length) in [("Block", 100), ("Plate", 40)] {
+        run(&mut s, "component.create", json!({"name": part, "parent": "Frame"}));
+        run(&mut s, "solid.box", json!({"length": length, "width": 20, "height": 3, "body_name": part}));
+        run(&mut s, "component.activate", json!({"component": 0}));
+    }
+    for (body, material) in [("Block", "Steel"), ("Plate", "Aluminum")] {
+        run(&mut s, "material.assign", json!({"bodies": [body], "material": material}));
+    }
+    assert_eq!(top(&mut s, "Pallet"), "");
+    run(&mut s, "component.metadata.set", json!({"component": "Frame", "material": "Welded frame"}));
+    assert_eq!(top(&mut s, "Pallet"), "Welded frame");
+}
+
+#[test]
+fn hostile_static_materials_are_refused_without_a_change() {
+    let mut s = frame();
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "material": "Steel bar"}));
+    let undo = s.undo.len();
+    let control = format!("Steel{}", char::from(7));
+    for p in [
+        json!({"component": "Block", "material": "x".repeat(solidcraft_doc::metadata::MAX_TEXT_BYTES + 1)}),
+        json!({"component": "Block", "material": 7.85}),
+        json!({"component": "Block", "material": {"name": "Steel"}}),
+        json!({"component": "Block", "material": ["Steel"]}),
+        json!({"component": "Block", "material": true}),
+        json!({"component": "Block", "values": {"material": control}}),
+        json!({"component": 0, "material": "Steel"}),
+        json!({"component": "Block", "part_number": "BL-1", "material": 1}),
+    ] {
+        assert!(s.execute("component.metadata.set", &p).is_err(), "{p}");
+    }
+    assert!(s.execute("document.metadata.set", &json!({"key": "material", "value": "Steel"})).is_err(), "not a design property");
+    assert!(s.execute("document.metadata.set", &json!({"values": {"material": "Steel"}})).is_err());
+    assert_eq!(s.undo.len(), undo, "nothing changed");
+    let block = run(&mut s, "component.metadata", json!({"component": "Block"}));
+    assert_eq!((block["part_number"].as_str(), block["material"].as_str()), (None, Some("Steel bar")), "all or nothing");
+    // Another tool's number is kept, and the row reads its bodies' material.
+    let id = s.doc.find_component("Block").unwrap();
+    if let Some(c) = s.doc_mut().components.iter_mut().find(|c| c.id == id) {
+        c.metadata.0.insert("material".into(), json!(42));
+    }
+    assert_eq!(run(&mut s, "component.metadata", json!({"component": "Block"}))["material"], Value::Null);
+    assert_eq!(statics(&run(&mut s, "assembly.bom", json!({})))[0], worked_out("Block", "Steel", None));
+}
+
+/// A row gathering several definitions (one part number) says the static material of the first
+/// that has one, as it does their description.
+#[test]
+fn a_row_of_several_definitions_takes_the_first_static_material() {
+    let mut s = frame();
+    run(&mut s, "component.metadata.set", json!({"component": "Spacer", "part_number": "SP-1"}));
+    run(&mut s, "component.paste_new", json!({"component": "Spacer", "translate": [0, -30, 0]}));
+    let copy = s.doc.components.iter().map(|c| c.id).max().unwrap();
+    let spacer = |s: &mut Session| {
+        let r = run(s, "assembly.bom", json!({}));
+        let row = r["rows"].as_array().unwrap().iter().find(|r| r["part_number"] == "SP-1").cloned().unwrap();
+        assert_eq!(row["components"].as_array().map(Vec::len), Some(2), "{row}");
+        (row["material"].as_str().unwrap().to_string(), row.get("static").cloned())
+    };
+    run(&mut s, "component.metadata.set", json!({"component": copy, "material": "Nylon"}));
+    assert_eq!(spacer(&mut s), ("Nylon".into(), Some(json!(["material"]))), "the copy's, the only one");
+    run(&mut s, "component.metadata.set", json!({"component": "Spacer", "material": "PTFE"}));
+    assert_eq!(spacer(&mut s), ("PTFE".into(), Some(json!(["material"]))), "the first definition's");
 }
 
 /// The bill of materials and the physical properties weigh a body from one measurement, kept with
@@ -1083,10 +1299,19 @@ fn assembly_bom_presents_the_typed_rows() {
     ];
     let mut numbered_frame = frame();
     run(&mut numbered_frame, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
+    let mut typed_in = three_levels();
+    for c in ["B", "Gear"] {
+        run(&mut typed_in, "component.metadata.set", json!({"component": c, "material": "Typed in"}));
+    }
     let mut deepest = 0;
-    for (name, mut s) in
-        [("assembly", assembly()), ("bolts", bolts()), ("machine", machine()), ("frame", numbered_frame), ("three levels", three_levels())]
-    {
+    for (name, mut s) in [
+        ("assembly", assembly()),
+        ("bolts", bolts()),
+        ("machine", machine()),
+        ("frame", numbered_frame),
+        ("three levels", three_levels()),
+        ("static materials", typed_in),
+    ] {
         for (params, request) in &options {
             let shown = run(&mut s, "assembly.bom", params.clone());
             let listed = list(&s, *request);
@@ -1127,6 +1352,8 @@ fn assembly_bom_presents_the_typed_rows() {
                     json!(row.materials.join("; ")),
                 ];
                 assert_eq!(fields, want.each_ref(), "{name} {params}");
+                let statics: Vec<&str> = row.statics.iter().map(|s| s.key()).collect();
+                assert_eq!(line.get("static"), (!statics.is_empty()).then(|| json!(statics)).as_ref(), "{name} {params}");
                 if top {
                     assert_eq!((&line["components"], &line["properties"]), (&json!(row.components), &json!(row.properties)), "{name} {params}");
                 } else {

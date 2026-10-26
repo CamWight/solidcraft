@@ -19,8 +19,11 @@
 //! weigh differently has none.
 //!
 //! Materials are bodies' (`material.assign`): a row names the materials of the bodies it stands for,
-//! and a row that stands for an assembly names one only when everything in it shares it. A
-//! component has no material of its own yet; when it has, this rule is where it joins.
+//! and a row that stands for an assembly names one only when everything in it shares it. A static
+//! material typed in for a component ([`metadata::MATERIAL`](crate::metadata::MATERIAL)) is what
+//! its rows say instead, in every view and at every level ([`Row::statics`]), and what it stands
+//! for in the one material an assembly around it shares: the bill of materials says one thing
+//! about the part everywhere. It only names: mass still comes from the bodies.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -153,6 +156,22 @@ pub enum Unknown {
     Differs,
 }
 
+/// A value of a row typed in by hand for its component, in place of the one worked out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Static {
+    /// [`Row::materials`], from [`metadata::MATERIAL`](crate::metadata::MATERIAL).
+    Material,
+}
+
+impl Static {
+    /// The part property it is kept under, and its name in `assembly.bom`'s rows.
+    pub fn key(self) -> &'static str {
+        match self {
+            Static::Material => crate::metadata::MATERIAL,
+        }
+    }
+}
+
 /// One row of a bill of materials view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
@@ -175,8 +194,12 @@ pub struct Row {
     pub properties: BTreeMap<String, String>,
     /// The physical materials of what one of its parts stands for, each once, in body order: a
     /// part's own bodies'. A row that stands for an assembly (something placed inside it is weighed
-    /// with it) shows the one material all of that shares, else none.
+    /// with it) shows the one material all of that shares, else none. A static material replaces
+    /// them.
     pub materials: Vec<String>,
+    /// Its values typed in by hand ([`Static`]). Where its definitions give different ones, the
+    /// first's that gives one wins, as with its description.
+    pub statics: Vec<Static>,
     /// How many are listed: in all, and in one of the row it is listed under (the assembly at the
     /// top).
     pub count: u64,
@@ -350,9 +373,14 @@ impl<'a> Tree<'a> {
     }
 
     /// The components placed in `id` whose parts are part of what `id` stands for as `holds` says
-    /// (see `adds`), one for each placement.
-    fn adding(&self, id: u64, holds: Holds) -> Vec<u64> {
-        self.contents(id).iter().filter(|p| adds(holds, p.member.bom_type)).map(|p| p.member.component).collect()
+    /// (see `adds`), one for each placement, with the type each counts as there.
+    fn adding(&self, id: u64, holds: Holds) -> Vec<Member> {
+        self.contents(id).iter().filter(|p| adds(holds, p.member.bom_type)).map(|p| p.member).collect()
+    }
+
+    /// The static material typed in for a component, if any.
+    fn static_material(&self, id: u64) -> Option<&'a str> {
+        self.components.get(&id).and_then(|c| c.metadata.material())
     }
 
     fn own_bodies(&self, id: u64) -> &[&'a ModelBody] {
@@ -449,6 +477,7 @@ impl<'a> Tree<'a> {
             stands_for: first.holds,
             // Filled in by `name_materials`, which reads each definition once.
             materials: Vec::new(),
+            statics: Vec::new(),
             components,
             names: Vec::new(),
             part_number: String::new(),
@@ -487,9 +516,16 @@ impl<'a> Tree<'a> {
     /// Each row's materials, and its children's (Cameron, 2026-10-23): a part lists its own bodies';
     /// a row that stands for an assembly shows a material only when everything it stands for
     /// shares it, so a frame of steel and aluminium parts reads blank and a bought bearing of steel
-    /// parts reads steel. Materials are set on bodies only (see the module notes).
+    /// parts reads steel. A static material, the first its definitions give, replaces that.
     fn name_materials(&mut self, rows: &mut [Row]) -> Result<()> {
         for row in rows {
+            self.name_materials(&mut row.children)?;
+            let typed_in = row.components.iter().find_map(|&id| self.static_material(id));
+            if let Some(material) = typed_in {
+                row.materials = vec![material.to_string()];
+                row.statics.push(Static::Material);
+                continue;
+            }
             let mut names: Vec<String> = Vec::new();
             let mut assembly = false;
             for &c in &row.components {
@@ -499,14 +535,15 @@ impl<'a> Tree<'a> {
                 }
             }
             row.materials = if assembly && names.len() > 1 { Vec::new() } else { names };
-            self.name_materials(&mut row.children)?;
         }
         Ok(())
     }
 
     /// The materials of what one of `id` stands for as `holds` says, each once, in body order: the
-    /// bodies `weigh` weighs. Each definition is read once for each kind of row; `depth` bounds the
-    /// walk below a definition not read yet.
+    /// bodies `weigh` weighs. A static material stands for all of a part placed inside it, and for
+    /// a phantom's own bodies only (a phantom's row is its own bodies, so what it holds keeps its
+    /// own). Each definition is read once for each kind of row; `depth` bounds the walk below a
+    /// definition not read yet.
     fn made_of(&mut self, id: u64, holds: Holds, depth: usize) -> Result<Vec<String>> {
         if let Some(names) = self.made_of.get(&(id, holds)) {
             return Ok(names.clone());
@@ -515,13 +552,24 @@ impl<'a> Tree<'a> {
             return Err(too_big());
         }
         let mut names: Vec<String> = Vec::new();
-        for body in self.own_bodies(id) {
-            push_once(&mut names, self.doc.body_material(&body.name));
+        match self.static_material(id) {
+            Some(material) if !self.own_bodies(id).is_empty() => push_once(&mut names, material.to_string()),
+            Some(_) => {}
+            None => {
+                for body in self.own_bodies(id) {
+                    push_once(&mut names, self.doc.body_material(&body.name));
+                }
+            }
         }
         if holds != Holds::Own {
             for child in self.adding(id, holds) {
-                for name in self.made_of(child, holds, depth + 1)? {
-                    push_once(&mut names, name);
+                match self.static_material(child.component) {
+                    Some(material) if child.bom_type != BomType::Phantom => push_once(&mut names, material.to_string()),
+                    _ => {
+                        for name in self.made_of(child.component, holds, depth + 1)? {
+                            push_once(&mut names, name);
+                        }
+                    }
                 }
             }
         }
@@ -558,7 +606,7 @@ impl<'a> Tree<'a> {
         } else {
             add(&mut total, self.weigh(id, Holds::Own, depth)?);
             for child in self.adding(id, holds) {
-                add(&mut total, self.weigh(child, holds, depth + 1)?);
+                add(&mut total, self.weigh(child.component, holds, depth + 1)?);
             }
         }
         let weighed = total.filter(|(grams, _)| grams.is_finite());

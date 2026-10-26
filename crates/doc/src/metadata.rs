@@ -4,7 +4,8 @@
 //! revision, author, organization, description, licence) and keeps every other key exactly as
 //! it was through open, edit and save. Other tools keep their own data under one reverse-DNS
 //! key each (`com.example.tool`), holding an object. A component's part properties follow the
-//! same rules, with one more key: its bill of materials type (`bom_type`).
+//! same rules, with two more keys: its bill of materials type (`bom_type`) and its static
+//! material (`material`).
 //!
 //! Reading never validates: a well-known key holding something other than text is kept as it
 //! is and reads as absent, so a file another tool wrote always opens. Writing through
@@ -37,6 +38,15 @@ pub const WELL_KNOWN: [&str; 7] = [PROJECT, PART_NUMBER, REVISION, AUTHOR, ORGAN
 /// shows [`WELL_KNOWN`]) doesn't list it.
 pub const BOM_TYPE: &str = "bom_type";
 
+/// A component's static material: what its bill of materials rows say it is made of, typed in by
+/// hand in place of the materials worked out from its bodies (any text). It names, it doesn't
+/// weigh: mass still comes from the bodies' materials.
+pub const MATERIAL: &str = "material";
+
+/// The part properties only a component holds: the Design Properties dialog doesn't list them and
+/// `document.metadata.set` refuses them.
+pub const PART_ONLY: [&str; 2] = [BOM_TYPE, MATERIAL];
+
 /// Longest key, in bytes.
 pub const MAX_KEY_BYTES: usize = 128;
 /// Longest well-known text value, in bytes.
@@ -56,7 +66,7 @@ pub struct Metadata(pub Map<String, Value>);
 
 /// A key SolidCraft reads as a design or part property.
 pub fn is_well_known(key: &str) -> bool {
-    WELL_KNOWN.contains(&key) || key == BOM_TYPE
+    WELL_KNOWN.contains(&key) || PART_ONLY.contains(&key)
 }
 
 /// A reverse-DNS key another tool keeps its data under: two or more dot-separated labels of
@@ -132,6 +142,10 @@ impl Metadata {
     /// this build doesn't know (a newer SolidCraft's type reads as normal and is kept as it is).
     pub fn bom_type(&self) -> BomType {
         self.text(BOM_TYPE).and_then(BomType::parse).unwrap_or_default()
+    }
+    /// The component's static material, when one is typed in.
+    pub fn material(&self) -> Option<&str> {
+        self.text(MATERIAL)
     }
 
     /// The keys SolidCraft doesn't read (other tools' data, or keys a newer SolidCraft added),
@@ -280,6 +294,30 @@ mod tests {
         assert_eq!(newer.bom_type(), BomType::Normal);
         assert_eq!(newer.get(BOM_TYPE), Some(&json!("kit")));
         assert!(!WELL_KNOWN.contains(&BOM_TYPE), "the Design Properties dialog doesn't list it");
+    }
+
+    #[test]
+    fn a_static_material_takes_any_text_and_reads_as_absent_otherwise() {
+        let mut m = Metadata::default();
+        assert_eq!(m.material(), None);
+        let longest = "é".repeat(MAX_TEXT_BYTES / 2);
+        for text in ["Stainless steel 1.4301", "Mixed: see drawing", "鋼", longest.as_str()] {
+            assert!(m.set(MATERIAL, json!(text)).unwrap(), "{text}");
+            assert_eq!(m.material(), Some(text));
+        }
+        for bad in
+            [json!("x".repeat(MAX_TEXT_BYTES + 1)), json!(7.85), json!({"name": "Steel"}), json!(["Steel"]), json!(format!("a{}b", char::from(7)))]
+        {
+            assert!(m.set(MATERIAL, bad.clone()).is_err(), "{bad}");
+        }
+        assert_eq!(m.material(), Some(longest.as_str()), "a refused value leaves the old one");
+        assert!(m.set(MATERIAL, Value::Null).unwrap(), "null removes it");
+        assert_eq!(m.material(), None);
+        // Another tool's number is kept as it is and reads as no static material.
+        let other: Metadata = serde_json::from_value(json!({"material": 42})).unwrap();
+        assert_eq!((other.material(), other.get(MATERIAL)), (None, Some(&json!(42))));
+        assert!(other.others().next().is_none(), "SolidCraft reads it, so it isn't another tool's key");
+        assert!(!WELL_KNOWN.contains(&MATERIAL), "the Design Properties dialog doesn't list it");
     }
 
     #[test]
