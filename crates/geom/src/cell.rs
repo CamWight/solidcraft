@@ -111,11 +111,13 @@ pub enum HAlign {
 }
 
 /// The projection a drawing's views use, first or third angle (ISO 5456-2): the value of
-/// `drawing.projection`, which the views and the title block's symbol both read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// `drawing.projection`, which the views and the title block's symbol both read. Third angle when
+/// nothing chooses (a template or a preference may).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Projection {
     First,
+    #[default]
     Third,
 }
 

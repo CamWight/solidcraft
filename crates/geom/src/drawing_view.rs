@@ -273,6 +273,12 @@ impl<'de> Deserialize<'de> for Scale {
     }
 }
 
+/// Whether `v` can place a view on paper: finite and at most [`MAX_SIDE_MM`] from the sheet's
+/// origin either way.
+pub fn is_paper_coordinate(v: f64) -> bool {
+    v.is_finite() && v.abs() <= MAX_SIDE_MM
+}
+
 /// A view placed on paper: its basis, its scale, and where it sits.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewFrame {
@@ -287,7 +293,7 @@ impl ViewFrame {
     pub fn new(basis: Plane, scale: Scale, centre: Vec2, position_mm: Vec2) -> Result<ViewFrame> {
         validate_plane(&basis).map_err(|_| Invalid("a view's basis is finite and orthonormal"))?;
         require(centre.is_finite() && centre.x.abs() <= MAX_NUMBER && centre.y.abs() <= MAX_NUMBER, "a view's centre is finite")?;
-        let on_paper = position_mm.is_finite() && position_mm.x.abs() <= MAX_SIDE_MM && position_mm.y.abs() <= MAX_SIDE_MM;
+        let on_paper = is_paper_coordinate(position_mm.x) && is_paper_coordinate(position_mm.y);
         require(on_paper, "a view's position is finite and at most 5000 mm from the sheet's origin")?;
         let factor = scale.factor();
         let map = Similarity2::new(factor, 0.0, position_mm - centre * factor).ok_or(Invalid("a view's position is finite"))?;

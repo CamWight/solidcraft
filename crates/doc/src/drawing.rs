@@ -16,6 +16,8 @@
 //! - **Units** follow each view's design or are one length unit for the whole drawing. The
 //!   **language** is the content's, a BCP 47 tag chosen when the drawing is made, whatever the
 //!   interface's is. **Properties** follow [`Metadata`]'s rules.
+//! - **Views** of its designs on its sheets, base and projected ([`view`]), and the **projection**
+//!   (first or third angle) every projected view follows.
 //!
 //! The rules, which every later kind of record (views, annotations, tables) keeps too:
 //! - Every object has an id of [`crate::ids`]: random, so objects added side by side never take
@@ -38,11 +40,16 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile};
 
 use crate::format::DRAWING;
 use crate::ids::{self, IdSource};
 use crate::{DocError, Metadata, Result, expr};
+
+pub mod view;
+
+use view::View;
 
 /// The most drawings a design may hold.
 pub const MAX_DRAWINGS: usize = 1000;
@@ -84,10 +91,16 @@ pub struct Drawing {
     pub properties: Metadata,
     #[serde(default)]
     pub units: Units,
+    /// First or third angle: what every projected view shows, and the title block's symbol.
+    #[serde(default)]
+    pub projection: Projection,
     /// The language of the drawing's content, a BCP 47 tag (`en-GB`).
     pub language: String,
     /// In order, each behind its own `Arc`, so an undo step shares every sheet it didn't change.
     pub sheets: Vec<Arc<Sheet>>,
+    /// In order, each behind its own `Arc`, as the sheets are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub views: Vec<Arc<View>>,
 }
 
 /// A design the drawing draws: the design the drawing is in. Views and sheets name it by its id,
@@ -180,8 +193,10 @@ impl Drawing {
             sources: Vec::new(),
             properties: Metadata::default(),
             units: Units::default(),
+            projection: Projection::default(),
             language: language.into(),
             sheets: vec![Arc::new(first)],
+            views: Vec::new(),
         };
         drawing.validate()?;
         Ok(drawing)
@@ -227,7 +242,10 @@ impl Drawing {
     /// Every object's id, of every kind: what a new id must differ from. Each later kind adds its
     /// own here.
     fn ids(&self) -> impl Iterator<Item = u64> {
-        std::iter::once(self.id).chain(self.sources.iter().map(|s| s.id)).chain(self.sheets.iter().map(|s| s.id))
+        std::iter::once(self.id)
+            .chain(self.sources.iter().map(|s| s.id))
+            .chain(self.sheets.iter().map(|s| s.id))
+            .chain(self.views.iter().map(|v| v.id))
     }
 
     /// The record's rules (the module's notes): what reading a drawing checks, and what every edit
@@ -252,7 +270,7 @@ impl Drawing {
         for sheet in &self.sheets {
             self.check_sheet(sheet).map_err(|e| DocError::Invalid(format!("sheet {}: {e}", ids::encode(sheet.id))))?;
         }
-        Ok(())
+        self.check_views()
     }
 
     /// A sheet's own rules, and that the source it documents is one of the drawing's.

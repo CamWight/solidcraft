@@ -92,6 +92,30 @@ pub struct ViewSettings {
     pub tangent_edges: TangentEdges,
 }
 
+/// The settings a saved view sets itself, each on its own: one left out follows the view's parent,
+/// then [`ViewSettings`]'s default ([`crate::drawing::Drawing::resolve_view`]). None is written.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ViewOverrides {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scale: Option<Scale>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_style: Option<VisualStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_style: Option<VisualStyle>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reference_hides_model: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tangent_edges: Option<TangentEdges>,
+}
+
+impl ViewOverrides {
+    /// Sets nothing: every setting follows.
+    pub fn is_empty(&self) -> bool {
+        *self == ViewOverrides::default()
+    }
+}
+
 impl ViewSettings {
     /// What reading alone can't check: the margin's range and the view's basis.
     pub fn validate(&self) -> Result<Plane, Invalid> {

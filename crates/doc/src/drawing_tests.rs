@@ -1,5 +1,11 @@
 use serde_json::json;
 use solidcraft_geom::drawing_sheet::{Margins, Orientation, PaperSize, SheetSize};
+use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
+
+use solidcraft_render::VisualStyle;
+
+use crate::drawing_view::{TangentEdges, ViewDirection, ViewOverrides};
+use view::{ViewKind, ViewPlace};
 
 use super::*;
 
@@ -13,6 +19,9 @@ fn own_border() -> DrawingBorderProfile {
 
 /// The design it is in, on two sheets: the first (A3, the ISO border) documents its component 7;
 /// the second (A4 portrait, a border of its own, 600 dpi, left out of printing) the design itself.
+/// On the first sheet, the front view at 1:2, its right view lined up with it and drawing hidden
+/// lines too, and the right view's top view placed apart; on the second, an iso view at 1:1,
+/// tangent edges shown, with a 5 mm reference margin.
 fn plate() -> Drawing {
     let mut id_source = IdSource::seeded(SEED);
     let a3 = drawing_sheet::Sheet::standard(PaperSize::A3, Orientation::Landscape);
@@ -33,6 +42,23 @@ fn plate() -> Drawing {
     Arc::make_mut(&mut d.sheets[0]).documents = Some(SheetComponent { source: plate_id, component: 7 });
     d.properties.set("author", json!("Jane Doe")).unwrap();
     d.units = Units::Fixed { unit: "in".into() };
+    let (assembly, bolt_sheet) = (d.sheets[0].id, d.sheets[1].id);
+    let mut add = |d: &mut Drawing, sheet, kind, place, settings, reference_margin_mm| {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        d.views.push(Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm }));
+        id
+    };
+    let half = ViewOverrides { scale: Some("1:2".parse().unwrap()), ..ViewOverrides::default() };
+    let front = ViewKind::Base { source: plate_id, view: ViewDirection::Named(NamedView::Front) };
+    let front = add(&mut d, assembly, front, ViewPlace::At([150.0, 150.0]), half, 0.0);
+    let hidden = ViewOverrides { display_style: Some(VisualStyle::VisibleHidden), ..ViewOverrides::default() };
+    let right = ViewKind::Projected { parent: front, side: ProjectedSide::Right };
+    let right = add(&mut d, assembly, right, ViewPlace::Aligned(320.0), hidden, 0.0);
+    let top = ViewKind::Projected { parent: right, side: ProjectedSide::Above };
+    add(&mut d, assembly, top, ViewPlace::At([320.0, 250.0]), ViewOverrides::default(), 0.0);
+    let iso = ViewKind::Base { source: plate_id, view: ViewDirection::Named(NamedView::IsoFrontRight) };
+    let full_size = ViewOverrides { scale: Some("1:1".parse().unwrap()), tangent_edges: Some(TangentEdges::Show), ..ViewOverrides::default() };
+    add(&mut d, bolt_sheet, iso, ViewPlace::At([105.0, 148.5]), full_size, 5.0);
     d.validate().unwrap();
     d
 }
@@ -309,7 +335,7 @@ fn damaged_files_are_refused_and_never_patched() {
     assert!(in_memory.validate().unwrap_err().to_string().starts_with(&format!("sheet {bolt_sheet_id}: drawing sheet: a custom side")));
     // An unknown field anywhere.
     let unknown: [fn(&mut Value); 8] = [
-        |v| v["views"] = json!([]),
+        |v| v["annotations"] = json!([]),
         |v| v["sources"][0]["name"] = json!("Plate"),
         |v| v["sheets"][0]["scale"] = json!(1),
         |v| v["sheets"][0]["sheet"]["colour"] = json!("white"),
@@ -327,7 +353,7 @@ fn damaged_files_are_refused_and_never_patched() {
     let (current, newer) = (DRAWING.current(), DRAWING.current() + 1);
     let why = refused(&d, |v| {
         v["format"] = json!(DRAWING.format_string(newer));
-        v["views"] = json!([]);
+        v["annotations"] = json!([]);
         v["sheets"][0]["dpi"] = json!(1e10);
     });
     assert_eq!(
@@ -357,8 +383,8 @@ fn damaged_files_are_refused_and_never_patched() {
     assert_eq!(Drawing::from_json("[]").unwrap_err().to_string(), "not a SolidCraft drawing (expected a JSON object)");
     assert!(Drawing::from_json("").unwrap_err().to_string().starts_with("not a SolidCraft drawing: "));
     let deep: Value = serde_json::from_str(&format!("{}1{}", "[".repeat(100), "]".repeat(100))).unwrap();
-    assert_eq!(refused(&d, |v| v["views"] = deep), "damaged drawing: nested too deeply");
-    let deeper = format!("{{\"format\": \"{drawing_format}\", \"views\": {}1{}}}", "[".repeat(200), "]".repeat(200));
+    assert_eq!(refused(&d, |v| v["annotations"] = deep), "damaged drawing: nested too deeply");
+    let deeper = format!("{{\"format\": \"{drawing_format}\", \"annotations\": {}1{}}}", "[".repeat(200), "]".repeat(200));
     assert!(Drawing::from_json(&deeper).unwrap_err().to_string().starts_with("not a SolidCraft drawing: "));
     let text = d.to_json().unwrap();
     let at_cap = text.clone() + &" ".repeat(MAX_DRAWING_BYTES - text.len());
