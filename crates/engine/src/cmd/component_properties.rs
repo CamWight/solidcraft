@@ -128,9 +128,12 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
             let transform: Mat = doc.model_body_offset(body).map(|offset| solidcraft_doc::mat_mul(&transform, offset)).unwrap_or(transform);
             let placed = solidcraft_kernel::transform_matrix(&body.body, transform)?;
             let measured = solidcraft_kernel::measure(&placed)?;
+            // The volume the bill of materials weighs too, measured once for the model; the area,
+            // the centre, the box and the counts are the placed body's.
+            let body_volume = body.volume().map_or(measured.volume, |v| v * solidcraft_doc::mat_volume_scale(&transform));
             let density = doc.density(&body.name);
-            let body_mass = measured.volume * density / 1000.0;
-            volume += measured.volume;
+            let body_mass = body_volume * density / 1000.0;
+            volume += body_volume;
             area += measured.area;
             mass += body_mass;
             moment += measured.centroid * body_mass;
@@ -140,7 +143,7 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
             vertices += measured.merged.vertices;
             bodies.push(json!({"name": body.name, "component": component, "path": path,
                 "material": doc.materials.get(&body.name).map(String::as_str).unwrap_or("Default"),
-                "density_g_cm3": density, "mass_g": body_mass, "volume_mm3": measured.volume,
+                "density_g_cm3": density, "mass_g": body_mass, "volume_mm3": body_volume,
                 "area_mm2": measured.area, "center_of_mass": measured.centroid,
                 "bbox": {"min": measured.bbox.min, "max": measured.bbox.max}}));
         }
