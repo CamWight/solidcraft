@@ -327,7 +327,7 @@ mod tests {
     fn surface_analyses_are_view_state() {
         let mut s = Session::default();
         s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
-        let undo = s.undo.len();
+        let undo = s.history.len();
         s.execute("inspect.zebra", &json!({"stripes": 20})).unwrap();
         assert_eq!(s.analysis, Some(SurfaceAnalysis::Zebra { stripes: 20.0 }));
         s.execute("inspect.draft", &json!({"pull": [0, 0, 2], "angle": 3})).unwrap();
@@ -340,7 +340,7 @@ mod tests {
         assert_eq!(s.analysis, Some(SurfaceAnalysis::Access { dir: solidcraft_geom::Vec3::new(0.0, 0.0, -1.0) }));
         s.execute("inspect.curvature_map", &json!({"clear": true})).unwrap();
         assert_eq!(s.analysis, None);
-        assert_eq!(s.undo.len(), undo, "no undo steps");
+        assert_eq!(s.history.len(), undo, "no undo steps");
         assert!(s.execute("inspect.zebra", &json!({"stripes": 0})).is_err());
         assert!(s.execute("inspect.draft", &json!({"pull": [0, 0, 0]})).is_err());
     }
@@ -351,7 +351,7 @@ mod tests {
     fn continuity_reports_a_box_edge_as_a_gap_free_right_angle() {
         let mut s = Session::default();
         boxed(&mut s, 20.0);
-        let undo = s.undo.len();
+        let undo = s.history.len();
         let v = s.execute("inspect.continuity", &json!({})).unwrap();
         assert_eq!(edges(&v).len(), 12);
         for e in edges(&v) {
@@ -375,7 +375,7 @@ mod tests {
         assert_eq!(v["summary"]["sharp"], json!(12));
         assert_eq!(v["summary"]["worst"], json!("sharp"));
         assert_eq!(s.continuity.len(), 12, "the seams are kept for the viewport");
-        assert_eq!(s.undo.len(), undo, "no undo step");
+        assert_eq!(s.history.len(), undo, "no undo step");
         assert_eq!(s.analysis, None, "the other analyses are left alone");
     }
 
@@ -426,14 +426,14 @@ mod tests {
     fn continuity_is_view_state_and_clears() {
         let mut s = Session::default();
         boxed(&mut s, 10.0);
-        let undo = s.undo.len();
+        let undo = s.history.len();
         s.execute("inspect.continuity", &json!({"samples": 5})).unwrap();
         assert_eq!(s.continuity.len(), 12);
-        assert_eq!(s.undo.len(), undo, "no undo step");
+        assert_eq!(s.history.len(), undo, "no undo step");
         let cleared = s.execute("inspect.continuity", &json!({"clear": true})).unwrap();
         assert_eq!(cleared["cleared"], json!(true));
         assert!(s.continuity.is_empty(), "clear leaves nothing shaded");
-        assert_eq!(s.undo.len(), undo);
+        assert_eq!(s.history.len(), undo);
     }
 
     /// `add` keeps what is shaded and adds the picked edges: an edge measured again replaces its
@@ -485,6 +485,6 @@ mod tests {
         let many: Vec<Value> = (0..513).map(|i| json!([i as f64, 0.0, 0.0])).collect();
         assert!(s.execute("inspect.continuity", &json!({"edges": many})).is_err(), "513 picks");
         assert!(s.continuity.is_empty(), "a refused call shades nothing");
-        assert_eq!(s.undo.len(), 1, "only the box is an undo step");
+        assert_eq!(s.history.len(), 1, "only the box is an undo step");
     }
 }

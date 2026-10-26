@@ -417,7 +417,7 @@ fn clicked_image_controls_complete_cancel_and_export_without_dirtying_the_design
         h.app.render_workspace.view.dirty = true;
         h.frames(3);
         let doc = h.app.session.doc.clone();
-        let undo = h.app.session.undo.len();
+        let undo = h.app.session.history.len();
         h.step(&json!({"widget":check})).unwrap();
         h.step(&json!({"widget":start})).unwrap();
         for _ in 0..50 {
@@ -440,7 +440,7 @@ fn clicked_image_controls_complete_cancel_and_export_without_dirtying_the_design
             "cancelled"
         );
         assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
         assert!(!h.app.session.is_dirty());
     }
 }
@@ -519,7 +519,7 @@ fn progressive_image_controls_route_to_the_registered_host() {
     h.app.render_workspace.view.materials.bindings.push(material);
     h.frames(3);
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.step(&json!({"click":{"handle":"render:method"}})).unwrap();
     h.step(&json!({"click":{"handle":"render:method-gpu"}})).unwrap();
     assert_eq!(h.app.render_workspace.view.method, ImageMethod::GpuRaytrace);
@@ -551,7 +551,7 @@ fn progressive_image_controls_route_to_the_registered_host() {
     h.step(&json!({"widget":export})).unwrap();
     assert!(h.dir.join("render.png").is_file());
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert!(!h.app.session.is_dirty());
     // A pack glass recipe follows the same production request and passes actual
     // closed-mesh preparation. It never calls scalar appearance assignment.
@@ -568,7 +568,7 @@ fn progressive_image_controls_route_to_the_registered_host() {
     let status = h.app.session.render_job_handle(job).unwrap().wait_timeout(std::time::Duration::from_secs(30)).unwrap();
     assert_eq!(status.progress.phase, solidcraft_engine::render::job::Phase::Completed, "{:?}", status.error);
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert!(!h.app.session.is_dirty());
 }
 
@@ -582,7 +582,7 @@ fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
         h.frames(3);
         let camera = h.app.cam;
         let flags = (h.app.ui.show_grid, h.app.origin_shown(), h.app.ui.visual_style, h.app.ui.perspective);
-        let undo = h.app.session.undo.len();
+        let undo = h.app.session.history.len();
         let at = crate::scenario::rect_of("workspace_switcher").unwrap().center();
         h.step(&json!({"click":[at.x,at.y]})).unwrap();
         h.step(&json!({"click":{"handle":"menu:ui.workspace.render"}})).unwrap();
@@ -596,7 +596,7 @@ fn clicked_render_workspace_saves_one_setup_and_restores_design_view() {
         h.step(&json!({"widget":perspective})).unwrap();
         assert!(!h.app.session.is_dirty(), "preview edits are staged");
         h.step(&json!({"widget":save})).unwrap();
-        assert_eq!(h.app.session.undo.len(), undo + 1);
+        assert_eq!(h.app.session.history.len(), undo + 1);
         assert_eq!(h.app.session.doc.render.setups["Studio"].camera, h.app.cam);
         h.step(&json!({"widget":back})).unwrap();
         assert!(!active(&h.app));
@@ -741,7 +741,7 @@ fn completed_image_is_painted_once_available_and_upload_is_cached() {
     image_panel_frame(&mut h.app, &ctx).textures_delta.clear();
     assert!(h.app.render_workspace.image.is_none());
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let job = completed_preview(&mut h, [20, 40, 60]);
     h.app.render_workspace.view.job = Some(job);
     let mut output = image_panel_frame(&mut h.app, &ctx);
@@ -765,7 +765,7 @@ fn completed_image_is_painted_once_available_and_upload_is_cached() {
     // egui requires frame texture deltas to be applied or cleared.
     output.textures_delta.clear();
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     let path = h.dir.join("displayed.png");
     h.app.run("render.export", json!({"job":job,"path":path})).unwrap();
     let frame = h.app.session.render_job_handle(job).unwrap().frame().unwrap().unwrap();
@@ -843,7 +843,7 @@ fn cpu_checkpoints_replace_only_the_provisional_texture_and_keep_final_export_an
     let second = completed_preview(&mut h, [80, 100, 120]);
     let frame = h.app.session.render_job_handle(second).unwrap().frame().unwrap().unwrap();
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.app.render_workspace.view.job = Some(second);
     let mut info = PreviewInfo { frame_sequence: 1, samples_per_pixel: 1, frame: frame.info.clone() };
     cache_preview_frame(&mut h.app, &ctx, &info, frame.png());
@@ -889,7 +889,7 @@ fn cpu_checkpoints_replace_only_the_provisional_texture_and_keep_final_export_an
     assert_eq!(h.app.render_workspace.view.result_camera, camera);
     assert_eq!(h.app.render_workspace.view.result_scale, ResultScale::Free, "a subsequent status refresh must not refit the new final");
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     ctx.run_ui(Default::default(), |_| {}).textures_delta.clear();
 }
 
@@ -966,7 +966,7 @@ fn result_canvas_paints_large_capture_reports_staleness_and_preserves_export() {
     h.app.render_workspace.view.inspector.page = inspector::Page::All;
     let preview = h.app.cam;
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let frame = h.app.session.render_job_handle(job).unwrap().frame().unwrap().unwrap();
     let draw = |app: &mut SolveApp| {
         let mut out = ctx.run_ui(
@@ -995,7 +995,7 @@ fn result_canvas_paints_large_capture_reports_staleness_and_preserves_export() {
     assert!(image_bounds.width() > 240.0 && image_bounds.height() > 240.0, "{image_bounds:?}");
     assert_eq!(h.app.cam, preview);
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     h.app.session.execute("solid.box", &json!({"length":10,"width":10,"height":10})).unwrap();
     let out = draw(&mut h.app);
     assert!(crate::test_support::text_shapes(&out).any(|t| t.galley.text() == h.app.tr("render.image_stale")));
@@ -1023,7 +1023,7 @@ fn result_navigation_uses_shared_pan_zoom_and_leaves_product_camera_unchanged() 
     let draft = serde_json::to_value(&h.app.render_workspace.view.draft).unwrap();
     let dirty = h.app.render_workspace.view.dirty;
     let document = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let mut time = 0.0;
     nav_frame(&mut h.app, &ctx, true, &mut time, Modifiers::NONE, vec![]);
     let fitted = h.app.render_workspace.view.result_camera;
@@ -1081,7 +1081,7 @@ fn result_navigation_uses_shared_pan_zoom_and_leaves_product_camera_unchanged() 
     assert_eq!(serde_json::to_value(&h.app.render_workspace.view.draft).unwrap(), draft);
     assert_eq!(h.app.render_workspace.view.dirty, dirty);
     assert!(Arc::ptr_eq(&document, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert_eq!(image_params(&h.app).unwrap()["settings"]["camera"], json!(preview));
 }
 
@@ -1210,7 +1210,7 @@ fn native_cpu_controls_check_and_start_the_same_capture_and_keep_it_exportable()
     h.frames(2);
     let camera = h.app.cam;
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let params = image_params(&h.app).unwrap();
     let preflight = h.app.session.execute("render.preflight", &params).unwrap();
     assert_eq!(preflight["resolved"]["executor"], "cpu-raytrace");
@@ -1238,7 +1238,7 @@ fn native_cpu_controls_check_and_start_the_same_capture_and_keep_it_exportable()
     assert_eq!(h.app.render_workspace.view.completed, Some(id));
     assert_eq!(h.app.cam, camera);
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     let frame = handle.frame().unwrap().unwrap();
     assert_eq!(frame.info.executor.as_str(), "cpu-raytrace");
     let path = h.dir.join("cpu-result-canvas.png");
@@ -1268,7 +1268,7 @@ fn delayed_image_export_holds_its_document_without_changing_history() {
     let (mut h, job) = async_export_fixture();
     let path = h.dir.join("delayed.png");
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let ctx = crate::fonts::test_context();
     let slot: Slot = Default::default();
     save(&mut h.app, &slot);
@@ -1286,7 +1286,7 @@ fn delayed_image_export_holds_its_document_without_changing_history() {
     assert_eq!(&std::fs::read(&path).unwrap()[..8], b"\x89PNG\r\n\x1a\n");
     crate::documents::switch(&mut h.app, 0);
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert!(!h.app.session.is_dirty());
 }
 
@@ -1374,12 +1374,12 @@ fn delayed_image_export_refuses_an_internally_replaced_document_even_with_overwr
         // Internal host/session changes are outside the input hold; never export them by accident.
         h.app.session.execute("appearance.assign", &json!({"bodies":["Body1"],"color":[1,2,3]})).unwrap();
         let changed = h.app.session.doc.clone();
-        let history = (h.app.session.undo.len(), h.app.session.revision);
+        let history = (h.app.session.history.len(), h.app.session.revision);
         *slot.borrow_mut() = Some(Some(path.to_string_lossy().into_owned()));
         crate::file_picker::tick(&mut h.app, &crate::fonts::test_context());
         assert_eq!(std::fs::read(path).unwrap(), b"keep this file");
         assert!(Arc::ptr_eq(&changed, &h.app.session.doc));
-        assert_eq!((h.app.session.undo.len(), h.app.session.revision), history);
+        assert_eq!((h.app.session.history.len(), h.app.session.revision), history);
         assert!(matches!(&h.app.status, Some((_, _, true))));
     }
 }
@@ -1641,7 +1641,7 @@ fn gpu_material_recipes_use_exact_linear_absorption_without_changing_saved_appea
     h.app.session.mark_saved();
     let target: materials::Target = serde_json::from_value(h.app.run("render.scene", json!({})).unwrap()["bodies"][0].clone()).unwrap();
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.app.render_workspace.view.method = ImageMethod::GpuRaytrace;
     h.app.render_workspace.view.materials.enabled = true;
     let mut count = 0;
@@ -1677,7 +1677,7 @@ fn gpu_material_recipes_use_exact_linear_absorption_without_changing_saved_appea
     }
     assert_eq!(count, 6);
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert!(!h.app.session.is_dirty());
     h.app.render_workspace.view.method = ImageMethod::Raster;
     assert!(materials::params(&h.app, &mut json!({})).is_err());
@@ -1765,7 +1765,7 @@ fn clicked_gpu_material_at_assignment_limit_edits_existing_but_cannot_add_anothe
     assert_eq!(targets.len(), 129);
     h.app.session.mark_saved();
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     enter(&mut h.app, true).unwrap();
     h.app.render_workspace.view.inspector.page = inspector::Page::All;
     h.app.render_workspace.view.materials.bindings = targets.iter().skip(1).cloned().map(|target| materials::Binding::new(target, &h.app)).collect();
@@ -1793,7 +1793,7 @@ fn clicked_gpu_material_at_assignment_limit_edits_existing_but_cannot_add_anothe
     assert_eq!(h.app.render_workspace.view.materials.bindings.len(), 128);
     assert!(h.app.render_workspace.view.materials.bindings.iter().all(|binding| binding.target != targets[0]));
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert!(!h.app.session.is_dirty());
 }
 
@@ -1803,7 +1803,7 @@ fn cpu_reflection_controls_preserve_exact_targets_and_engine_bounds() {
     let mut h = Harness::new();
     h.app.run("solid.box", json!({"length":10,"width":20,"height":5,"body_name":"Reflector"})).unwrap();
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     cpu::set_reflection(&mut h.app, "Reflector", Some(ReflectionMode::Mirror)).unwrap();
     cpu::set_reflection(&mut h.app, "Reflector", Some(ReflectionMode::RoughSpecular)).unwrap();
     let reflections = h.app.render_workspace.view.raytrace.reflections.as_mut().unwrap();
@@ -1827,7 +1827,7 @@ fn cpu_reflection_controls_preserve_exact_targets_and_engine_bounds() {
     assert!(h.app.render_workspace.view.raytrace.reflections.is_none());
     assert!(cpu::set_reflection(&mut h.app, "Missing", Some(ReflectionMode::Mirror)).is_err());
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
 }
 
 #[test]
@@ -2057,9 +2057,9 @@ fn clicked_setup_save_reload_and_switch_keep_gpu_numeric_intent_without_a_host()
     assert_eq!(h.app.render_workspace.view.name, "GPU copy");
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected, "typing Save As must not reset the settings");
     assert!(h.app.render_workspace.view.dirty);
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.step(&json!({"widget":h.app.tr("render.save_setup")})).unwrap();
-    assert_eq!(h.app.session.undo.len(), undo + 1);
+    assert_eq!(h.app.session.history.len(), undo + 1);
     assert_eq!(h.app.session.doc.render.setups["GPU copy"], expected);
     h.app.render_workspace.view.seed = 8;
     h.app.render_workspace.view.studio.ambient[1] = 0.125;
@@ -2156,13 +2156,13 @@ fn cpu_progressive_controls_resize_only_on_request_and_save_reload_without_a_hos
     h.app.render_workspace.view.draft.exposure_ev = 1.25;
     h.app.render_workspace.view.name = "Progressive CPU".into();
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     assert!(image_request(&h.app).is_err());
     assert!(setups::save(&mut h.app).is_err());
     h.frames(3);
     assert_eq!((h.app.render_workspace.view.draft.width, h.app.render_workspace.view.draft.height), (1024, 1024));
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     let resize = format!("{} 512 × 512", h.app.tr("render.image_use_largest"));
     assert!(h.widget(&resize).is_some(), "the proposed dimensions must be visible before accepting them");
     h.step(&json!({"widget":resize})).unwrap();
@@ -2224,9 +2224,9 @@ fn cpu_progressive_setup_preserves_hidden_values_empty_lists_and_one_exposure() 
     assert!(h.app.render_workspace.view.dirty);
     setups::load(&mut h.app);
     assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     setups::save(&mut h.app).unwrap();
-    assert_eq!(h.app.session.undo.len(), undo, "a no-op Save must preserve all nonedited intent");
+    assert_eq!(h.app.session.history.len(), undo, "a no-op Save must preserve all nonedited intent");
 }
 
 #[test]
@@ -2240,7 +2240,7 @@ fn setup_save_refuses_nonportable_state_atomically_and_tracks_invalid_legacy_edi
     select_image_method(&mut h.app, ImageMethod::GpuRaytrace);
     setups::save(&mut h.app).unwrap();
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.app.render_workspace.view.studio.environment = studio::Environment::Hdr;
     h.app.render_workspace.view.studio.hdr = hdr::Input::FilePending { path: "must-not-be-read.hdr".into() };
     setups::refresh_dirty(&mut h.app);
@@ -2258,13 +2258,13 @@ fn setup_save_refuses_nonportable_state_atomically_and_tracks_invalid_legacy_edi
     assert!(setups::save(&mut h.app).is_err());
     assert!(h.app.render_workspace.view.raytrace.reflections.is_some());
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     h.app.run("render.settings.set", json!({"name":"Legacy","set":{"job":null,"environment_rotation":0.25,"environment_intensity":2.0}})).unwrap();
     h.app.render_workspace.view.name = "Legacy".into();
     setups::load(&mut h.app);
     assert!(!h.app.render_workspace.view.dirty);
     let doc = h.app.session.doc.clone();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.app.render_workspace.view.draft.background = [1, 3, 5];
     setups::refresh_dirty(&mut h.app);
     assert!(h.app.render_workspace.view.dirty, "invalid saved intent still needs complete dirty tracking");
@@ -2272,7 +2272,7 @@ fn setup_save_refuses_nonportable_state_atomically_and_tracks_invalid_legacy_edi
     assert_eq!(h.app.render_workspace.view.draft.environment_rotation, 0.25);
     assert_eq!(h.app.render_workspace.view.draft.environment_intensity, 2.0);
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
 }
 
 fn original_hdr_bytes(value: u8, declared_primaries: bool) -> Vec<u8> {
@@ -2322,15 +2322,15 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
     h.app.render_workspace.view.studio.rotation_rad = 1234.567890123;
     h.app.render_workspace.view.studio.intensity = 1.75;
     h.app.render_workspace.view.samples = 37;
-    let before = (h.app.session.revision, h.app.session.undo.len());
+    let before = (h.app.session.revision, h.app.session.history.len());
     hdr::inspect(&mut h.app, hdr::Target::Gpu, path.to_string_lossy().into_owned()).unwrap();
-    assert_eq!((h.app.session.revision, h.app.session.undo.len()), before);
+    assert_eq!((h.app.session.revision, h.app.session.history.len()), before);
     assert!(h.app.session.doc.render.resources.is_empty());
     let unsaved = image_request(&h.app).unwrap();
     assert_eq!(unsaved["environment"]["expected_sha256"], json!(resource));
     h.frames(3);
     h.step(&json!({"widget":save})).unwrap();
-    assert_eq!(h.app.session.undo.len(), before.1 + 1);
+    assert_eq!(h.app.session.history.len(), before.1 + 1);
     assert_eq!(h.app.render_workspace.view.studio.hdr, hdr::Input::EmbeddedResource { resource });
     assert_eq!(h.app.session.doc.render.resources.len(), 1);
     let gpu = h.app.session.doc.render.setups.get("HDR GPU").unwrap().clone();
@@ -2347,10 +2347,10 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
     h.app.render_workspace.view.cpu.intensity = 2.5;
     h.app.render_workspace.view.cpu.samples = 64;
     hdr::inspect(&mut h.app, hdr::Target::Cpu, path.to_string_lossy().into_owned()).unwrap();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.frames(2);
     h.step(&json!({"widget":save})).unwrap();
-    assert_eq!(h.app.session.undo.len(), undo + 1);
+    assert_eq!(h.app.session.history.len(), undo + 1);
     assert_eq!(h.app.session.doc.render.resources.len(), 1, "both setups share one source payload");
     assert_eq!(h.app.session.doc.render.resources.total_bytes(), bytes.len());
     let cpu = h.app.session.doc.render.setups.get("HDR CPU").unwrap().clone();
@@ -2370,7 +2370,7 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
         assert_eq!(hdr::input(&h.app, target), &hdr::Input::EmbeddedResource { resource });
         assert_eq!(setups::snapshot(&h.app).unwrap(), expected);
         assert_eq!(image_request(&h.app).unwrap(), json!({"settings":expected}));
-        let before = (h.app.session.revision, h.app.session.undo.len());
+        let before = (h.app.session.revision, h.app.session.history.len());
         let section = if target == hdr::Target::Cpu { "render.cpu_environment" } else { "render.studio_environment" };
         h.frames(2);
         if target == hdr::Target::Gpu {
@@ -2380,7 +2380,7 @@ fn hdr_ui_save_embeds_once_without_a_host_and_reload_never_reopens_the_source_pa
         h.frames(2);
         assert_eq!(setups::snapshot(&h.app).unwrap(), expected, "displaying degrees must preserve saved radians");
         setups::save(&mut h.app).unwrap();
-        assert_eq!((h.app.session.revision, h.app.session.undo.len()), before);
+        assert_eq!((h.app.session.revision, h.app.session.history.len()), before);
         assert_eq!(h.app.cam, camera);
     }
 }
@@ -2400,11 +2400,11 @@ fn changed_hdr_bytes_reject_save_atomically_and_check_start_keep_the_expected_di
     let request = image_request(&h.app).unwrap();
     let doc = h.app.session.doc.clone();
     let draft = h.app.render_workspace.view.draft.clone();
-    let before = (h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len());
+    let before = (h.app.session.revision, h.app.session.history.len(), h.app.session.history.redo_steps().len());
     std::fs::write(&path, original_hdr_bytes(64, true)).unwrap();
     assert!(setups::save(&mut h.app).is_err());
     assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-    assert_eq!((h.app.session.revision, h.app.session.undo.len(), h.app.session.redo.len()), before);
+    assert_eq!((h.app.session.revision, h.app.session.history.len(), h.app.session.history.redo_steps().len()), before);
     assert_eq!(h.app.render_workspace.view.cpu.hdr, input);
     assert_eq!(h.app.render_workspace.view.draft, draft);
     assert_eq!(image_request(&h.app).unwrap(), request, "both buttons keep the verified digest, never silently accept new bytes");
@@ -2491,10 +2491,10 @@ fn embedded_hdr_runtime_requests_preserve_temporary_bindings_without_serializing
             assert_eq!(params["environment"]["kind"], "embedded_hdr");
         }
         let doc = h.app.session.doc.clone();
-        let undo = h.app.session.undo.len();
+        let undo = h.app.session.history.len();
         assert!(setups::save(&mut h.app).is_err());
         assert!(Arc::ptr_eq(&doc, &h.app.session.doc));
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
         assert_eq!(image_request(&h.app).unwrap(), params);
     }
 }

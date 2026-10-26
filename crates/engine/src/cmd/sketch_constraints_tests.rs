@@ -638,14 +638,14 @@ fn midpoint_alignment_persists_undoes_and_survives_endpoint_edits() {
             run(&mut s, "sketch.line", json!({"points":[[10,10],[30,20]],"infer":false,"connect":false}));
             run(&mut s, "sketch.point", json!({"point":[24,40],"id":"target"}));
             let before = s.doc.to_json();
-            let undo = s.undo.len();
+            let undo = s.history.len();
             let refs = if reverse { json!(["target",{"midpoint":"l1"}]) } else { json!([{"midpoint":"l1"},"target"]) };
             let result = run(&mut s, "sketch.constraint.horizontal_vertical", json!({"points":refs,"mode":mode}));
             assert_eq!(result["created"]["points"].as_array().unwrap().len(), 1);
             assert_eq!(result["created"]["constraints"].as_array().unwrap().len(), 2);
             assert_eq!(result["sketch"]["dof"], 5, "H/V removes one degree of freedom; the midpoint adds none");
             assert!(result["created"]["curves"].as_array().unwrap().is_empty());
-            assert_eq!(s.undo.len(), undo + 1);
+            assert_eq!(s.history.len(), undo + 1);
             let after = s.doc.to_json();
             run(&mut s, "edit.undo", json!({}));
             assert_eq!(s.doc.to_json(), before);
@@ -687,10 +687,10 @@ fn midpoint_alignment_rejects_invalid_or_conflicting_references_atomically() {
         json!([{"midpoint":"l1"},"origin","c1.center"]),
     ] {
         let before = s.doc.to_json();
-        let undo = s.undo.len();
+        let undo = s.history.len();
         assert!(s.execute("sketch.constraint.horizontal_vertical", &json!({"points":points,"mode":"vertical"})).is_err(), "{points}");
         assert_eq!(s.doc.to_json(), before);
-        assert_eq!(s.undo.len(), undo);
+        assert_eq!(s.history.len(), undo);
     }
 }
 
@@ -718,10 +718,10 @@ fn midpoint_alignment_reuses_associative_points_and_rejects_self_alignment() {
     assert_eq!(sk.constraints.iter().filter(|c| matches!(c.kind, ConstraintKind::Midpoint { .. })).count(), 1);
     for refs in [json!([{"midpoint":"l1"},"l2.start"]), json!(["l2.start",{"midpoint":"l1"}])] {
         let before = s.doc.to_json();
-        let undo = s.undo.len();
+        let undo = s.history.len();
         assert!(s.execute("sketch.constraint.horizontal_vertical", &json!({"points":refs})).is_err());
         assert_eq!(s.doc.to_json(), before);
-        assert_eq!(s.undo.len(), undo);
+        assert_eq!(s.history.len(), undo);
     }
 }
 
@@ -847,11 +847,11 @@ fn midpoint_of_two_lines_centres_the_second_on_the_first() {
             a.dist(b)
         };
         let before = s.doc.to_json();
-        let undo = s.undo.len();
+        let undo = s.history.len();
         let result = run(&mut s, "sketch.constraint.midpoint", json!({"a":first,"b":second}));
         assert_eq!(result["created"]["points"].as_array().unwrap().len(), 1);
         assert_eq!(result["created"]["constraints"].as_array().unwrap().len(), 2);
-        assert_eq!(s.undo.len(), undo + 1);
+        assert_eq!(s.history.len(), undo + 1);
         let sk = sketch(&s);
         assert_eq!(line_ends(&sk, first), stays, "the first pick stays put");
         let (a, b) = line_ends(&sk, second);
@@ -924,10 +924,10 @@ fn midpoint_rejects_wrong_picks_without_changing_the_sketch() {
         json!({"a":12,"b":"l1"}),
     ] {
         let before = s.doc.to_json();
-        let undo = s.undo.len();
+        let undo = s.history.len();
         assert!(s.execute("sketch.constraint.midpoint", &params).is_err(), "{params}");
         assert_eq!(s.doc.to_json(), before, "{params}");
-        assert_eq!(s.undo.len(), undo, "{params}");
+        assert_eq!(s.history.len(), undo, "{params}");
     }
 }
 
@@ -1094,10 +1094,10 @@ fn coincident_circles_lie_on_each_other() {
     let mut s = new_sketch();
     run(&mut s, "sketch.circle.center", json!({"center":[0,0],"radius":10}));
     run(&mut s, "sketch.circle.center", json!({"center":[3,1],"radius":8}));
-    let undo = s.undo.len();
+    let undo = s.history.len();
     let r = run(&mut s, "sketch.constraint.coincident", json!({"a":"c1","b":"c2"}));
     assert_eq!(r["constraints"].as_array().unwrap().len(), 2, "{r}");
-    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(s.history.len(), undo + 1);
     let sk = sketch(&s);
     let circle = |id: &str| {
         let c = sk.curve_index(id).unwrap();
@@ -1234,10 +1234,10 @@ fn equal_over_a_list_of_curves_makes_them_all_equal_in_one_step() {
     for order in [["c1", "c2", "c3", "c4"], ["c4", "c3", "c2", "c1"]] {
         let mut s = four_circles();
         let r1 = radius_of(&s, "c1");
-        let undo = s.undo.len();
+        let undo = s.history.len();
         let out = run(&mut s, "sketch.constraint.equal", json!({"curves": order}));
         assert_eq!(out["constraints"].as_array().unwrap().len(), 3, "{order:?}");
-        assert_eq!(s.undo.len(), undo + 1, "one undo step");
+        assert_eq!(s.history.len(), undo + 1, "one undo step");
         for id in ["c1", "c2", "c3", "c4"] {
             assert!((radius_of(&s, id) - r1).abs() < 1e-6, "{order:?} {id}: {}", radius_of(&s, id));
         }

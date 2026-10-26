@@ -273,7 +273,7 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
     h.app.render_workspace.view.samples = 37;
     h.app.render_workspace.view.draft.width = 777;
     let doc = h.app.session.doc.to_json();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     for (id, page) in [
         ("render.preset.resolve", Page::Scene),
         ("render.settings.get", Page::Scene),
@@ -294,7 +294,7 @@ fn ribbon_navigation_reuses_inspector_and_preserves_exact_unsaved_intent() {
         assert_eq!(h.app.render_workspace.view.samples, 37);
         assert_eq!(h.app.render_workspace.view.draft.width, 777);
         assert_eq!(h.app.session.doc.to_json(), doc, "navigation may not execute a parameterless apply");
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
         assert!(!crate::icon_svg::resolve(solidcraft_engine::find_command(id).unwrap().icon).placeholder);
     }
 }
@@ -382,11 +382,11 @@ fn ribbon_frame_preserves_explicit_roll_world_up_and_saved_view_authority() {
     h.app.cam.up = solidcraft_engine::render::UpAxis::Y;
     let orientation = (h.app.cam.roll, h.app.cam.yaw, h.app.cam.pitch, h.app.cam.up);
     let document = h.app.session.doc.to_json();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.app.start("render.camera.fit");
     assert_eq!((h.app.cam.roll, h.app.cam.yaw, h.app.cam.pitch, h.app.cam.up), orientation);
     assert_eq!(h.app.session.doc.to_json(), document);
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert!(h.app.session.camera.is_none(), "the explicit view request was consumed by the viewport");
     assert_eq!(h.app.ui.up_axis, h.app.cam.up);
 }
@@ -463,7 +463,7 @@ fn master_regrade_requires_a_retained_master_instead_of_reconstructing_a_png() {
 fn public_render_inspection_exposes_exact_identities_without_execution_or_document_mutation() {
     let mut h = fixture();
     let doc = h.app.session.doc.to_json();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let camera = h.app.cam;
     let inspected = h.call("ui.inspect", json!({}));
     assert_eq!(inspected["result"]["render"]["active"], true);
@@ -476,7 +476,7 @@ fn public_render_inspection_exposes_exact_identities_without_execution_or_docume
     let inspected = h.call("ui.inspect", json!({}));
     assert_eq!(inspected["result"]["render"]["job"], json!(identity));
     assert_eq!(h.app.session.doc.to_json(), doc);
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert_eq!(h.app.cam, camera);
     h.app.session.execute("render.cancel", &json!({"job":identity})).unwrap();
 }
@@ -640,7 +640,7 @@ fn render_camera_labels_do_not_shadow_mechanical_pitch_and_axes_remain_explicit(
 fn camera_draft_uses_render_command_and_keeps_saved_design_unchanged() {
     let mut h = fixture();
     let document = h.app.session.doc.to_json();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     for up in [solidcraft_engine::render::UpAxis::Z, solidcraft_engine::render::UpAxis::Y] {
         let mut camera = h.app.cam;
         camera.up = up;
@@ -656,6 +656,6 @@ fn camera_draft_uses_render_command_and_keeps_saved_design_unchanged() {
         fit_subject(&mut h.app).unwrap();
         assert_eq!((h.app.cam.up, h.app.cam.roll, h.app.cam.pitch), (up, camera.roll, camera.pitch));
         assert_eq!(h.app.session.doc.to_json(), document);
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
     }
 }

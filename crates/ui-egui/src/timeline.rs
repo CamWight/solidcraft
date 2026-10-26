@@ -1175,11 +1175,11 @@ mod tests {
             let second = handle_at("timeline:Second").unwrap();
             let marker = rect_of("history:marker").unwrap();
             let behind = if left { [second.x, marker.bottom() + 3.0] } else { [marker.right() + 4.0, second.y] };
-            let undo = h.app.session.undo.len();
+            let undo = h.app.session.history.len();
             h.step(&json!({"drag":[[second.x,second.y],behind]})).unwrap();
             h.settle();
             assert_eq!(h.app.session.doc.marker, Some(1), "left={left}: dropped behind the marker, Second is rolled back");
-            assert_eq!(h.app.session.undo.len(), undo + 1, "left={left}: crossing the marker is one undo step");
+            assert_eq!(h.app.session.history.len(), undo + 1, "left={left}: crossing the marker is one undo step");
             let second = handle_at("timeline:Second").unwrap();
             let marker = rect_of("history:marker").unwrap();
             let before = if left { [second.x, marker.top() - 2.0] } else { [marker.left() - 3.0, second.y] };

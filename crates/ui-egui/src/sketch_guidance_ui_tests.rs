@@ -35,7 +35,7 @@ fn sketch_dialog_mirror_toggles_clears_references_previews_and_cancels() {
     // Keep the source curves and reference between the floating dialog and Sketch Palette.
     step(&mut h, json!({"call":"ui.camera","params":{"target":[-40,0,0],"distance":150}}));
     let original = h.app.session.doc.to_json();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let revision = h.app.session.revision;
     step(&mut h, json!({"start":"sketch.mirror"}));
     assert!(h.app.tool.is_none());
@@ -48,7 +48,7 @@ fn sketch_dialog_mirror_toggles_clears_references_previews_and_cancels() {
     pick(&mut h, [0.0, 20.0], false);
     preview(&mut h, 2);
     assert_eq!(h.app.session.doc.to_json(), original);
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     assert_eq!(h.app.session.revision, revision);
     step(&mut h, json!({"click":{"handle":"dialog:clear:Mirror line"}}));
     assert!(h.app.dialog.as_ref().unwrap().inputs[1].items.is_empty());
@@ -60,7 +60,7 @@ fn sketch_dialog_mirror_toggles_clears_references_previews_and_cancels() {
     assert!(h.app.dialog.is_none());
     assert!(!h.app.preview.active);
     assert_eq!(h.app.session.doc.to_json(), original);
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
 }
 
 #[test]

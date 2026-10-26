@@ -17,6 +17,7 @@ pub mod cosmetic_threads;
 pub mod crash;
 pub mod frames;
 pub mod fuzz;
+pub mod history;
 pub mod licences;
 pub mod occurrences;
 pub mod params;
@@ -39,6 +40,7 @@ use solidcraft_doc::{Document, Model, ModelState};
 use solidcraft_geom::Vec3;
 
 pub use cmd::{CommandInfo, CommandSpec, auto_operation, command_specs, extrude_reach, find_command, standard_view};
+pub use history::{History, MAX_UNDO, Mark};
 pub use solidcraft_doc as doc;
 pub use solidcraft_doc::Visibility;
 pub use solidcraft_geom as geom;
@@ -268,8 +270,7 @@ impl WorldCache {
 pub struct Session {
     pub doc: Arc<Document>,
     pub model: Model,
-    pub undo: Vec<Snapshot>,
-    pub redo: Vec<Snapshot>,
+    pub history: History,
     /// Sketch feature being edited (sketch mode).
     pub active_sketch: Option<u64>,
     /// The design as it was when the open sketch was entered, for Cancel Sketch.
@@ -383,8 +384,7 @@ pub(crate) struct Checkpoint {
     pub active_sketch: Option<u64>,
     pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
     pub visibility: Visibility,
-    pub undo: Vec<Snapshot>,
-    pub redo: Vec<Snapshot>,
+    pub history: History,
 }
 
 /// A way of shading the model's faces to judge their shape (view state, not part of the design).
@@ -432,7 +432,6 @@ impl SurfaceAnalysis {
     }
 }
 
-const MAX_UNDO: usize = 200;
 /// Checkpoints kept (the oldest go first).
 const MAX_CHECKPOINTS: usize = 16;
 const MAX_LOG: usize = 2000;
@@ -467,8 +466,7 @@ impl Session {
             saved: doc.clone(),
             doc,
             model,
-            undo: Vec::new(),
-            redo: Vec::new(),
+            history: History::default(),
             active_sketch: None,
             sketch_entry: None,
             feature_edit_sketch: None,
@@ -1016,11 +1014,7 @@ impl Session {
                     let display_only = !changed && hidden;
                     let previous_doc = before.doc.clone();
                     if spec.undoable {
-                        self.undo.push(before);
-                        if self.undo.len() > MAX_UNDO {
-                            self.undo.remove(0);
-                        }
-                        self.redo.clear();
+                        self.history.push(before);
                     }
                     match live_edit {
                         Some(edit) => {
@@ -1077,10 +1071,9 @@ impl Session {
             id,
             doc: self.doc.clone(),
             active_sketch: self.active_sketch,
-            undo: self.undo.clone(),
             pending_moves: self.pending_moves.clone(),
             visibility: self.visibility.clone(),
-            redo: self.redo.clone(),
+            history: self.history.clone(),
         });
         if self.checkpoints.len() > MAX_CHECKPOINTS {
             self.checkpoints.remove(0);
@@ -1104,8 +1097,7 @@ impl Session {
         self.active_sketch = c.active_sketch;
         self.pending_moves = c.pending_moves;
         self.visibility = c.visibility;
-        self.undo = c.undo;
-        self.redo = c.redo;
+        self.history = c.history;
         self.selection.clear();
         if self.render_only_change(&before) {
             self.refresh_render(&before.doc);
@@ -1130,8 +1122,7 @@ impl Session {
         Session {
             doc: self.doc.clone(),
             model: self.model.clone(),
-            undo: Vec::new(),
-            redo: Vec::new(),
+            history: History::default(),
             active_sketch: self.active_sketch,
             sketch_entry: None,
             feature_edit_sketch: self.feature_edit_sketch,
@@ -1205,11 +1196,7 @@ impl Session {
         self.doc = computed.doc;
         self.model = computed.model;
         self.world_cache = computed.world_cache;
-        self.undo.append(&mut computed.undo);
-        if self.undo.len() > MAX_UNDO {
-            self.undo.drain(..self.undo.len() - MAX_UNDO);
-        }
-        self.redo = computed.redo;
+        self.history.append(computed.history);
         self.active_sketch = computed.active_sketch;
         self.selection = computed.selection;
         self.revision = computed.revision;
@@ -1258,8 +1245,7 @@ impl Session {
     /// take a while (undo, the history marker moved) off its window thread first.
     pub fn ahead(&self) -> Ahead {
         let mut copy = self.scratch();
-        copy.undo.clone_from(&self.undo);
-        copy.redo.clone_from(&self.redo);
+        copy.history.clone_from(&self.history);
         copy.model.keep(Some(Arc::default()));
         Ahead(copy)
     }

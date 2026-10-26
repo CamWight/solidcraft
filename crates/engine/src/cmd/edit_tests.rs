@@ -172,7 +172,7 @@ fn failed_or_non_feature_redefinitions_leave_session_and_history_intact() {
     let doc = s.doc.clone();
     let sketch = s.active_sketch;
     let selection = s.selection.clone();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     for (command, params) in [
         ("solid.cylinder", json!({"radius": 5, "height": 10})),
         ("solid.box", json!({"length": "unknown_parameter", "width": 10, "height": 5})),
@@ -183,7 +183,7 @@ fn failed_or_non_feature_redefinitions_leave_session_and_history_intact() {
         assert_eq!(*s.doc, *doc, "{command}");
         assert_eq!(s.active_sketch, sketch, "{command}");
         assert_eq!(s.selection, selection, "{command}");
-        assert_eq!(s.undo.len(), undo, "{command}");
+        assert_eq!(s.history.len(), undo, "{command}");
     }
 }
 
@@ -583,10 +583,10 @@ fn timeline_moves_across_the_marker_are_one_undo_step() {
     run(&mut s, "timeline.reorder", json!({"feature": "D", "position": 3, "active": true}));
     assert_eq!(s.doc.marker, None, "every feature active again");
 
-    let undo = s.undo.len();
+    let undo = s.history.len();
     let error = s.execute("timeline.reorder", &json!({"feature": "A", "position": 0, "active": false})).unwrap_err().to_string();
     assert!(error.contains("behind the history marker"), "{error}");
-    assert_eq!(s.undo.len(), undo, "a refused move adds no undo step");
+    assert_eq!(s.history.len(), undo, "a refused move adds no undo step");
 }
 
 /// #5962: a reorder that breaks a feature is refused unless `allow_errors`; with it the move is
@@ -633,11 +633,11 @@ fn failed_timeline_move_many_keeps_folder_membership_and_order() {
     run(&mut s, "solid.fillet", json!({"edges": [[10, 5, 10]], "radius": 1, "name": "Round"}));
     let group = run(&mut s, "timeline.group", json!({"name": "Destination"}))["group"].as_u64().unwrap();
     let before = s.doc.clone();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     let error = s.execute("timeline.move_many", &json!({"features": ["Base"], "group": group, "position": 2})).unwrap_err().to_string();
     assert!(error.contains("breaks"), "{error}");
     assert_eq!(s.doc, before);
-    assert_eq!(s.undo.len(), undo, "a refused atomic move adds no undo step");
+    assert_eq!(s.history.len(), undo, "a refused atomic move adds no undo step");
 }
 
 #[test]
@@ -725,12 +725,12 @@ fn suppress_takes_a_list_of_features_as_one_undo_step() {
     run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [20, 0, 0], "name": "B"}));
     run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [40, 0, 0], "name": "C"}));
     let id = |s: &Session, name: &str| s.doc.find_feature(name).unwrap().id;
-    let undo = s.undo.len();
+    let undo = s.history.len();
     let a = id(&s, "A");
     let r = run(&mut s, "timeline.suppress", json!({"features": [a, "B"], "suppressed": true}));
     assert_eq!(r, json!({"features": [id(&s, "A"), id(&s, "B")], "suppressed": true}));
     assert!(suppressed(&s, "A") && suppressed(&s, "B") && !suppressed(&s, "C"));
-    assert_eq!(s.undo.len(), undo + 1, "one undo step");
+    assert_eq!(s.history.len(), undo + 1, "one undo step");
     assert_eq!(s.model.state().bodies.len(), 1);
     run(&mut s, "edit.undo", json!({}));
     assert!(!suppressed(&s, "A") && !suppressed(&s, "B"));
@@ -752,7 +752,7 @@ fn suppress_takes_a_list_of_features_as_one_undo_step() {
 
     // An unknown feature in the list refuses the whole command, as do no features at all.
     let before = (*s.doc).clone();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     for bad in [
         json!({"features": ["A", "Nope"], "suppressed": true}),
         json!({"features": []}),
@@ -763,7 +763,7 @@ fn suppress_takes_a_list_of_features_as_one_undo_step() {
         assert!(s.execute("timeline.suppress", &bad).is_err(), "{bad}");
     }
     assert_eq!(*s.doc, before);
-    assert_eq!(s.undo.len(), undo);
+    assert_eq!(s.history.len(), undo);
     // timeline.delete takes either.
     run(&mut s, "timeline.delete", json!({"feature": "C"}));
     run(&mut s, "timeline.delete", json!({"features": ["B"]}));

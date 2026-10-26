@@ -889,7 +889,7 @@ mod studio_browser_tests {
         assert_eq!(view.statuses.len(), 33);
         assert_eq!(view.statuses.get(&native).map(String::as_str), Some("native_composition"));
         assert_eq!(h.app.session.doc.to_json(), before);
-        assert!(h.app.session.undo.is_empty());
+        assert!(h.app.session.history.is_empty());
     }
     #[test]
     fn physical_reference_navigation_uses_the_same_category_history() {
@@ -941,7 +941,7 @@ mod studio_browser_tests {
         }
         assert_eq!(view.recent.len(), 32);
         assert_eq!(h.app.session.doc.to_json(), before);
-        assert!(h.app.session.undo.is_empty());
+        assert!(h.app.session.history.is_empty());
         choose(&mut h.app, &mut view, "surfaces", "SURF-048").unwrap();
         assert_eq!(view.recent.len(), 32);
         assert_eq!(h.app.render_workspace.view.inspector.page, super::super::inspector::Page::Appearance);

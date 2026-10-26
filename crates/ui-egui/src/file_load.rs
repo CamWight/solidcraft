@@ -1128,7 +1128,7 @@ mod tests {
         h.app.run("solid.box", json!({"length":10,"width":10,"height":10})).unwrap();
         h.frames(3);
         let base = h.app.session.doc.clone();
-        let undo = h.app.session.undo.len();
+        let undo = h.app.session.history.len();
         let cam = h.app.cam;
         let progress = Arc::new(Progress::default());
         solidcraft_engine::doc::progress::watch(progress.clone(), || {
@@ -1161,7 +1161,7 @@ mod tests {
         h.frames(2);
         assert!(h.app.file_load.idle());
         assert!(Arc::ptr_eq(&base, &h.app.session.doc));
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
         assert_eq!(h.app.cam, cam);
 
         // The success path is equally read-only, even if the worker has another session.
@@ -1189,7 +1189,7 @@ mod tests {
         h.frames(2);
         assert_eq!(reply_rx.try_recv().unwrap()["result"]["visible"], 12);
         assert!(Arc::ptr_eq(&base, &h.app.session.doc));
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
         assert_eq!(h.app.cam, cam);
     }
 

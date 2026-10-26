@@ -224,7 +224,7 @@ fn second_hole() -> serde_json::Value {
 fn an_agent_design_change_computes_off_the_window_thread() {
     let (mut h, tx) = agent_harness();
     let features = h.app.session.doc.features.len();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let hole = ask(&tx, "engine.execute", second_hole());
     let view = ask(&tx, "ui.inspect", json!({}));
     let inspect = ask(&tx, "document.inspect", json!({}));
@@ -246,7 +246,7 @@ fn an_agent_design_change_computes_off_the_window_thread() {
     let r = reply_to(&mut h, &boss);
     assert_eq!(r["ok"], true, "{r}");
     assert_eq!(h.app.session.doc.features.len(), features + 2);
-    assert_eq!(h.app.session.undo.len(), undo + 2, "one undo step each");
+    assert_eq!(h.app.session.history.len(), undo + 2, "one undo step each");
     assert!(h.app.agent_computing().is_none());
     // In the order they were asked for: undo takes the boss, the hole stays.
     h.app.run("edit.undo", json!({})).unwrap();

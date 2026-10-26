@@ -212,7 +212,7 @@ fn corner_window_takes_the_corner_then_applies_the_typed_size() {
         // The ordinary snap still finds the fixed origin; the window must instead reach the
         // rectangle's overlapping endpoint.
         assert_eq!(sketch_point_at(&h.app, &proj, cursor).unwrap().1.as_deref(), Some("origin"));
-        let before = (h.app.session.doc.to_json(), h.app.session.undo.len());
+        let before = (h.app.session.doc.to_json(), h.app.session.history.len());
         h.step(&json!({"start":command})).unwrap();
         h.frames(2);
         assert!(h.app.tool.is_none(), "{command} must open a window, not a click tool");
@@ -226,12 +226,12 @@ fn corner_window_takes_the_corner_then_applies_the_typed_size() {
         h.step(&json!({"click":{"world":[0,0,0]}})).unwrap();
         h.frames(2);
         assert_eq!(h.app.dialog.as_ref().map(|d| d.inputs[0].items.len()), Some(1), "{command}: the corner belongs in the input");
-        assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before, "{command} must change nothing before OK");
+        assert_eq!((h.app.session.doc.to_json(), h.app.session.history.len()), before, "{command} must change nothing before OK");
         // 5 mm: the size the click flow used to guess and commit before asking.
         set_size(&mut h.app, "5");
         apply(&mut h);
         assert!(h.app.dialog.is_none(), "{command}: {:?}", h.app.status);
-        assert_eq!(h.app.session.undo.len(), before.1 + 1, "{command} must be one undo entry");
+        assert_eq!(h.app.session.history.len(), before.1 + 1, "{command} must be one undo entry");
         let st = h.app.session.world_state();
         let ss = st.sketch(sid).unwrap();
         assert_eq!(ss.sketch.point(0), Some(Vec2::ZERO));
@@ -424,7 +424,7 @@ fn escape_leaves_the_sketch_and_the_history_untouched() {
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
     h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[20,30]})).unwrap();
     h.frames(2);
-    let before = (h.app.session.doc.to_json(), h.app.session.undo.len());
+    let before = (h.app.session.doc.to_json(), h.app.session.history.len());
     h.step(&json!({"start":"sketch.fillet"})).unwrap();
     h.frames(2);
     h.step(&json!({"click":{"world":[0,0,0]}})).unwrap();
@@ -434,7 +434,7 @@ fn escape_leaves_the_sketch_and_the_history_untouched() {
     h.step(&json!({"key":"Escape"})).unwrap();
     h.frames(2);
     assert!(h.app.dialog.is_none());
-    assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before);
+    assert_eq!((h.app.session.doc.to_json(), h.app.session.history.len()), before);
 }
 
 /// A size the corner cannot take is refused with a reason, and the window stays open on it.
@@ -444,7 +444,7 @@ fn an_impossible_size_keeps_the_window_open_with_its_reason() {
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
     h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[20,30]})).unwrap();
     h.frames(2);
-    let before = (h.app.session.doc.to_json(), h.app.session.undo.len());
+    let before = (h.app.session.doc.to_json(), h.app.session.history.len());
     h.step(&json!({"start":"sketch.chamfer.equal_distance"})).unwrap();
     h.frames(2);
     h.step(&json!({"click":{"world":[0,0,0]}})).unwrap();
@@ -453,12 +453,12 @@ fn an_impossible_size_keeps_the_window_open_with_its_reason() {
         set_size(&mut h.app, size);
         apply(&mut h);
         assert!(h.app.dialog.as_ref().is_some_and(|d| d.error.is_some()), "{size} must be refused with a reason");
-        assert_eq!((h.app.session.doc.to_json(), h.app.session.undo.len()), before, "{size} must change nothing");
+        assert_eq!((h.app.session.doc.to_json(), h.app.session.history.len()), before, "{size} must change nothing");
     }
     set_size(&mut h.app, "4");
     apply(&mut h);
     assert!(h.app.dialog.is_none(), "{:?}", h.app.status);
-    assert_eq!(h.app.session.undo.len(), before.1 + 1);
+    assert_eq!(h.app.session.history.len(), before.1 + 1);
 }
 
 /// A fillet rounds every picked corner to one radius, as one undo entry.
@@ -468,7 +468,7 @@ fn a_fillet_rounds_every_picked_corner_to_one_radius() {
     h.app.run("sketch.create", json!({"plane":"XY"})).unwrap();
     h.app.run("sketch.rectangle.two_point", json!({"p0":[0,0],"p1":[40,30]})).unwrap();
     h.frames(2);
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.step(&json!({"start":"sketch.fillet"})).unwrap();
     h.frames(2);
     for corner in [[40, 0, 0], [40, 30, 0], [0, 30, 0]] {
@@ -479,7 +479,7 @@ fn a_fillet_rounds_every_picked_corner_to_one_radius() {
     set_size(&mut h.app, "5");
     apply(&mut h);
     assert!(h.app.dialog.is_none(), "{:?}", h.app.status);
-    assert_eq!(h.app.session.undo.len(), undo + 1, "one radius, one undo entry");
+    assert_eq!(h.app.session.history.len(), undo + 1, "one radius, one undo entry");
     let st = h.app.session.world_state();
     let ss = st.sketch(h.app.session.active_sketch.unwrap()).unwrap();
     assert_eq!(ss.sketch.curves.iter().filter(|c| matches!(c.kind, CurveKind::Arc { .. })).count(), 3);

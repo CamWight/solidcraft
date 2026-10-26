@@ -109,10 +109,10 @@ fn apply_commits_once_keeps_values_and_waits_for_new_selection_ok_closes() {
         h.settle();
         let before = apply_commands(&h.app, h.app.dialog.as_ref().unwrap()).unwrap();
         assert_eq!(scenario::count_of("dialog:ok:enabled"), Some(1.0), "{command}");
-        let undo = h.app.session.undo.len();
+        let undo = h.app.session.history.len();
         h.step(&json!({"click":{"handle":"dialog:apply"}})).unwrap();
         h.settle();
-        assert_eq!(h.app.session.undo.len(), undo + 1, "{command}: one Apply, one undo");
+        assert_eq!(h.app.session.history.len(), undo + 1, "{command}: one Apply, one undo");
         let d = h.app.dialog.as_ref().unwrap();
         assert!(d.inputs.iter().all(|i| i.items.is_empty()));
         assert_eq!(d.active, 0);
@@ -196,14 +196,14 @@ fn apply_keeps_the_panel_open_after_asynchronous_evaluation() {
     h.app.dialog = Some(d);
     let (finish, done) = std::sync::mpsc::channel();
     h.app.applying = Some(Applying::computing(done, cmds));
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     h.frames(2);
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     finish.send(None).unwrap();
     h.frames(3);
     assert!(h.app.applying.is_none());
     let d = h.app.dialog.as_ref().unwrap();
-    assert_eq!(h.app.session.undo.len(), undo + 1);
+    assert_eq!(h.app.session.history.len(), undo + 1);
     assert!(d.inputs.iter().all(|i| i.items.is_empty()));
     assert!(!d.repeat_after_apply);
 }

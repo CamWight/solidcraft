@@ -75,18 +75,18 @@ pub static COMMANDS: &[CommandSpec] = &[
 ];
 
 fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
-    let Some(prev) = s.undo.pop() else { return Err(EngineError::Other("nothing to undo".into())) };
+    let Some(prev) = s.history.take_undo() else { return Err(EngineError::Other("nothing to undo".into())) };
     let now = go_to(s, prev);
     let label = now.label.clone();
-    s.redo.push(now);
+    s.history.undone(now);
     Ok(json!({"undone": label}))
 }
 
 fn redo(s: &mut Session, _p: &Value) -> Result<Value> {
-    let Some(next) = s.redo.pop() else { return Err(EngineError::Other("nothing to redo".into())) };
+    let Some(next) = s.history.take_redo() else { return Err(EngineError::Other("nothing to redo".into())) };
     let now = go_to(s, next);
     let label = now.label.clone();
-    s.undo.push(now);
+    s.history.redone(now);
     Ok(json!({"redone": label}))
 }
 

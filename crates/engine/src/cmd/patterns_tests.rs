@@ -174,13 +174,13 @@ fn feature_circular_center_flip_uses_partial_arc_endpoints_and_full_circle_spaci
 fn feature_pattern_rejects_malformed_alignment_and_flip_atomically() {
     let mut s = feature_pattern_plate();
     let before = s.doc.to_json();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     for (key, value) in [("alignment", json!("diagonal")), ("alignment2", json!(null)), ("reversed", json!(1)), ("reversed2", json!("true"))] {
         let mut p = json!({"features":["Hole"],"dir1":[1,0,0],"count1":4,"spacing1":10});
         p[key] = value;
         assert!(s.execute("solid.pattern.rectangular", &p).is_err());
         assert_eq!(s.doc.to_json(), before);
-        assert_eq!(s.undo.len(), undo);
+        assert_eq!(s.history.len(), undo);
     }
 }
 
@@ -190,7 +190,7 @@ fn circular_axis_origin_rejects_invalid_values_atomically() {
     run(&mut s, "parameters.add", json!({"name":"cx","expression":"50 mm"}));
     run(&mut s, "parameters.add", json!({"name":"cy","expression":"25 mm"}));
     let before = s.doc.to_json();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     for origin in [
         json!(["cx", "cy", 0]),
         json!(["50", 25, 0]),
@@ -209,7 +209,7 @@ fn circular_axis_origin_rejects_invalid_values_atomically() {
             let error = s.execute(cmd, &params).unwrap_err().to_string();
             assert!(error.contains("axis.origin") && error.contains("expressions are not supported"), "{error}");
             assert_eq!(s.doc.to_json(), before);
-            assert_eq!(s.undo.len(), undo);
+            assert_eq!(s.history.len(), undo);
         }
     }
 }

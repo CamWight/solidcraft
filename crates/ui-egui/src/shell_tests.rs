@@ -532,7 +532,7 @@ fn compact_layout_is_saved_and_survives_cancel_apply_defaults_and_bad_input() {
     h.app.start("solid.extrude");
     h.settle();
     let design = h.app.session.doc.to_json();
-    let undo = h.app.session.undo.len();
+    let undo = h.app.session.history.len();
     let camera = h.app.cam;
     h.call("ui.prefs", json!({"open":"Interface"}));
     crate::prefs::reveal_preference(&mut h, "dialog:Workspace:Compact");
@@ -546,7 +546,7 @@ fn compact_layout_is_saved_and_survives_cancel_apply_defaults_and_bad_input() {
     h.call("engine.execute", json!({"command":"view.layout", "params":{"mode":"compact"}}));
     assert_eq!(h.app.cam, camera, "programmatic layout changes never auto-fit");
     assert_eq!(h.app.session.doc.to_json(), design);
-    assert_eq!(h.app.session.undo.len(), undo);
+    assert_eq!(h.app.session.history.len(), undo);
     let mut restored = crate::SolveApp::new(Default::default(), Default::default());
     restored.load_prefs(&h.app.prefs());
     assert_eq!(restored.ui.layout, LayoutMode::Docked);

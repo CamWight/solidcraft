@@ -303,7 +303,7 @@ mod tests {
             assert!(to.back().dist(normal) < 2e-6);
             assert_eq!((to.target, to.distance, to.fov), (Vec3::ZERO, original.distance, original.fov));
         }
-        assert!(s.undo.is_empty());
+        assert!(s.history.is_empty());
     }
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
         let body = state.bodies.first().unwrap();
         let faces = body.body.faces(0.01).unwrap();
         let document = s.doc.to_json();
-        let undo = s.undo.len();
+        let undo = s.history.len();
         for up in [UpAxis::Z, UpAxis::Y] {
             for fov in [0.0, 0.6] {
                 let cam = Camera { up, fov, roll: 1.2, distance: 123.0, ..Default::default() };
@@ -332,7 +332,7 @@ mod tests {
             }
         }
         assert_eq!(s.doc.to_json(), document);
-        assert_eq!(s.undo.len(), undo);
+        assert_eq!(s.history.len(), undo);
     }
 
     #[test]
@@ -357,7 +357,7 @@ mod tests {
             assert_eq!((to.target, to.distance, to.fov), (cam.target, cam.distance, cam.fov), "{id}");
             assert_eq!(s.camera, Some(to));
         }
-        assert!(s.undo.is_empty());
+        assert!(s.history.is_empty());
         assert!(s.execute("view.top", &json!({"camera": Camera { distance: -1.0, ..Default::default() }})).is_err());
     }
 
@@ -469,7 +469,7 @@ mod tests {
             }
         }
         assert_eq!(s.doc.to_json(), before);
-        assert!(s.undo.is_empty());
+        assert!(s.history.is_empty());
     }
 
     #[test]
@@ -490,7 +490,7 @@ mod tests {
             assert!((free.back().dot(cam.back()) - 0.64_f64.cos()).abs() < 1e-8);
             assert_eq!((free.target, free.distance, free.fov), (cam.target, cam.distance, cam.fov));
             assert_eq!(s.doc.to_json(), design);
-            assert!(s.undo.is_empty() && s.selection.is_empty());
+            assert!(s.history.is_empty() && s.selection.is_empty());
         }
     }
 
@@ -580,7 +580,7 @@ mod tests {
                 }
             }
             assert_eq!(s.doc.to_json(), before);
-            assert!(s.undo.is_empty());
+            assert!(s.history.is_empty());
         }
     }
 
@@ -631,7 +631,7 @@ mod ambient_occlusion_tests {
             assert!(s.execute("view.ambient_occlusion", &p).is_err());
         }
         assert_eq!(s.doc.to_json(), before);
-        assert!(s.undo.is_empty());
+        assert!(s.history.is_empty());
     }
 }
 
@@ -666,7 +666,7 @@ mod graphics_preset_tests {
             assert!(s.execute("view.graphics_preset", &params).is_err());
         }
         assert_eq!(s.doc.to_json(), before);
-        assert!(s.undo.is_empty());
+        assert!(s.history.is_empty());
     }
 }
 
@@ -681,7 +681,7 @@ fn history_layout_validates_geometry_without_changing_the_design() {
         assert!(s.execute("view.history_layout", &p).is_err());
     }
     assert_eq!(s.doc, doc);
-    assert!(s.undo.is_empty());
+    assert!(s.history.is_empty());
 }
 
 #[cfg(test)]
@@ -696,5 +696,5 @@ fn workspace_layout_validates_modes_without_mutating_the_design() {
         assert!(session.execute("view.layout", &params).is_err());
     }
     assert_eq!(session.doc.to_json(), before);
-    assert!(session.undo.is_empty());
+    assert!(session.history.is_empty());
 }

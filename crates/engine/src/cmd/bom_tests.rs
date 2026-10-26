@@ -53,7 +53,7 @@ fn summary(r: &Value) -> Vec<(String, String, u64)> {
 #[test]
 fn flat_counts_parts_through_subassemblies_and_top_counts_children() {
     let mut s = assembly();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     let flat = run(&mut s, "assembly.bom", json!({}));
     assert_eq!(summary(&flat), [("PL-100".into(), "Plate".into(), 3), ("PN-040".into(), "Pin".into(), 2)], "{flat}");
     assert_eq!(flat["total_occurrences"], 5);
@@ -69,7 +69,7 @@ fn flat_counts_parts_through_subassemblies_and_top_counts_children() {
     // One subassembly's own bill of materials.
     let hinge = run(&mut s, "assembly.bom", json!({"component": "Hinge"}));
     assert_eq!(summary(&hinge), [("PN-040".into(), "Pin".into(), 1)]);
-    assert_eq!(s.undo.len(), undo, "the bill of materials only reads");
+    assert_eq!(s.history.len(), undo, "the bill of materials only reads");
 }
 
 #[test]
@@ -98,14 +98,14 @@ fn equal_part_numbers_share_a_row_unless_grouped_by_definition() {
 fn part_properties_survive_save_and_open_and_undo_in_one_step() {
     let dir = scratch("roundtrip");
     let mut s = assembly();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     let r = run(&mut s, "component.metadata.set", json!({"component": "Pin", "revision": "C", "properties": {"finish": null, "material": "1.4301"}}));
     assert_eq!(r["changed"], json!(["revision", "properties.finish", "properties.material"]));
-    assert_eq!(s.undo.len(), undo + 1, "one undo step");
+    assert_eq!(s.history.len(), undo + 1, "one undo step");
     // Setting the same values again changes nothing.
     let r = run(&mut s, "component.metadata.set", json!({"component": "Pin", "revision": "C"}));
     assert_eq!(r["changed"], json!([]));
-    assert_eq!(s.undo.len(), undo + 1);
+    assert_eq!(s.history.len(), undo + 1);
     for (file, format) in [("bom.json", "json"), ("bom.solidcraft", "container")] {
         let path = dir.join(file);
         run(&mut s, "file.save_as", json!({"path": path, "format": format}));
@@ -177,7 +177,7 @@ fn standard_parts_carry_a_part_number_that_follows_a_resize() {
 #[test]
 fn hostile_part_properties_are_refused_without_a_change() {
     let mut s = assembly();
-    let undo = s.undo.len();
+    let undo = s.history.len();
     for p in [
         json!({"component": "Pin"}),
         json!({"component": 0, "part_number": "X"}),
@@ -192,7 +192,7 @@ fn hostile_part_properties_are_refused_without_a_change() {
     ] {
         assert!(s.execute("component.metadata.set", &p).is_err(), "{p}");
     }
-    assert_eq!(s.undo.len(), undo);
+    assert_eq!(s.history.len(), undo);
     let pin = run(&mut s, "component.metadata", json!({"component": "Pin"}));
     assert_eq!(pin["part_number"], "PN-040", "all or nothing");
     for p in [json!({"levels": "deep"}), json!({"group_by": ["colour"]}), json!({"group_by": 3}), json!({"component": "Nope"})] {

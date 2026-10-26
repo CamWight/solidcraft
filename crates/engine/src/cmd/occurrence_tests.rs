@@ -504,10 +504,10 @@ fn hidden_placements_and_bodies_are_saved_with_the_design() {
     run(&mut s, "file.save", json!({"path": path}));
     assert!(!s.is_dirty());
 
-    let undo = s.undo.len();
+    let undo = s.history.len();
     run(&mut s, "browser.visibility", json!({"visible":false,"paths":[[second]]}));
     run(&mut s, "browser.visibility", json!({"visible":false,"items":["Base"]}));
-    assert_eq!(s.undo.len(), undo + 2, "each hide is one undo step");
+    assert_eq!(s.history.len(), undo + 2, "each hide is one undo step");
     assert!(s.is_dirty(), "hiding leaves the design with unsaved changes");
     run(&mut s, "solid.box", json!({"length":1,"width":1,"height":1,"corner":[50,0,0],"operation":"new","body_name":"Later"}));
     run(&mut s, "edit.undo", json!({}));
@@ -522,7 +522,7 @@ fn hidden_placements_and_bodies_are_saved_with_the_design() {
     assert!(s.occurrence_visible(&[first]));
     assert!(s.doc.components.iter().any(|c| c.id == component));
     assert!(!s.is_dirty(), "an opened design has no unsaved changes");
-    assert!(s.undo.is_empty());
+    assert!(s.history.is_empty());
 
     run(&mut s, "browser.visibility", json!({"visible":true,"folder":"bodies"}));
     assert!(s.is_dirty());

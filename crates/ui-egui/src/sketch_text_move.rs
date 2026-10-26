@@ -116,7 +116,7 @@ mod tests {
     fn text_move_dialog_uses_units_and_one_undo_and_preserves_cancel() {
         let (mut h, link) = setup();
         let before = h.app.session.doc.to_json();
-        let undo = h.app.session.undo.len();
+        let undo = h.app.session.history.len();
         replace(&mut h, "dialog:Distance X", "1 in");
         replace(&mut h, "dialog:Distance Y", "-2 mm");
         replace(&mut h, "dialog:Angle", "90 deg");
@@ -129,7 +129,7 @@ mod tests {
         assert!(at.dist(solidcraft_engine::geom::Vec2::new(28.4, 2.0)) < 1e-8);
         assert!((*angle - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         assert_eq!(text, "II");
-        assert_eq!(h.app.session.undo.len(), undo + 1);
+        assert_eq!(h.app.session.history.len(), undo + 1);
         h.app.run("edit.undo", json!({})).unwrap();
         assert_eq!(h.app.session.doc.to_json(), before);
         let curve = h.app.session.doc.sketch(1).unwrap().curves[0].id.clone();
@@ -139,7 +139,7 @@ mod tests {
         replace(&mut h, "dialog:Distance X", "17");
         h.step(&json!({"widget":"Cancel"})).unwrap();
         assert_eq!(h.app.session.doc.to_json(), before);
-        assert_eq!(h.app.session.undo.len(), undo);
+        assert_eq!(h.app.session.history.len(), undo);
     }
 
     #[test]
