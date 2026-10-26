@@ -393,8 +393,8 @@ physical materials of the definition's own bodies (`Physical Material`, the ones
 an unassigned body's is `Default`), with `; ` between several. A row that stands for an assembly (a
 subassembly at the top level, a purchased or inseparable part with parts inside it, a folded part) names a
 material only when everything it weighs shares it, so a frame of steel and aluminium parts is blank and a
-bought bearing of steel parts reads Steel; giving the component a physical material gives it to all its
-bodies. A free property such as a material grade stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
+bought bearing of steel parts reads Steel. A physical material is set on bodies; a component has none
+of its own yet. A free property such as a material grade stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
 what is placed inside it except what the list shows as rows of their own beside it, so the rows of any
 list add up to the assembly. It adds `total_mass_g` beside the rows too: what the assembly weighs, measured
 from the design rather than added up from the rows. At the top level a row weighs all it holds. In parts only a part's contents
