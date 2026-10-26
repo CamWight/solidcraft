@@ -14,7 +14,11 @@ use solidcraft_doc::metadata::{BOM_TYPE, DESCRIPTION, MAX_KEYS, MAX_TEXT_BYTES, 
 
 use super::CommandSpec;
 use crate::params::{bad, str_};
+use crate::schema::bom::{OccurrenceBomTypeParams, OccurrenceBomTypeResult};
+use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
+
+const OCCURRENCE_BOM_TYPE_CONTRACT: TypedContract<OccurrenceBomTypeParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("component.metadata", "Part Properties", read).icon("settings").noundo().doc_only().params(
@@ -28,7 +32,12 @@ pub static COMMANDS: &[CommandSpec] = &[
          key holding an object); properties?: {name: text, …} (free properties; empty or null removes). All or nothing, one undo \
          step → component, metadata, properties, changed: [keys]",
     ),
-    CommandSpec::new("occurrence.bom_type", "Bill of Materials Type", occurrence_type).icon("bom").doc_only().params(
+    CommandSpec::new("occurrence.bom_type", "Bill of Materials Type", crate::checked!("occurrence.bom_type", OCCURRENCE_BOM_TYPE_CONTRACT, occurrence_type))
+        .icon("bom")
+        .doc_only()
+        .contract(&OCCURRENCE_BOM_TYPE_CONTRACT)
+        .output(output_schema_for::<OccurrenceBomTypeResult>)
+        .params(
         "occurrence: id or name; path?: [occurrence ids] (checked when given); bom_type: normal|phantom|reference|purchased|inseparable \
          (this occurrence counts as that type in every bill of materials, in place of its component's; an occurrence inside a \
          subassembly belongs to its definition, so the type holds wherever the subassembly is placed) | same_as_component or null \
@@ -178,7 +187,19 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The word that clears an occurrence's own bill of materials type.
-const SAME_AS_COMPONENT: &str = "same_as_component";
+pub(crate) const SAME_AS_COMPONENT: &str = "same_as_component";
+
+/// `occurrence.bom_type`'s `bom_type`: a type, or `None` for the component's (`same_as_component`
+/// or null); the handler's message for anything else, or for none given.
+pub(crate) fn occurrence_bom_type(v: Option<&Value>) -> std::result::Result<Option<BomType>, String> {
+    let words = || format!("{}, or {SAME_AS_COMPONENT}", BomType::ALL.map(BomType::as_str).join(", "));
+    match v {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(w)) if w == SAME_AS_COMPONENT => Ok(None),
+        Some(Value::String(w)) => BomType::parse(w).map(Some).ok_or_else(|| format!("`bom_type` is one of {}", words())),
+        _ => Err(format!("give `bom_type`: {}", words())),
+    }
+}
 
 fn occurrence_type(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "occurrence.bom_type";
@@ -186,21 +207,21 @@ fn occurrence_type(s: &mut Session, p: &Value) -> Result<Value> {
     if p.get("path").is_some() {
         super::component::occurrence_path(s, p, id, cmd)?;
     }
-    let words = || format!("{}, or {SAME_AS_COMPONENT}", BomType::ALL.map(BomType::as_str).join(", "));
-    let want = match p.get("bom_type") {
-        Some(Value::Null) => None,
-        Some(Value::String(w)) if w == SAME_AS_COMPONENT => None,
-        Some(Value::String(w)) => Some(BomType::parse(w).ok_or_else(|| bad(cmd, format!("`bom_type` is one of {}", words())))?),
-        _ => return Err(bad(cmd, format!("give `bom_type`: {}", words()))),
-    };
+    let want = occurrence_bom_type(p.get("bom_type")).map_err(|e| bad(cmd, e))?;
     let changed = s.doc.occurrences.iter().find(|o| o.id == id).ok_or_else(|| bad(cmd, "no occurrence"))?.bom_type != want;
     // Only a real change touches the design (an undo step, unsaved changes).
     if changed && let Some(o) = s.doc_mut().occurrences.iter_mut().find(|o| o.id == id) {
         o.bom_type = want;
     }
     let effective = s.doc.occurrences.iter().zip(s.doc.occurrence_bom_types()).find(|(o, _)| o.id == id).map(|(_, t)| t).unwrap_or_default();
-    Ok(json!({"occurrence": id, "bom_type": want.map_or(SAME_AS_COMPONENT, BomType::as_str), "effective": effective.as_str(),
-        "changed": changed}))
+    let reply = OccurrenceBomTypeResult {
+        occurrence: id,
+        bom_type: want.map_or(SAME_AS_COMPONENT, BomType::as_str).to_string(),
+        effective: effective.as_str().to_string(),
+        changed,
+        param_warnings: Vec::new(),
+    };
+    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 /// What `assembly.bom`'s parameters ask for: the design's bill of materials unless `component`
