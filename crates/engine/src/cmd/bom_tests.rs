@@ -766,9 +766,13 @@ fn rows_name_their_materials_and_with_mass_weigh_one_part() {
     // The frame as one row stands for its steel and aluminium parts: no one material.
     let top = run(&mut s, "assembly.bom", json!({"levels": "top", "mass": true}));
     assert_eq!(weights(&top)[1], weight("Frame", "", Some(799.33)), "{top}");
+    // The assembly as a whole: the frame, the second bracket and the spacer, weighed from the design.
+    let total = |r: &Value| r["total_mass_g"].as_f64().map(|g| (g * 1e6).round() / 1e6);
+    assert_eq!((total(&flat), total(&top)), (Some(814.95), Some(814.95)), "{top}");
     // Weighing measures every part, so it is asked for; materials come without it.
     let plain = run(&mut s, "assembly.bom", json!({}));
     assert_eq!((&plain["mass"], &plain["rows"][1]["material"]), (&json!(false), &json!("Aluminum; Steel")));
+    assert!(plain.get("total_mass_g").is_none(), "{plain}");
     assert!(plain["rows"].as_array().unwrap().iter().all(|r| r.get("mass_g").is_none()), "{plain}");
     // Parts folded into a numbered frame's row carry theirs too.
     run(&mut s, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
