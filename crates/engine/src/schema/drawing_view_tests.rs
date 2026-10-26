@@ -1,7 +1,7 @@
 use serde_json::json;
 use solidcraft_doc::drawing_view::ViewSettings;
 
-use super::SnapshotParams;
+use super::{EditParams, InspectParams, SnapshotParams, ViewSet};
 use crate::schema::input_schema_for;
 use crate::schema::tests::{assert_keys, assert_strict_keeps_todays_errors};
 
@@ -19,6 +19,29 @@ fn schemas_and_the_key_check_agree() {
         "view",
     ];
     assert_keys(input_schema_for::<SnapshotParams>(), &keys);
+    assert_keys(input_schema_for::<InspectParams>(), &["view"]);
+    assert_keys(input_schema_for::<EditParams>(), &["set", "view"]);
+}
+
+/// `drawing.view.edit` changes what a saved view sets itself, field for field, and its direction,
+/// place and link, so the edit and the record keep one list of a view's settings.
+#[test]
+fn the_edit_contract_lists_a_saved_views_settings() {
+    let all = solidcraft_doc::drawing_view::ViewOverrides {
+        scale: "1:2".parse().ok(),
+        display_style: Some(Default::default()),
+        reference_style: Some(Default::default()),
+        reference_hides_model: Some(false),
+        tangent_edges: Some(Default::default()),
+    };
+    let own = serde_json::to_value(all).unwrap_or_default();
+    let mut theirs: Vec<String> = own.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    theirs.extend(["linked", "place", "reference_margin_mm", "view"].map(String::from));
+    theirs.sort();
+    let schema = input_schema_for::<ViewSet>();
+    let mut ours: Vec<String> = schema.as_value()["properties"].as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
+    ours.sort();
+    assert_eq!(ours, theirs);
 }
 
 /// The contract takes the view's settings field for field, plus the sheet and the position, so

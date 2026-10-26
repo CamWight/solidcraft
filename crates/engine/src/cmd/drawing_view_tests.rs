@@ -1,6 +1,10 @@
+use std::sync::Arc;
+
 use serde_json::json;
+use solidcraft_geom::drawing_view::ProjectedSide;
 
 use super::*;
+use crate::schema::tests::conforms;
 
 const EPS: f64 = 1e-9;
 
@@ -31,6 +35,131 @@ fn point(v: &Value) -> Vec2 {
 fn boundary(v: &Value) -> (Vec2, Vec2) {
     let (min, max) = (point(&v["boundary_mm"]["min"]), point(&v["boundary_mm"]["max"]));
     (max - min, (min + max) * 0.5)
+}
+
+/// A drawing of the block: its front view at 1:2 drawing hidden lines too, the right view lined up
+/// with it, and the right view's top view placed apart. The session and the three views' ids.
+fn three_views() -> (Session, [u64; 3]) {
+    let mut s = block();
+    run(&mut s, "drawing.create", json!({}));
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let mut id_source = solidcraft_doc::ids::IdSource::seeded(4816);
+    let (sheet, source) = (d.sheets[0].id, d.sources[0].id);
+    let mut add = |d: &mut Drawing, kind: ViewKind, place: ViewPlace, settings: ViewOverrides| {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        d.views.push(Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 }));
+        id
+    };
+    let front_settings =
+        ViewOverrides { scale: Some("1:2".parse().unwrap()), display_style: Some(VisualStyle::VisibleHidden), ..ViewOverrides::default() };
+    let front = ViewKind::Base { source, view: ViewDirection::Named(NamedView::Front) };
+    let front = add(&mut d, front, ViewPlace::At([150.0, 150.0]), front_settings);
+    let right = add(&mut d, ViewKind::Projected { parent: front, side: ProjectedSide::Right }, ViewPlace::Aligned(300.0), ViewOverrides::default());
+    let top = add(&mut d, ViewKind::Projected { parent: right, side: ProjectedSide::Above }, ViewPlace::At([300.0, 250.0]), ViewOverrides::default());
+    d.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(d));
+    (s, [front, right, top])
+}
+
+fn inspect_view(s: &mut Session, view: u64) -> Value {
+    let reply = run(s, INSPECT, json!({"view": ids::encode(view)}));
+    let schema = output_schema_for::<InspectResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    reply
+}
+
+fn edit_view(s: &mut Session, view: u64, set: Value) -> Value {
+    let reply = run(s, EDIT, json!({"view": ids::encode(view), "set": set}));
+    let schema = output_schema_for::<EditResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    reply
+}
+
+fn edit_refused(s: &mut Session, view: u64, set: Value) -> String {
+    s.execute(EDIT, &json!({"view": ids::encode(view), "set": set})).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("accepted: {set}"))
+}
+
+/// Each setting says its value, where it comes from (the view, a parent by id, or the default) and
+/// what the view sets itself; a projected view says whether it follows its parent's display; the
+/// direction is named only when it is exactly a named view's.
+#[test]
+fn inspect_says_where_each_setting_comes_from() {
+    let (mut s, [front, right, top]) = three_views();
+    let front_id = ids::encode(front);
+    let base = inspect_view(&mut s, front);
+    assert_eq!(
+        (base["kind"].clone(), base["direction"]["named"].clone(), base["place"].clone()),
+        (json!("base"), json!("front"), json!({"at": [150.0, 150.0]}))
+    );
+    assert_eq!(base["settings"]["scale"], json!({"value": "1:2", "from": "this", "set": "1:2"}));
+    assert_eq!(base["settings"]["display_style"], json!({"value": "visible_hidden", "from": "this", "set": "visible_hidden"}));
+    assert_eq!(base["settings"]["reference_style"], json!({"value": "visible", "from": "default", "set": null}));
+    assert!(base.get("linked").is_none() && base.get("parent").is_none(), "a base view has no parent");
+    let projected = inspect_view(&mut s, right);
+    assert_eq!(
+        (projected["kind"].clone(), projected["parent"].clone(), projected["side"].clone()),
+        (json!("projected"), json!(front_id), json!("right"))
+    );
+    assert_eq!(
+        (projected["direction"]["named"].clone(), projected["place"].clone(), projected["linked"].clone()),
+        (json!("right"), json!({"aligned": 300.0}), json!(true))
+    );
+    assert_eq!(projected["settings"]["scale"], json!({"value": "1:2", "from": "parent", "parent": front_id, "set": null}));
+    assert_eq!(projected["source"], base["source"]);
+    let chained = inspect_view(&mut s, top);
+    assert_eq!(chained["settings"]["display_style"], json!({"value": "visible_hidden", "from": "parent", "parent": front_id, "set": null}));
+    assert!(chained["direction"].get("named").is_none(), "the right view's top view is no named view: {chained}");
+    assert_eq!(chained["choices"]["display_style"].as_array().unwrap().len(), 5);
+    assert_eq!(chained["choices"]["scale"][0], "50:1");
+    assert!(s.execute(INSPECT, &json!({"view": ids::encode(99)})).unwrap_err().to_string().contains("no view"));
+}
+
+/// An edit is one undo step that evaluates no model: it names what it changed and the views
+/// projected from it whose settings changed with it; `null` follows the parent again; linking and
+/// unlinking set or clear the display settings together; what isn't a view's to change is refused,
+/// and an edit that changes nothing is no step.
+#[test]
+fn an_edit_is_one_undo_step_and_names_its_followers() {
+    let (mut s, [front, right, top]) = three_views();
+    let evaluations = s.evaluations;
+    let steps = s.undo.len();
+    let edited = edit_view(&mut s, right, json!({"display_style": "visible"}));
+    assert_eq!((edited["changed"].clone(), edited["followers"].clone()), (json!(["display_style"]), json!([ids::encode(top)])));
+    assert_eq!(s.undo.len(), steps + 1);
+    assert_eq!(inspect_view(&mut s, right)["linked"], "partly");
+    assert_eq!(inspect_view(&mut s, top)["settings"]["display_style"]["parent"], json!(ids::encode(right)));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(inspect_view(&mut s, right)["settings"]["display_style"]["from"], "parent");
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(edit_view(&mut s, right, json!({"display_style": null}))["changed"], json!(["display_style"]));
+    assert_eq!(inspect_view(&mut s, right)["settings"]["display_style"]["from"], "parent", "null follows the parent again");
+    // Unlinked, the display settings are its own at the values they had; linked, they follow again.
+    edit_view(&mut s, right, json!({"linked": false}));
+    let unlinked = inspect_view(&mut s, right);
+    assert_eq!((unlinked["linked"].clone(), unlinked["settings"]["display_style"]["set"].clone()), (json!(false), json!("visible_hidden")));
+    edit_view(&mut s, right, json!({"linked": true}));
+    assert_eq!(inspect_view(&mut s, right)["linked"], true);
+    // A base view keeps a scale and has nothing to link to; a projected view's direction is its side's.
+    assert!(edit_refused(&mut s, front, json!({"scale": null})).contains("keeps a scale"));
+    assert!(edit_refused(&mut s, front, json!({"linked": true})).contains("no parent"));
+    assert!(edit_refused(&mut s, right, json!({"view": "top"})).contains("only a base view's direction"));
+    assert!(edit_refused(&mut s, front, json!({"place": {"aligned": 10.0}})).contains("a base view is placed at a point"));
+    assert!(edit_refused(&mut s, front, json!({"dpi": 300.0})).contains("dpi"), "a resolution is the sheet's");
+    assert!(edit_refused(&mut s, front, json!({"scale": "1:0"})).contains("scale"));
+    assert!(edit_refused(&mut s, 99, json!({})).contains("no view"));
+    // The front view turned to the top, and the right view placed apart.
+    let turned = edit_view(&mut s, front, json!({"view": "top", "scale": "1:5"}));
+    assert_eq!(turned["changed"], json!(["scale", "view"]));
+    assert_eq!(turned["followers"], json!([ids::encode(right), ids::encode(top)]));
+    assert_eq!(edit_view(&mut s, right, json!({"place": {"at": [320.0, 150.0]}}))["changed"], json!(["place"]));
+    assert_eq!(edit_view(&mut s, top, json!({"reference_margin_mm": 5.0}))["changed"], json!(["reference_margin_mm"]));
+    assert_eq!(inspect_view(&mut s, top)["reference_margin_mm"], 5.0);
+    assert!(edit_refused(&mut s, top, json!({"reference_margin_mm": -1.0})).contains("reference margin"));
+    // Nothing changed, no step.
+    let steps = s.undo.len();
+    assert_eq!(edit_view(&mut s, front, json!({"scale": "1:5"}))["changed"], json!([]));
+    assert_eq!(s.undo.len(), steps, "no change, no step");
+    assert_eq!(s.evaluations, evaluations, "no model is evaluated");
 }
 
 /// The block's boundary in each view at 1:2, worked by hand: front 50 x 10, top 50 x 25, right

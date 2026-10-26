@@ -2,7 +2,9 @@
 //!
 //! The view's own settings are `solidcraft_doc::drawing_view::ViewSettings`, which a saved view
 //! (W12) keeps too. The contract lists the same fields, each read by that type's own reader, and
-//! `the_contract_lists_the_view_settings` keeps the two lists the same.
+//! `the_contract_lists_the_view_settings` keeps the two lists the same. A saved view's own
+//! settings (`ViewOverrides`) are read and changed through `drawing.view.inspect` and
+//! `drawing.view.edit`, each setting with where its value comes from.
 
 use std::borrow::Cow;
 
@@ -175,6 +177,168 @@ impl JsonSchema for SheetParam {
             "additionalProperties": false
         })
     }
+}
+
+/// A saved view, by its id as `drawing.inspect` lists it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ViewIdParam(pub u64);
+
+impl<'de> Deserialize<'de> for ViewIdParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match Value::deserialize(d)? {
+            Value::String(s) => solidcraft_doc::ids::decode(&s).map(ViewIdParam).ok_or_else(|| serde::de::Error::custom("must be a view's id")),
+            _ => Err(serde::de::Error::custom("must be a view's id")),
+        }
+    }
+}
+
+impl JsonSchema for ViewIdParam {
+    fn schema_name() -> Cow<'static, str> {
+        "DrawingViewId".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"description": "A view's id: 13 characters of lowercase Crockford base32.", "type": "string", "pattern": "^[0-9a-hjkmnp-tv-z]{13}$"})
+    }
+}
+
+/// Where a saved view's centre sits on its sheet, in paper millimetres.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlaceParam {
+    /// At this point of the sheet, from its lower-left corner.
+    At([f64; 2]),
+    /// Lined up with its parent, this far along the free axis (a projected view only).
+    Aligned(f64),
+}
+
+/// What `drawing.view.inspect` takes.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct InspectParams {
+    pub view: ViewIdParam,
+}
+
+/// What `drawing.view.edit` takes: the view, and what to change.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct EditParams {
+    pub view: ViewIdParam,
+    pub set: ViewSet,
+}
+
+/// The settings `drawing.view.edit` changes, each only when given. For the five that can follow
+/// the view's parent, `null` means follow it (a base view's scale can't: it has no parent).
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct ViewSet {
+    #[serde(deserialize_with = "super::present")]
+    pub scale: Option<Option<ScaleParam>>,
+    #[serde(deserialize_with = "super::present")]
+    pub display_style: Option<Option<StyleParam>>,
+    #[serde(deserialize_with = "super::present")]
+    pub reference_style: Option<Option<StyleParam>>,
+    #[serde(deserialize_with = "super::present")]
+    pub reference_hides_model: Option<Option<bool>>,
+    #[serde(deserialize_with = "super::present")]
+    pub tangent_edges: Option<Option<TangentEdgesParam>>,
+    /// Model millimetres added on every side of the view's extents: 0 to 100000.
+    #[serde(deserialize_with = "super::present")]
+    #[schemars(with = "f64")]
+    pub reference_margin_mm: Option<f64>,
+    /// A base view's direction.
+    #[serde(deserialize_with = "super::present")]
+    #[schemars(with = "ViewParam")]
+    pub view: Option<ViewParam>,
+    #[serde(deserialize_with = "super::present")]
+    #[schemars(with = "PlaceParam")]
+    pub place: Option<PlaceParam>,
+    /// A projected view's display settings (styles, reference parts, tangent edges) all following
+    /// its parent (true), or all its own, at the values they have now (false).
+    #[serde(deserialize_with = "super::present")]
+    #[schemars(with = "bool")]
+    pub linked: Option<bool>,
+}
+
+/// Where a setting's value comes from.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FromResult {
+    This,
+    Parent,
+    Default,
+}
+
+/// One of a saved view's settings: its value, where it comes from (the parent's id when it is a
+/// parent), and what the view sets itself (null when it follows).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SettingResult<T> {
+    pub value: T,
+    pub from: FromResult,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    pub set: Option<T>,
+}
+
+/// A saved view's settings.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SettingsResult {
+    pub scale: SettingResult<String>,
+    pub display_style: SettingResult<String>,
+    pub reference_style: SettingResult<String>,
+    pub reference_hides_model: SettingResult<bool>,
+    pub tangent_edges: SettingResult<String>,
+}
+
+/// The values a window offers for a view's settings.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ChoicesResult {
+    pub display_style: Vec<String>,
+    /// ISO 5455's preset scales, largest first.
+    pub scale: Vec<String>,
+}
+
+/// What `drawing.view.inspect` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct InspectResult {
+    pub view: String,
+    pub sheet: String,
+    /// `base` or `projected`.
+    pub kind: &'static str,
+    /// The design it draws: its own source, or its base view's.
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
+    /// The side of its parent a projected view sits on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub side: Option<String>,
+    /// Which way it looks, as resolved through its parents.
+    pub direction: ViewResult,
+    pub place: PlaceParam,
+    pub settings: SettingsResult,
+    pub reference_margin_mm: f64,
+    /// A projected view's display settings: `true` when all follow its parent, `false` when none
+    /// does, `"partly"` otherwise. None for a base view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Value")]
+    pub linked: Option<Value>,
+    pub choices: ChoicesResult,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+/// What `drawing.view.edit` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EditResult {
+    pub view: String,
+    /// The fields the edit changed.
+    pub changed: Vec<String>,
+    /// The other views whose resolved settings changed with it: the views projected from it.
+    pub followers: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
 }
 
 /// A view's extents on its own plane, in model millimetres.

@@ -573,6 +573,8 @@
   "cmd.drawing_properties_remove": "Remove Drawing Property",
   "cmd.drawing_properties_set": "Change Drawing Properties",
   "cmd.drawing_set": "Drawing Settings",
+  "cmd.drawing_view_edit": "Edit Drawing View",
+  "cmd.drawing_view_inspect": "Inspect Drawing View",
   "cmd.drawing_view_snapshot": "Drawing View Snapshot",
   "cmd.edit_checkpoint": "Checkpoint",
   "cmd.edit_restore_checkpoint": "Restore Checkpoint",

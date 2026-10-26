@@ -573,6 +573,8 @@
   "cmd.drawing_properties_remove": "删除绘图属性",
   "cmd.drawing_properties_set": "更改绘图属性",
   "cmd.drawing_set": "绘图设置",
+  "cmd.drawing_view_edit": "编辑绘图视图",
+  "cmd.drawing_view_inspect": "检查绘图视图",
   "cmd.drawing_view_snapshot": "绘图视图快照",
   "cmd.edit_checkpoint": "检查点",
   "cmd.edit_restore_checkpoint": "恢复检查点",
