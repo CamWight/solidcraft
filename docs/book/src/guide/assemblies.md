@@ -343,6 +343,13 @@ description; **Change Part Size** renumbers them, keeping a field you changed yo
   subassemblies: a part placed once in a subassembly that is placed twice counts 2. A
   subassembly is listed through its parts, unless it has bodies of its own.
 - `levels: "top"` lists the direct children, a subassembly as one row.
+- `levels: "all"` lists the direct children as `top` does, and under each subassembly its own
+  rows, to any depth: items 1.1, 1.1.1, with `each` per row above and `count` in all.
+  Subassemblies with one part number share a row only when what they hold is the same all the
+  way down. As JSON the rows come one after another, each followed by the rows under it, as in
+  the CSV.
+- `show_purchased_contents: true`, with `levels: "all"`, lists what a purchased part holds under
+  its row too. The part is still one row, weighed whole.
 - `group_by: ["part_number"]` (the default) puts definitions with the same part number in one
   row; a definition without a part number gets a row of its own. `["definition"]` gives every
   definition its own row.
@@ -363,7 +370,7 @@ placed in. Without one it is `normal`.
 | Type | For | In the assembly it is placed in |
 |---|---|---|
 | `normal` | Something you make | A row of its own; every occurrence adds to its quantity |
-| `phantom` | Something just to group (a fastener set) | No row: what it holds counts as if it were placed there directly, in the same rows as the same parts placed there |
+| `phantom` | Something just to group (a fastener set) | No row: what it holds counts as if it were placed there directly, in the same rows as the same parts placed there. Its own bodies, if it has any, are a row of their own |
 | `reference` | Something to use as a reference (a fixture shown for context) | Counted nowhere, and nothing inside it is counted either |
 | `purchased` | Something you buy (a gearbox) | One row; nothing inside it is counted or listed |
 | `inseparable` | Something made as one piece: welded, glued, riveted and so on (a welded frame) | One row; in parts only, the purchased parts inside it are listed too, and the rest of what it holds is listed in its own bill of materials |
@@ -389,12 +396,13 @@ material only when everything it weighs shares it, so a frame of steel and alumi
 bought bearing of steel parts reads Steel; giving the component a physical material gives it to all its
 bodies. A free property such as a material grade stays in `properties`. `mass: true` adds `mass_g`: what one of the row's parts weighs in grams, with
 what is placed inside it except what the list shows as rows of their own beside it, so the rows of any
-list add up to the assembly. At the top level a row weighs all it holds. In parts only a part's contents
+list add up to the assembly. It adds `total_mass_g` beside the rows too: what the assembly weighs, measured
+from the design rather than added up from the rows. At the top level a row weighs all it holds. In parts only a part's contents
 are rows of their own, so it weighs its own bodies, except a folded part (its row is the kit), a purchased
 one (all it holds) and an inseparable one (all but its purchased parts). A reference placement adds
 nothing. Every part is measured for it, once per definition, so it takes longer. It is `null` when nothing
 in the part has a body, a body can't be measured, or the definitions sharing the row's part number weigh
-differently. `path` writes them to a `.csv` file
+differently (by more than the measurement can tell apart: one part modelled two ways weighs the same). `path` writes them to a `.csv` file
 (the columns item, part_number, description, revision, count and definition, every field
 quoted; children follow their row) or a `.json` file. The window lists the same rows, switches
 between the levels and groupings and shows children under their part, edits a picked row's part
