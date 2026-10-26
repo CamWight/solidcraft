@@ -1045,11 +1045,27 @@ fn list(s: &Session, request: Request) -> Bom {
     bom::list(&mut Tree::new(&s.doc, &state), &request).unwrap()
 }
 
+/// Three levels (A holds B, B holds C and a purchased gearbox with a gear inside): all levels
+/// lists rows two and three deep, and the gearbox's gear when purchased contents are shown.
+fn three_levels() -> Session {
+    let mut s = Session::default();
+    subassembly(&mut s, "A", "A-1", "");
+    subassembly(&mut s, "B", "B-1", "A");
+    part(&mut s, "C", "C-1", "B");
+    place(&mut s, "C", "B", 1);
+    subassembly(&mut s, "Gearbox", "GB-1", "B");
+    part(&mut s, "Gear", "G-1", "Gearbox");
+    set_type(&mut s, "Gearbox", "purchased");
+    place(&mut s, "B", "A", 1);
+    s
+}
+
 /// `assembly.bom`'s JSON presents the typed rows: every field of every row and child, for every
-/// option.
+/// option, at every depth all levels lists (its rows one after another).
 #[test]
 fn assembly_bom_presents_the_typed_rows() {
     let base = Request::default();
+    let all = Request { view: View::AllLevels, ..base };
     let options = [
         (json!({}), base),
         (json!({"levels": "top"}), Request { view: View::FirstLevel, ..base }),
@@ -1059,14 +1075,27 @@ fn assembly_bom_presents_the_typed_rows() {
         (json!({"mass": true}), Request { mass: true, ..base }),
         (json!({"levels": "top", "mass": true}), Request { view: View::FirstLevel, mass: true, ..base }),
         (json!({"group_children": true, "mass": true}), Request { fold: true, mass: true, ..base }),
+        (json!({"levels": "all"}), all),
+        (json!({"levels": "all", "mass": true}), Request { mass: true, ..all }),
+        (json!({"levels": "all", "show_purchased_contents": true}), Request { purchased_contents: true, ..all }),
+        (json!({"levels": "all", "show_purchased_contents": true, "mass": true}), Request { purchased_contents: true, mass: true, ..all }),
+        (json!({"levels": "all", "group_by": ["definition"]}), Request { group: Group::Definition, ..all }),
     ];
     let mut numbered_frame = frame();
     run(&mut numbered_frame, "component.metadata.set", json!({"component": "Frame", "part_number": "FR-1"}));
-    for (name, mut s) in [("assembly", assembly()), ("bolts", bolts()), ("machine", machine()), ("frame", numbered_frame)] {
+    let mut deepest = 0;
+    for (name, mut s) in
+        [("assembly", assembly()), ("bolts", bolts()), ("machine", machine()), ("frame", numbered_frame), ("three levels", three_levels())]
+    {
         for (params, request) in &options {
             let shown = run(&mut s, "assembly.bom", params.clone());
             let listed = list(&s, *request);
             assert_eq!(shown["total_occurrences"], listed.total.occurrences, "{name} {params}");
+            match listed.total.mass {
+                Mass::NotAsked => assert!(shown.get("total_mass_g").is_none(), "{name} {params}"),
+                Mass::Grams(grams) => assert_eq!(shown["total_mass_g"], json!(grams), "{name} {params}"),
+                Mass::Unknown(_) => assert!(shown["total_mass_g"].is_null(), "{name} {params}"),
+            }
             let lines: Vec<&Value> = shown["rows"]
                 .as_array()
                 .unwrap()
@@ -1076,6 +1105,7 @@ fn assembly_bom_presents_the_typed_rows() {
             let deep = listed.rows_deep();
             assert_eq!(lines.len(), deep.len(), "{name} {params}");
             for (line, (item, row)) in lines.into_iter().zip(deep) {
+                deepest = deepest.max(item.len());
                 let top = item.len() == 1;
                 assert_eq!(line["item"], if top { json!(row.item) } else { json!(bom::item_text(&item)) }, "{name} {params}");
                 let fields = [
@@ -1110,6 +1140,7 @@ fn assembly_bom_presents_the_typed_rows() {
             }
         }
     }
+    assert!(deepest >= 4, "rows as deep as 1.1.1.1 compared: {deepest}");
 }
 
 /// A row's mass is known, or says why not; it is weighed only when asked.
