@@ -46,6 +46,7 @@ mod types;
 mod tests;
 
 // The contracts, by command file.
+pub mod bom;
 pub mod features;
 pub mod inspect;
 
