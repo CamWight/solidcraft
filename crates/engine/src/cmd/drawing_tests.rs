@@ -1,5 +1,6 @@
 use super::*;
 use crate::cmd::{Part, command_specs, find_command};
+use crate::tests::Folder;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"))
@@ -7,26 +8,6 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
 
 fn refused(s: &mut Session, id: &str, p: Value) -> String {
     s.execute(id, &p).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("{id} accepted {p}"))
-}
-
-/// A folder of the test's own, removed when dropped.
-struct Folder(std::path::PathBuf);
-
-impl Folder {
-    fn new(name: &str) -> Folder {
-        let dir = solidcraft_io::vfs::temp_dir().join(format!("solidcraft-{name}-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        Folder(dir)
-    }
-    fn path(&self, file: &str) -> String {
-        self.0.join(file).to_str().unwrap().to_string()
-    }
-}
-
-impl Drop for Folder {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
 }
 
 /// A design with a box.

@@ -43,7 +43,7 @@ mod record;
 mod types;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 // The contracts, by command file.
 pub mod drawing_view;

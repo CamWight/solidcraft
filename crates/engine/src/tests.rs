@@ -4,6 +4,26 @@ use serde_json::{Value, json};
 
 use crate::*;
 
+/// A folder of the test's own, removed when dropped.
+pub(crate) struct Folder(pub std::path::PathBuf);
+
+impl Folder {
+    pub(crate) fn new(name: &str) -> Folder {
+        let dir = solidcraft_io::vfs::temp_dir().join(format!("solidcraft-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Folder(dir)
+    }
+    pub(crate) fn path(&self, file: &str) -> String {
+        self.0.join(file).to_str().unwrap().to_string()
+    }
+}
+
+impl Drop for Folder {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 mod mesh_convert;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
