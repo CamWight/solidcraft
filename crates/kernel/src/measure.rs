@@ -71,13 +71,6 @@ pub struct MassMeasure {
     pub bbox: Aabb3,
 }
 
-/// How closely [`measure`] gives one solid's volume however it was modelled, relative to it: the
-/// same solid made another way is tessellated differently, and its volume moves by up to about
-/// this much. A pin made as a cylinder and as a revolved rectangle measured 1.05e-5 apart
-/// (2026-10-26; cylinders along other axes or far from the origin, 2e-14): ten times that. Two
-/// volumes closer than this are one.
-pub const MEASURE_ACCURACY: f64 = 1e-4;
-
 /// Measure a body from a fine tessellation (chord tolerance 5e-5 of the body size, finer for
 /// small radii down to 5e-6). Faces whose fine tessellation disagrees with a coarse one (a
 /// meshing failure) use the coarse result.

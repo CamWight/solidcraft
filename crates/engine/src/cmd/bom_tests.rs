@@ -1130,7 +1130,7 @@ fn equal_parts_modelled_apart_have_one_mass() {
     };
     let (cylinder, revolved) = (pin(&mut s, "Pin A", false, 7.0), pin(&mut s, "Pin B", true, 7.0));
     let apart = (cylinder - revolved).abs() / cylinder;
-    assert!(apart > 0.0 && apart <= solidcraft_kernel::MEASURE_ACCURACY, "measured {apart} apart");
+    assert!(apart > 0.0 && apart <= bom::MEASURE_ACCURACY, "measured {apart} apart");
     let r = run(&mut s, "assembly.bom", json!({"mass": true}));
     assert_eq!(r["rows"].as_array().map(Vec::len), Some(1), "{r}");
     assert!(r["rows"][0]["mass_g"].as_f64().is_some(), "one mass for both: {r}");
