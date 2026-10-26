@@ -40,7 +40,7 @@ fn plate() -> Drawing {
         excluded: Excluded { count: false, print: true },
     }));
     Arc::make_mut(&mut d.sheets[0]).documents = Some(SheetComponent { source: plate_id, component: 7 });
-    d.properties.set("author", json!("Jane Doe")).unwrap();
+    Arc::make_mut(&mut d.properties).set("author", json!("Jane Doe")).unwrap();
     d.units = Units::Fixed { unit: "in".into() };
     let (assembly, bolt_sheet) = (d.sheets[0].id, d.sheets[1].id);
     let mut add = |d: &mut Drawing, sheet, kind, place, settings, reference_margin_mm| {
@@ -305,7 +305,15 @@ fn damaged_files_are_refused_and_never_patched() {
     assert_eq!(without_plate, format!("damaged drawing: sheet {assembly_id}: it documents source {plate_id}, which the drawing doesn't have"));
     // The paper, its border and its resolution, through the sheet's own rules.
     let custom = |sides: Value| refused(&d, |v| v["sheets"][0]["sheet"]["size"] = json!({"custom": {"sides_mm": sides}}));
-    assert_eq!(custom(json!([5000.0, 0.5])), "read");
+    assert_eq!(custom(json!([5000.0, 100.0])), "read");
+    // A side the border's margins fill leaves no drawing space; without a border it is paper.
+    let no_space = format!("damaged drawing: sheet {assembly_id}: drawing sheet: the margins leave no drawing space");
+    assert_eq!(custom(json!([5000.0, 0.5])), no_space);
+    let bare = refused(&d, |v| {
+        v["sheets"][0]["sheet"]["size"] = json!({"custom": {"sides_mm": [5000.0, 0.5]}});
+        v["sheets"][0]["border"] = Value::Null;
+    });
+    assert_eq!(bare, "read");
     for sides in [json!([5000.1, 100.0]), json!([0.0, 100.0]), json!([-1.0, 100.0])] {
         let expected = format!("damaged drawing: sheet {assembly_id}: drawing sheet: a custom side is finite, above 0 and at most 5000 mm");
         assert_eq!(custom(sides), expected);

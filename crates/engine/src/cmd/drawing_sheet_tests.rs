@@ -44,6 +44,34 @@ fn a_new_sheet_takes_the_paper_of_the_sheet_it_follows() {
     assert_eq!(s.undo.len(), steps + 3);
     run(&mut s, "edit.undo", json!({}));
     assert_eq!(names(&s), ["Sheet 1", "Sheet 2"]);
+    // After a sheet by id; an unknown one is refused.
+    let first = ids::encode(sheets(&s)[0].id);
+    run(&mut s, "drawing.sheet.add", json!({"after": first, "name": "Second"}));
+    assert_eq!(names(&s), ["Sheet 1", "Second", "Sheet 2"]);
+    assert!(refused(&mut s, "drawing.sheet.add", json!({"after": "Nowhere"})).contains("no sheet `Nowhere`"));
+    // A new sheet documents nothing and leaves nothing out unless told, whatever the one it follows does.
+    let source = ids::encode(s.drawing("test").unwrap().sources[0].id);
+    run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 2", "documents": {"source": source}, "excluded": {"count": true}}));
+    run(&mut s, "drawing.sheet.add", json!({"after": "Sheet 2"}));
+    let added = sheets(&s).last().cloned().unwrap();
+    assert_eq!((added.documents, added.excluded.count, added.excluded.print), (None, false, false));
+    let told = json!({"documents": {"source": source, "component": 0}, "excluded": {"print": true}});
+    let id = run(&mut s, "drawing.sheet.add", told)["sheet"].clone();
+    let added = sheets(&s).into_iter().find(|sheet| json!(ids::encode(sheet.id)) == id).unwrap();
+    assert!(added.documents.is_some() && added.excluded.print && !added.excluded.count);
+}
+
+/// 1000 sheets at most: the 1000th is added, the 1001st refused with nothing changed.
+#[test]
+fn a_drawing_has_at_most_1000_sheets() {
+    let mut s = drawing_session();
+    for _ in 1..solidcraft_doc::drawing::MAX_SHEETS {
+        run(&mut s, "drawing.sheet.add", json!({}));
+    }
+    assert_eq!(sheets(&s).len(), 1000);
+    let before = s.drawing("test").unwrap().clone();
+    assert!(refused(&mut s, "drawing.sheet.add", json!({})).contains("1 to 1000 sheets"));
+    assert!(Arc::ptr_eq(s.drawing("test").unwrap(), &before));
 }
 
 /// A sheet's settings change one at a time, the rest kept; what the sheet's rules refuse is
@@ -69,7 +97,11 @@ fn a_sheets_settings_change_and_keep_its_rules() {
     for (p, says) in [
         (json!({"sheet": "Assembly", "dpi": 24}), "dpi"),
         (json!({"sheet": "Assembly", "size": {"standard": "b7"}}), "`size`"),
-        (json!({"sheet": "Assembly", "size": {"custom": {"sides_mm": [0, 100]}}}), "sheet"),
+        (json!({"sheet": "Assembly", "size": {"custom": {"sides_mm": [0, 100]}}}), "a custom side is finite, above 0 and at most 5000 mm"),
+        (json!({"sheet": "Assembly", "size": {"custom": {"sides_mm": [15, 15]}}}), "the margins leave no drawing space"),
+        (json!({"sheet": "Assembly", "dpi": 2400.001}), "dpi"),
+        (json!({"sheet": "Assembly", "excluded": true}), "`excluded` is {count?"),
+        (json!({"sheet": "Assembly", "excluded": {"cuont": true}}), "`excluded` is {count?"),
         (json!({"sheet": "Assembly", "orientation": "upright"}), "landscape or portrait"),
         (json!({"sheet": "Assembly", "name": ""}), "name"),
         (json!({"sheet": "Assembly", "documents": {"source": "0000000000001"}}), "documents source"),
@@ -81,6 +113,19 @@ fn a_sheets_settings_change_and_keep_its_rules() {
         assert!(e.contains(says), "{p}: {e}");
         assert!(Arc::ptr_eq(s.drawing("test").unwrap(), &before), "{p}");
     }
+    // The resolution's bounds are in; the same settings again are no step; a name two sheets
+    // share is allowed, and then the sheet is named by id.
+    let steps = s.undo.len();
+    for dpi in [25.0, 2400.0] {
+        run(&mut s, "drawing.sheet.set", json!({"sheet": "Assembly", "dpi": dpi}));
+        assert_eq!(sheets(&s)[0].dpi, dpi);
+    }
+    run(&mut s, "drawing.sheet.set", json!({"sheet": "Assembly", "dpi": 2400}));
+    assert_eq!(s.undo.len(), steps + 2, "no change, no step");
+    run(&mut s, "drawing.sheet.add", json!({}));
+    let second = ids::encode(sheets(&s)[1].id);
+    run(&mut s, "drawing.sheet.set", json!({"sheet": second, "name": "Assembly"}));
+    assert!(refused(&mut s, "drawing.sheet.set", json!({"sheet": "Assembly", "dpi": 300})).contains("give its id"));
 }
 
 /// Sheets reorder by every id once, a name shared by two is refused in favour of the id, and the
@@ -92,12 +137,19 @@ fn sheets_reorder_and_delete_but_one_always_stays() {
     run(&mut s, "drawing.sheet.add", json!({"name": "Sheet 1"}));
     let ids: Vec<String> = sheets(&s).iter().map(|sheet| ids::encode(sheet.id)).collect();
     assert!(refused(&mut s, "drawing.sheet.delete", json!({"sheet": "Sheet 1"})).contains("give its id"));
+    let steps = s.undo.len();
+    run(&mut s, "drawing.sheet.reorder", json!({"sheets": [ids[0], ids[1], ids[2]]}));
+    assert_eq!(s.undo.len(), steps, "the same order is no step");
     run(&mut s, "drawing.sheet.reorder", json!({"sheets": [ids[2], ids[0], ids[1]]}));
     assert_eq!(sheets(&s).iter().map(|sheet| ids::encode(sheet.id)).collect::<Vec<_>>(), [ids[2].clone(), ids[0].clone(), ids[1].clone()]);
     for order in [json!([ids[0], ids[1]]), json!([ids[0], ids[0], ids[1]]), json!([ids[0], ids[1], ids[2], "0000000000001"]), json!("all")] {
         let e = refused(&mut s, "drawing.sheet.reorder", json!({"sheets": order}));
         assert!(e.contains("every sheet's id once"), "{order}: {e}");
     }
+    run(&mut s, "drawing.sheet.delete", json!({"sheet": ids[0]}));
+    // An undone delete puts the sheet back where it was.
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(sheets(&s).iter().map(|sheet| ids::encode(sheet.id)).collect::<Vec<_>>(), [ids[2].clone(), ids[0].clone(), ids[1].clone()]);
     run(&mut s, "drawing.sheet.delete", json!({"sheet": ids[0]}));
     run(&mut s, "drawing.sheet.delete", json!({"sheet": ids[1]}));
     assert!(refused(&mut s, "drawing.sheet.delete", json!({"sheet": ids[2]})).contains("at least one sheet"));

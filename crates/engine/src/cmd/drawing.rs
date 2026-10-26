@@ -205,7 +205,7 @@ fn properties(s: &mut Session, _p: &Value) -> Result<Value> {
 /// The open drawing with the properties `next`, kept when they changed: one undo step.
 fn keep_properties(s: &mut Session, cmd: &str, next: solidcraft_doc::Metadata) -> Result<Value> {
     s.edit_drawing(cmd, |d| {
-        d.properties = next;
+        d.properties = Arc::new(next);
         Ok(())
     })?;
     Ok(json!(s.drawing(cmd)?.properties))

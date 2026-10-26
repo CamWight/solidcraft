@@ -86,9 +86,10 @@ pub struct Drawing {
     pub name: String,
     /// The designs the drawing draws: for now at most one, the design it is in.
     pub sources: Vec<Source>,
-    /// The drawing's properties and other tools' data, kept as they are.
-    #[serde(default, skip_serializing_if = "Metadata::is_empty")]
-    pub properties: Metadata,
+    /// The drawing's properties and other tools' data, kept as they are, behind an `Arc` as the
+    /// sheets are, so an undo step shares them while they don't change.
+    #[serde(default, skip_serializing_if = "no_properties")]
+    pub properties: Arc<Metadata>,
     #[serde(default)]
     pub units: Units,
     /// First or third angle: what every projected view shows, and the title block's symbol.
@@ -191,7 +192,7 @@ impl Drawing {
             id,
             name: name.into(),
             sources: Vec::new(),
-            properties: Metadata::default(),
+            properties: Arc::default(),
             units: Units::default(),
             projection: Projection::default(),
             language: language.into(),
@@ -239,6 +240,19 @@ impl Drawing {
         id_source.next(&self.ids().collect())
     }
 
+    /// The position of the sheet `named` names: by id, else by a name only one sheet has.
+    pub fn sheet_index(&self, named: &str) -> Result<usize> {
+        if let Some(i) = ids::decode(named).and_then(|id| self.sheets.iter().position(|s| s.id == id)) {
+            return Ok(i);
+        }
+        let mut called = self.sheets.iter().enumerate().filter(|(_, s)| s.name == named).map(|(i, _)| i);
+        match (called.next(), called.next()) {
+            (Some(i), None) => Ok(i),
+            (Some(_), Some(_)) => Err(DocError::Invalid(format!("more than one sheet is called `{named}`: give its id"))),
+            (None, _) => Err(DocError::Invalid(format!("no sheet `{named}`"))),
+        }
+    }
+
     /// Every object's id, of every kind: what a new id must differ from. Each later kind adds its
     /// own here.
     fn ids(&self) -> impl Iterator<Item = u64> {
@@ -277,8 +291,10 @@ impl Drawing {
     fn check_sheet(&self, sheet: &Sheet) -> Result<()> {
         check_name(&sheet.name, "its")?;
         sheet.sheet.size_mm().map_err(from_sheet)?;
+        // The border must lay out on the sheet: the one rule, as drawing it uses it. A few small
+        // lists per sheet, so every edit's check stays cheap.
         if let Some(border) = &sheet.border {
-            border.validate().map_err(from_sheet)?;
+            border.layout(&sheet.sheet).map_err(from_sheet)?;
         }
         require((MIN_DPI..=MAX_DPI).contains(&sheet.dpi), || format!("its pictures are {MIN_DPI} to {MAX_DPI} dpi"))?;
         match sheet.documents {
@@ -316,6 +332,11 @@ pub fn check_in_design(drawings: &[Arc<Drawing>]) -> Result<()> {
 /// A design of `count` drawings keeps the cap: what a reader checks before it reads any of them.
 pub fn check_count(count: usize) -> Result<()> {
     require(count <= MAX_DRAWINGS, || format!("a design holds at most {MAX_DRAWINGS} drawings"))
+}
+
+/// Whether the drawing has no properties, so its file leaves them out.
+fn no_properties(properties: &Arc<Metadata>) -> bool {
+    properties.is_empty()
 }
 
 /// `Ok` when `ok`, else the rule `broken` names.

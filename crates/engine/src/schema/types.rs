@@ -778,6 +778,12 @@ pub struct FeatureCommon {
 /// issue's path (serde's flatten otherwise loses the key). serde reads a flattened field after
 /// all the parent's own, so its problems come after theirs, including a missing key.
 pub fn feature_common<'de, D: Deserializer<'de>>(d: D) -> Result<FeatureCommon, D::Error> {
+    flattened(d)
+}
+
+/// Deserializes any flattened part of a contract as [`feature_common`] does `FeatureCommon`:
+/// its problems name their keys as the parent's own would.
+pub fn flattened<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<T, D::Error> {
     let v = Value::deserialize(d)?;
     serde_path_to_error::deserialize(&v).map_err(|e| D::Error::custom(super::check::located(&e)))
 }
