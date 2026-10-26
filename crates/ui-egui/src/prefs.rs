@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 pub use solidcraft_engine::doc::display_units::{format_length, length_number, length_precision, unit_scale};
 use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::cell::Projection;
 
 /// The key the apps keep the preferences under in eframe's storage.
 pub const STORAGE_KEY: &str = "solidcraft.prefs";
@@ -425,6 +426,9 @@ macro_rules! preference_settings {
 preference_settings! {
     /// Units of new designs.
     default_units: String = "mm".into(), PAGE_DESIGN;
+    /// First or third angle for new drawings (third when not set, or set to one this version
+    /// doesn't know).
+    default_projection: Projection = Projection::Third, PAGE_DESIGN;
     /// Mouse mapping: `fusion`, `solidworks` or `inventor`.
     nav: String = "fusion".into(), PAGE_NAVIGATION;
     /// Opt in to rotation through both poles with roll, without the Shift axis-snap spring.
@@ -936,6 +940,16 @@ pub fn apply(app: &mut SolveApp, ctx: &egui::Context) {
 /// blank design left when the last tab closes. A design that already has features is unchanged.
 pub fn apply_new_design(app: &mut SolveApp) {
     apply_new_design_units(app, &app.preferences.default_units.clone());
+}
+
+/// A new drawing takes the preferred projection, as a new design takes the preferred units: not
+/// an undo step. Caller: `drawing.create` run from the app.
+pub fn apply_new_drawing(app: &mut SolveApp) {
+    let projection = app.preferences.default_projection;
+    let differs = app.session.drawing("drawing.create").is_ok_and(|d| d.projection != projection);
+    if differs && app.session.execute("drawing.set", &json!({ "projection": projection })).is_ok() {
+        app.session.undo.pop();
+    }
 }
 
 /// Explicit units for a new-design tile; the user's default preference stays unchanged.
@@ -1569,6 +1583,7 @@ mod tests {
         use super::*;
         let fields = [
             ("default_units", json!("ft"), PAGE_DESIGN),
+            ("default_projection", json!("first"), PAGE_DESIGN),
             ("length_decimals", json!(5), PAGE_DESIGN),
             ("angle_decimals", json!(4), PAGE_DESIGN),
             ("theme", json!("light"), PAGE_INTERFACE),
@@ -2166,6 +2181,28 @@ mod tests {
         other.load_prefs(&app.prefs());
         assert_eq!(other.preferences, app.preferences);
         assert_eq!(format_length(25.4, "in", 3), "1.000 in");
+    }
+
+    /// Projection of new drawings: third angle unless chosen, refused when it is neither when set,
+    /// read as third when saved so; a new drawing takes it without an undo step of its own.
+    #[test]
+    fn new_drawings_take_the_preferred_projection() {
+        use solidcraft_engine::geom::cell::Projection;
+        let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+        assert_eq!(app.preferences.default_projection, Projection::Third);
+        assert!(set(&mut app, &json!({"default_projection": "second"})).is_err());
+        let saved = json!({"default_projection": "fourth", "default_units": "in"});
+        assert_eq!((lenient(&saved).default_projection, lenient(&saved).default_units.as_str()), (Projection::Third, "in"));
+        let drawn = |projection: &str| {
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            set(&mut app, &json!({"default_projection": projection})).unwrap();
+            app.run("solid.box", json!({"length": 40, "width": 30, "height": 10})).unwrap();
+            app.run("drawing.create", json!({})).unwrap();
+            (app.session.drawing("test").ok().map(|d| d.projection), app.session.undo.len())
+        };
+        let (first, third) = (drawn("first"), drawn("third"));
+        assert_eq!((first.0, third.0), (Some(Projection::First), Some(Projection::Third)));
+        assert_eq!(first.1, third.1, "the projection is no undo step of its own");
     }
 
     /// The dialog: changes apply at once, Cancel puts back what was there when it opened, Apply

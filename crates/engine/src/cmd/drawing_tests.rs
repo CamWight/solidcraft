@@ -147,6 +147,29 @@ fn drawing_edits_are_undo_steps_of_the_drawing_that_evaluate_nothing() {
     assert_eq!((s.evaluations, &s.doc.features), (evaluations, &features), "no model evaluated or changed");
 }
 
+/// A drawing's projection is first or third angle, third when nothing chooses: shown by
+/// `drawing.inspect`, changed by `drawing.set` as one undo step, saved with the design, and
+/// anything else refused.
+#[test]
+fn a_drawings_projection_is_first_or_third_angle() {
+    let folder = Folder::new("drawing-projection");
+    let mut s = design();
+    let made = run(&mut s, "drawing.create", json!({}));
+    assert_eq!(made["projection"], "third");
+    let steps = s.undo.len();
+    assert_eq!(run(&mut s, "drawing.set", json!({"projection": "first"}))["projection"], "first");
+    assert_eq!(s.undo.len(), steps + 1);
+    run(&mut s, "file.save", json!({"path": folder.path("plate.solidcraft")}));
+    let mut opened = Session::default();
+    run(&mut opened, "doc.open", json!({"path": folder.path("plate.solidcraft")}));
+    assert_eq!(opened.doc.drawings[0].projection, Projection::First);
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(run(&mut s, "drawing.inspect", json!({}))["projection"], "third");
+    for bad in [json!("second"), json!("First"), json!(1), json!(null)] {
+        assert!(refused(&mut s, "drawing.set", json!({"projection": bad})).contains("first or third"), "{bad}");
+    }
+}
+
 /// Undo and redo go through the open part's steps only. With a drawing open, its own steps; the
 /// model's stay where they are. With none open, the model's steps, which put the design back as
 /// it was but keep each drawing it had as it is now.

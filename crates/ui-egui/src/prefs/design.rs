@@ -30,6 +30,19 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
             });
         });
     });
+    ui_kit::settings_section(ui, "drawings", app.tr("prefs.drawings"), |ui| {
+        ui_kit::settings_form(ui, t.space_24 * 7.0 + t.space_2, |ui| {
+            ui_kit::row(ui, app.tr("ui.projection_of_new_drawings"), |ui| {
+                let projections = [Projection::First, Projection::Third];
+                let labels = [app.tr("ui.first_angle"), app.tr("ui.third_angle")];
+                let mut selected = projections.iter().position(|p| *p == app.preferences.default_projection).unwrap_or(1);
+                ui_kit::segmented(ui, &mut selected, &labels, ui_kit::Segments { intrinsic: true, ..Default::default() });
+                if let Some(projection) = projections.get(selected) {
+                    app.preferences.default_projection = *projection;
+                }
+            });
+        });
+    });
     ui_kit::settings_section(ui, "orientation", app.tr("prefs.orientation"), |ui| {
         ui.horizontal_wrapped(|ui| {
             for (id, label, y_up) in [("z", "Z up", false), ("y", "Y up", true)] {

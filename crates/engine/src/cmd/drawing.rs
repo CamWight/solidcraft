@@ -11,6 +11,7 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use solidcraft_doc::drawing::{self, Drawing, Source, Units};
 use solidcraft_doc::ids::{self, IdSource};
+use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Orientation, PaperSize, Sheet};
 
 use super::CommandSpec;
@@ -43,13 +44,13 @@ pub static COMMANDS: &[CommandSpec] = &[
         "drawing: id → deleted: its id; closed when it was open (one undo step of the model)",
     ),
     CommandSpec::new("drawing.inspect", "Inspect Drawing", inspect).in_drawing().icon("inspect").noundo().doc_only().params(
-        "→ {id, name, units, language, properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, dpi, documents, excluded}]}. Read-only.",
+        "→ {id, name, units, projection, language, properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, dpi, documents, excluded}]}. Read-only.",
     ),
     CommandSpec::new("drawing.set", "Drawing Settings", set)
         .in_drawing()
         .icon("settings")
         .doc_only()
-        .params("name?, language?: a BCP 47 tag, units?: \"follow_model\" or one length unit such as \"mm\". One undo step."),
+        .params("name?, language?: a BCP 47 tag, units?: \"follow_model\" or one length unit such as \"mm\", projection?: first or third (angle), which every projected view follows. One undo step."),
     CommandSpec::new("drawing.properties", "Drawing Properties", properties).in_drawing().icon("settings").noundo().doc_only().params(
         "→ metadata: the drawing's properties as saved (other tools' keys too); properties: project, part_number, revision, author, organization, description and license, each its text or null. The design properties' rules (document.metadata).",
     ),
@@ -70,6 +71,14 @@ fn units(cmd: &str, p: &Value) -> Result<Option<Units>> {
         Some(Value::String(u)) if u == "follow_model" => Ok(Some(Units::FollowModel)),
         Some(Value::String(u)) => Ok(Some(Units::Fixed { unit: u.clone() })),
         Some(_) => Err(bad(cmd, "`units` is \"follow_model\" or a length unit such as \"mm\"")),
+    }
+}
+
+/// `projection` as given: first or third angle.
+fn projection(cmd: &str, p: &Value) -> Result<Option<Projection>> {
+    match p.get("projection") {
+        None => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad(cmd, "`projection` is first or third (angle)")),
     }
 }
 
@@ -162,6 +171,7 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         "id": ids::encode(d.id),
         "name": d.name,
         "units": d.units,
+        "projection": d.projection,
         "language": d.language,
         "properties": d.properties,
         "sources": d.sources.iter().map(|source| json!({"id": ids::encode(source.id)})).collect::<Vec<_>>(),
@@ -180,6 +190,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(units) = units(cmd, p)? {
             d.units = units;
+        }
+        if let Some(projection) = projection(cmd, p)? {
+            d.projection = projection;
         }
         Ok(())
     })?;
