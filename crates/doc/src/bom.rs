@@ -755,12 +755,16 @@ fn agree(weighed: &[Weighed]) -> Mass {
         return Mass::Unknown(Unknown::NothingToWeigh);
     }
     match known.first() {
-        Some(&(first, _)) if known.iter().any(|&(grams, bodies)| bodies == 0 || (grams - first).abs() > 1e-9 * first.abs()) => {
-            Mass::Unknown(Unknown::Differs)
-        }
+        Some(&(first, _)) if known.iter().any(|&(grams, bodies)| bodies == 0 || !same_mass(grams, first)) => Mass::Unknown(Unknown::Differs),
         Some(&(first, _)) => Mass::Grams(first),
         None => Mass::Unknown(Unknown::NothingToWeigh),
     }
+}
+
+/// Two masses of one part, measured from definitions modelled apart: one when they are within the
+/// kernel's measurement accuracy of each other.
+fn same_mass(a: f64, b: f64) -> bool {
+    (a - b).abs() <= solidcraft_kernel::MEASURE_ACCURACY * a.abs().max(b.abs())
 }
 
 /// `more` added to `total`; unknown when either is. The body count only says whether there is

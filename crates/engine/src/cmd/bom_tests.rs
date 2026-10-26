@@ -868,6 +868,38 @@ fn a_phantoms_own_bodies_are_a_row_of_their_own() {
     }
 }
 
+/// One pin modelled two ways, as a cylinder and as a revolved rectangle: tessellated differently,
+/// measured a little apart, still one part with one mass. A pin 0.1% wider is another part.
+#[test]
+fn equal_parts_modelled_apart_have_one_mass() {
+    let mut s = Session::default();
+    let pin = |s: &mut Session, name: &str, revolved: bool, diameter: f64| {
+        run(s, "component.create", json!({"name": name}));
+        if revolved {
+            let profile = format!("{name} profile");
+            run(s, "sketch.create", json!({"plane": "XZ", "name": profile}));
+            run(s, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [diameter / 2.0, 31]}));
+            run(s, "sketch.finish", json!({}));
+            run(s, "solid.revolve", json!({"sketch": profile, "axis": {"origin": [0, 0, 0], "dir": [0, 0, 1]}, "body_name": name}));
+        } else {
+            run(s, "solid.cylinder", json!({"diameter": diameter, "height": 31, "body_name": name}));
+        }
+        run(s, "component.activate", json!({"component": 0}));
+        run(s, "component.metadata.set", json!({"component": name, "part_number": "PIN"}));
+        run(s, "component.properties", json!({"component": name}))["total"]["mass_g"].as_f64().unwrap()
+    };
+    let (cylinder, revolved) = (pin(&mut s, "Pin A", false, 7.0), pin(&mut s, "Pin B", true, 7.0));
+    let apart = (cylinder - revolved).abs() / cylinder;
+    assert!(apart > 0.0 && apart <= solidcraft_kernel::MEASURE_ACCURACY, "measured {apart} apart");
+    let r = run(&mut s, "assembly.bom", json!({"mass": true}));
+    assert_eq!(r["rows"].as_array().map(Vec::len), Some(1), "{r}");
+    assert!(r["rows"][0]["mass_g"].as_f64().is_some(), "one mass for both: {r}");
+    // 0.2% heavier under the same part number: the row's definitions differ.
+    pin(&mut s, "Pin C", false, 7.007);
+    let r = run(&mut s, "assembly.bom", json!({"mass": true}));
+    assert!(r["rows"][0]["mass_g"].is_null(), "{r}");
+}
+
 #[test]
 fn one_part_number_has_one_mass_only_when_its_definitions_agree() {
     let mut s = frame();
