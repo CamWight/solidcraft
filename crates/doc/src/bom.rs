@@ -181,7 +181,8 @@ pub struct Row {
     /// top).
     pub count: u64,
     pub each: u64,
-    /// The placements it counts, by occurrence path from the assembly listed, in path order.
+    /// The placements it counts, by occurrence path from the assembly listed, in path order;
+    /// empty unless the list was made with them (`list_with`).
     pub(crate) members: Vec<Vec<u64>>,
     pub mass: Mass,
     /// What one of it holds, listed under it: a folded part's contents as parts only lists them,
@@ -208,6 +209,9 @@ pub struct Bom {
     /// children likewise.
     pub rows: Vec<Row>,
     pub total: Total,
+    /// Each member path, and where its row is (its position among the rows, then among each one's
+    /// children): `row_of` reads it. Empty unless the list was made with its members.
+    index: HashMap<Vec<u64>, Vec<usize>>,
 }
 
 /// Why a placement is counted in no row of a list.
@@ -242,7 +246,8 @@ impl Bom {
 
     /// The row a placement is counted in, by its occurrence path from the assembly listed: the row
     /// that lists it, else the row of the part it is inside (a nut inside a purchased bolt is
-    /// counted in the bolt's). `tree` is the one the list was made from.
+    /// counted in the bolt's). `tree` is the one the list was made from, with its members
+    /// (`list_with`).
     #[cfg_attr(not(test), expect(dead_code, reason = "item numbers and balloons follow rows by them (#3874)"))]
     pub(crate) fn row_of(&self, tree: &Tree, path: &[u64]) -> std::result::Result<&Row, Unlisted> {
         if path.len() > MAX_PLACEMENT_DEPTH {
@@ -257,15 +262,35 @@ impl Bom {
             component = placed.member.component;
         }
         // Each placement is in one row or none, so the longest member path it starts with is its row's.
-        let mut found: Option<(usize, &Row)> = None;
-        for (_, row) in self.rows_deep() {
+        let at = (1..=path.len()).rev().find_map(|n| path.get(..n).and_then(|start| self.index.get(start)));
+        at.and_then(|at| self.row_at(at)).ok_or(Unlisted::NoRow)
+    }
+
+    /// The row at `at`: its position among the rows, then among each one's children.
+    fn row_at(&self, at: &[usize]) -> Option<&Row> {
+        let (first, rest) = at.split_first()?;
+        let mut row = self.rows.get(*first)?;
+        for &i in rest {
+            row = row.children.get(i)?;
+        }
+        Some(row)
+    }
+
+    /// Where each member's row is, for `row_of`.
+    fn index_members(&mut self) {
+        let mut index = HashMap::new();
+        let mut stack: Vec<(Vec<usize>, &Row)> = self.rows.iter().enumerate().map(|(i, r)| (vec![i], r)).collect();
+        while let Some((at, row)) = stack.pop() {
             for member in &row.members {
-                if path.starts_with(member) && found.is_none_or(|(len, _)| member.len() > len) {
-                    found = Some((member.len(), row));
-                }
+                index.insert(member.clone(), at.clone());
+            }
+            for (i, child) in row.children.iter().enumerate() {
+                let mut under = at.clone();
+                under.push(i);
+                stack.push((under, child));
             }
         }
-        found.map(|(_, row)| row).ok_or(Unlisted::NoRow)
+        self.index = index;
     }
 }
 
@@ -337,10 +362,10 @@ impl<'a> Tree<'a> {
     /// What a row of `member` gathers by: its part number when `group` asks for that and it has
     /// one, else its definition. `None` for a damaged file's occurrence of a component that isn't
     /// there, which has no row.
-    fn part(&self, member: Member, group: Group) -> Option<Part> {
-        let c = self.components.get(&member.component)?;
+    fn part(&self, member: Member, group: Group) -> Option<Part<'a>> {
+        let c: &'a Component = self.components.get(&member.component)?;
         Some(match c.metadata.part_number() {
-            Some(pn) if group == Group::PartNumber => Part::Number(pn.to_string()),
+            Some(pn) if group == Group::PartNumber => Part::Number(pn),
             _ => Part::Definition(member.component),
         })
     }
@@ -349,15 +374,15 @@ impl<'a> Tree<'a> {
     /// says, listed under the rows `parents` names, `per` of them in all (1 for the assembly).
     /// The rows under these are gathered as `under` says.
     #[allow(clippy::too_many_arguments)]
-    fn level(&self, listing: &Listing, at: &[usize], group: Group, under: Group, parents: &[Member], per: u64) -> Vec<Row> {
-        let mut grouped: BTreeMap<GroupKey, Vec<usize>> = BTreeMap::new();
+    fn level(&self, listing: &Listing, paths: &mut [Vec<u64>], at: &[usize], group: Group, under: Group, parents: &[Member], per: u64) -> Vec<Row> {
+        let mut grouped: BTreeMap<GroupKey<'a>, Vec<usize>> = BTreeMap::new();
         for &i in at {
             let Some(entry) = listing.entries.get(i) else { continue };
             let Some(part) = self.part(entry.member, group) else { continue };
             let kit = listing.kits.get(i).copied().unwrap_or_default();
             grouped.entry(GroupKey { part, bom_type: entry.member.bom_type, kit }).or_default().push(i);
         }
-        let mut rows: Vec<Row> = grouped.values().filter_map(|members| self.row(listing, members, under, parents, per)).collect();
+        let mut rows: Vec<Row> = grouped.values().filter_map(|members| self.row(listing, paths, members, under, parents, per)).collect();
         // By part number; rows without one after them, by name; one part's rows by type.
         rows.sort_by(|a, b| {
             (a.part_number.is_empty(), &a.part_number, &a.names, &a.components, a.bom_type).cmp(&(
@@ -380,7 +405,7 @@ impl<'a> Tree<'a> {
     /// pass from the last entry back: an entry's children come after it, so theirs are known first.
     fn kits(&self, entries: &[Entry], kids: &[Vec<usize>]) -> Vec<u32> {
         let mut kit_ids: HashMap<Vec<u32>, u32> = HashMap::new();
-        let mut placed_ids: HashMap<(Option<Part>, BomType, u32), u32> = HashMap::new();
+        let mut placed_ids: HashMap<(Option<Part<'a>>, BomType, u32), u32> = HashMap::new();
         // Each entry as a child reads: its part, its type and its own kit.
         let mut placed = vec![0u32; entries.len()];
         let mut kits = vec![0u32; entries.len()];
@@ -400,8 +425,10 @@ impl<'a> Tree<'a> {
     }
 
     /// One row: the placements `members` (positions in `entries`) of one part, type and kit, with
-    /// the rows under it gathered as `under` says.
-    fn row(&self, listing: &Listing, members: &[usize], under: Group, parents: &[Member], per: u64) -> Option<Row> {
+    /// the rows under it gathered as `under` says. Their `paths` (when the list keeps them) move into
+    /// the row: each placement is in one row.
+    #[allow(clippy::too_many_arguments)]
+    fn row(&self, listing: &Listing, paths: &mut [Vec<u64>], members: &[usize], under: Group, parents: &[Member], per: u64) -> Option<Row> {
         let listed: Vec<&Entry> = members.iter().filter_map(|&i| listing.entries.get(i)).collect();
         let first = listed.first()?;
         let mut components: Vec<u64> = listed.iter().map(|e| e.member.component).collect();
@@ -409,8 +436,8 @@ impl<'a> Tree<'a> {
         components.dedup();
         let member = Member { component: *components.first()?, bom_type: first.member.bom_type };
         let count = listed.len() as u64;
-        let mut paths: Vec<Vec<u64>> = listed.iter().map(|e| e.path.clone()).collect();
-        paths.sort_unstable();
+        let mut taken: Vec<Vec<u64>> = members.iter().filter_map(|&i| paths.get_mut(i).map(std::mem::take)).filter(|p| !p.is_empty()).collect();
+        taken.sort_unstable();
         // What one of it holds is listed under it.
         let inside: Vec<usize> = members.iter().flat_map(|&i| listing.kids.get(i).into_iter().flatten().copied()).collect();
         let mut chain = parents.to_vec();
@@ -432,9 +459,9 @@ impl<'a> Tree<'a> {
             // Rows with different kits are different rows, to any depth, so every part of the parent
             // row holds as many.
             each: count / per.max(1),
-            members: paths,
+            members: taken,
             mass: Mass::NotAsked,
-            children: self.level(listing, &inside, under, under, &chain, count),
+            children: self.level(listing, paths, &inside, under, under, &chain, count),
         };
         for (i, c) in row.components.iter().filter_map(|id| self.components.get(id)).enumerate() {
             let m = &c.metadata;
@@ -549,10 +576,10 @@ impl<'a> Tree<'a> {
     }
 }
 
-/// What a row gathers by.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-enum Part {
-    Number(String),
+/// What a row gathers by: a part number, borrowed from its definition, or the definition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+enum Part<'a> {
+    Number(&'a str),
     Definition(u64),
 }
 
@@ -560,8 +587,8 @@ enum Part {
 /// as, and its kit: what one of them holds as the row's children read it, to any depth (`Tree::kits`;
 /// the same for all that hold nothing listed).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-struct GroupKey {
-    part: Part,
+struct GroupKey<'a> {
+    part: Part<'a>,
     bom_type: BomType,
     kit: u32,
 }
@@ -657,8 +684,6 @@ fn adds(holds: Holds, bom_type: BomType) -> bool {
 
 /// One placement a list counts in a row.
 struct Entry {
-    /// Its occurrence path from the assembly listed.
-    path: Vec<u64>,
     member: Member,
     holds: Holds,
     /// The folded placement (a position in the entries) whose children it is among.
@@ -666,21 +691,24 @@ struct Entry {
 }
 
 /// Every placement below `request.source` that `request` counts in a row, in one walk under one
-/// budget.
-fn walk(tree: &Tree, request: &Request) -> Result<Vec<Entry>> {
+/// budget, and with `members` each one's occurrence path (else an empty path each).
+fn walk(tree: &Tree, request: &Request, members: bool) -> Result<(Vec<Entry>, Vec<Vec<u64>>)> {
     struct Frame {
         component: u64,
+        depth: usize,
+        /// Kept only with `members`.
         path: Vec<u64>,
         walk: Walk,
         kit: Option<usize>,
     }
     let mut entries: Vec<Entry> = Vec::new();
+    let mut paths: Vec<Vec<u64>> = Vec::new();
     let mut visited = 0usize;
-    let mut stack = vec![Frame { component: request.source, path: Vec::new(), walk: Walk::Listed, kit: None }];
+    let mut stack = vec![Frame { component: request.source, depth: 0, path: Vec::new(), walk: Walk::Listed, kit: None }];
     while let Some(frame) = stack.pop() {
         for placed in tree.contents(frame.component) {
             visited += 1;
-            if frame.path.len() >= MAX_PLACEMENT_DEPTH || visited > MAX_PLACEMENTS {
+            if frame.depth >= MAX_PLACEMENT_DEPTH || visited > MAX_PLACEMENTS {
                 return Err(too_big());
             }
             let component = placed.member.component;
@@ -699,28 +727,34 @@ fn walk(tree: &Tree, request: &Request) -> Result<Vec<Entry>> {
                 open_purchased: request.purchased_contents,
             };
             let step = classify(view, frame.walk, placed.member.bom_type, shape);
-            let mut path = frame.path.clone();
-            path.push(placed.occurrence);
+            let path = if members { [frame.path.as_slice(), &[placed.occurrence]].concat() } else { Vec::new() };
             let here = entries.len();
             if step.row {
-                entries.push(Entry { path: path.clone(), member: placed.member, holds: step.holds, kit: frame.kit });
+                entries.push(Entry { member: placed.member, holds: step.holds, kit: frame.kit });
+                paths.push(path.clone());
             }
             if let Some(walk) = step.inside {
                 let kit = if step.kit { Some(here) } else { frame.kit };
-                stack.push(Frame { component, path, walk, kit });
+                stack.push(Frame { component, depth: frame.depth + 1, path, walk, kit });
             }
         }
     }
-    Ok(entries)
+    Ok((entries, paths))
 }
 
 /// The rows `request` lists, with the assembly's total; with `request.mass`, each row and the
 /// assembly weighed.
 pub fn list(tree: &mut Tree, request: &Request) -> Result<Bom> {
+    list_with(tree, request, false)
+}
+
+/// [`list`], with each row's members when asked (what item numbers and balloons will follow rows
+/// by, and what `row_of` reads), so a list made for its rows alone copies no paths.
+pub(crate) fn list_with(tree: &mut Tree, request: &Request, members: bool) -> Result<Bom> {
     if request.source != 0 && !tree.components.contains_key(&request.source) {
         return Err(DocError::Unknown(format!("component {}", request.source)));
     }
-    let entries = walk(tree, request)?;
+    let (entries, mut paths) = walk(tree, request, members)?;
     // What each folded placement holds: the placements listed as its children.
     let mut kids: Vec<Vec<usize>> = vec![Vec::new(); entries.len()];
     for (i, entry) in entries.iter().enumerate() {
@@ -734,8 +768,11 @@ pub fn list(tree: &mut Tree, request: &Request) -> Result<Bom> {
     // What a folded part holds is gathered by part number in any list; all levels gathers every
     // level as it gathers the first.
     let under = if request.view == View::AllLevels { request.group } else { Group::PartNumber };
-    let rows = tree.level(&listing, &top, request.group, under, &[], 1);
-    let mut bom = Bom { source: request.source, rows, total: Total::default() };
+    let rows = tree.level(&listing, &mut paths, &top, request.group, under, &[], 1);
+    let mut bom = Bom { source: request.source, rows, total: Total::default(), index: HashMap::new() };
+    if members {
+        bom.index_members();
+    }
     tree.name_materials(&mut bom.rows)?;
     if request.mass {
         tree.weigh_rows(&mut bom.rows)?;
