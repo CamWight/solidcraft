@@ -319,6 +319,11 @@ pub struct InspectResult {
     pub place: PlaceParam,
     pub settings: SettingsResult,
     pub reference_margin_mm: f64,
+    /// Where it sits on its sheet: its extents grown by its reference margin, at its scale, round
+    /// its centre; a placeholder 20 mm each way when there's nothing to measure.
+    pub boundary_mm: BoxResult,
+    /// Its design's extents on its plane.
+    pub extents: ExtentsResult,
     /// A projected view's display settings: `true` when all follow its parent, `false` when none
     /// does, `"partly"` otherwise. None for a base view.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -348,8 +353,10 @@ pub struct ExtentsResult {
     pub max: [f64; 2],
     /// How far the display mesh may lie inside a curved face: the largest display tolerance.
     pub error_mm: f64,
-    /// `approximate`: measured on the display mesh.
+    /// `approximate`: measured on the display mesh; `placeholder`: nothing to measure, so the box is
+    /// the placeholder's.
     pub status: &'static str,
+    /// `display_mesh`; with a placeholder, why: `past_walk_limit` or `no_bodies`.
     pub provenance: &'static str,
 }
 

@@ -2,7 +2,7 @@
 //! sheets. A **base view** draws a source from a direction ([`ViewDirection`]). A **projected
 //! view** sits on one side of its parent and looks from that side, or from the side away from it
 //! in first angle ([`Drawing::projection`], [`projected_basis`]); lined up with its parent, it saves
-//! only its place along the free axis, as the other comes from the parent.
+//! only its place along the free axis, as the other comes from the parent ([`Drawing::view_centre`]).
 //!
 //! What a view sets itself is in [`ViewOverrides`]: each setting it leaves out follows its parent,
 //! then the default, and [`Drawing::resolve_view`] is that one rule for every reader. A projected
@@ -17,9 +17,9 @@
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_view::{ProjectedSide, Scale, is_paper_coordinate, projected_basis};
 use solidcraft_geom::paper::MAX_SIDE_MM;
+use solidcraft_geom::{Plane, Vec2};
 use solidcraft_render::VisualStyle;
 
 use super::{Drawing, require};
@@ -193,7 +193,7 @@ impl Drawing {
     /// ([`projected_basis`], in the drawing's projection), and each setting from the nearest view
     /// of the chain that sets it, then the default. One rule for every reader of a view.
     pub fn resolve_view(&self, id: u64) -> Result<ResolvedView> {
-        let chain = chain(id, |id| self.views.iter().find(|v| v.id == id).map(|v| &**v))?;
+        let chain = self.chain_of(id)?;
         let Some(ViewKind::Base { source, view: direction }) = chain.last().map(|base| base.kind) else {
             return Err(DocError::Invalid(format!("view {} has no base view", ids::encode(id))));
         };
@@ -215,6 +215,30 @@ impl Drawing {
             tangent_edges: or_default(&chain, |s| s.tangent_edges, defaults.tangent_edges),
             reference_margin_mm: chain.first().map_or(0.0, |view| view.reference_margin_mm),
         })
+    }
+
+    /// Where view `id`'s centre sits on its sheet, in paper millimetres. A view placed at a point
+    /// is there. One lined up with its parent takes its own place along the free axis and its
+    /// parent's centre across it ([`ProjectedSide::on_free_axis`]): both draw the same model, so
+    /// their extents share that axis's middle, and they line up whatever their scales.
+    pub fn view_centre(&self, id: u64) -> Result<Vec2> {
+        let mut centre = Vec2::ZERO;
+        // From the base view down to this one, each lined up with the one before or placed apart.
+        for view in self.chain_of(id)?.iter().rev() {
+            centre = match (view.place, view.kind) {
+                (ViewPlace::At([x, y]), _) => Vec2::new(x, y),
+                (ViewPlace::Aligned(along), ViewKind::Projected { side, .. }) => side.on_free_axis(centre, along),
+                (ViewPlace::Aligned(_), ViewKind::Base { .. }) => {
+                    return Err(DocError::Invalid(format!("base view {} isn't placed at a point", ids::encode(view.id))));
+                }
+            };
+        }
+        Ok(centre)
+    }
+
+    /// The views from `id` up to its base view, nearest first ([`chain`]).
+    fn chain_of(&self, id: u64) -> Result<Vec<&View>> {
+        chain(id, |id| self.views.iter().find(|v| v.id == id).map(|v| &**v))
     }
 }
 

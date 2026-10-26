@@ -252,3 +252,24 @@ fn a_view_resolves_through_its_chain() {
     assert!(close(turned.x, Vec3::X) && close(turned.y, Vec3::Z), "{turned:?}");
     assert_eq!(d.resolve_view(99).unwrap_err().to_string(), format!("the drawing has no view {}", ids::encode(99)));
 }
+
+/// A view placed at a point is there; one lined up with its parent takes its own place along the
+/// free axis and its parent's centre across it, down a chain, and follows when the parent moves;
+/// one placed apart stays. A base view lined up with nothing has no place, nor its views.
+#[test]
+fn a_views_centre_is_its_point_or_lined_up_with_its_parent() {
+    let (mut d, mut id_source, [front, right, top]) = three();
+    let back = add(&mut d, &mut id_source, projected(right, ProjectedSide::Right), ViewPlace::Aligned(450.0), ViewOverrides::default());
+    let below = add(&mut d, &mut id_source, projected(right, ProjectedSide::Below), ViewPlace::Aligned(60.0), ViewOverrides::default());
+    d.validate().unwrap();
+    let centres = |d: &Drawing| [front, right, top, back, below].map(|id| d.view_centre(id).unwrap());
+    let at = |x, y| Vec2::new(x, y);
+    assert_eq!(centres(&d), [at(150.0, 150.0), at(320.0, 150.0), at(320.0, 250.0), at(450.0, 150.0), at(320.0, 60.0)]);
+    Arc::make_mut(&mut d.views[0]).place = ViewPlace::At([140.0, 130.0]);
+    assert_eq!(centres(&d), [at(140.0, 130.0), at(320.0, 130.0), at(320.0, 250.0), at(450.0, 130.0), at(320.0, 60.0)]);
+    Arc::make_mut(&mut d.views[0]).place = ViewPlace::Aligned(10.0);
+    for id in [front, right, top, back, below] {
+        assert_eq!(d.view_centre(id).unwrap_err().to_string(), format!("base view {} isn't placed at a point", ids::encode(front)));
+    }
+    assert_eq!(d.view_centre(99).unwrap_err().to_string(), format!("the drawing has no view {}", ids::encode(99)));
+}

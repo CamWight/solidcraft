@@ -135,6 +135,23 @@ pub enum ProjectedSide {
 
 impl ProjectedSide {
     pub const ALL: [ProjectedSide; 4] = [ProjectedSide::Left, ProjectedSide::Right, ProjectedSide::Above, ProjectedSide::Below];
+
+    /// `point`'s coordinate on this side's free axis, the one a view lined up with its parent keeps
+    /// its own place along: x for a view to the left or right of its parent, y for one above or below.
+    pub fn along(self, point: Vec2) -> f64 {
+        match self {
+            ProjectedSide::Left | ProjectedSide::Right => point.x,
+            ProjectedSide::Above | ProjectedSide::Below => point.y,
+        }
+    }
+
+    /// `point` with its coordinate on this side's free axis ([`ProjectedSide::along`]) set to `along`.
+    pub fn on_free_axis(self, point: Vec2, along: f64) -> Vec2 {
+        match self {
+            ProjectedSide::Left | ProjectedSide::Right => Vec2::new(along, point.y),
+            ProjectedSide::Above | ProjectedSide::Below => Vec2::new(point.x, along),
+        }
+    }
 }
 
 /// The basis of the view projected from `parent` onto `side` of it, in `projection` (ISO 5456-2):
@@ -306,11 +323,9 @@ impl ViewFrame {
     /// the other, so each point of the model sits as high in both views (or as far across).
     pub fn aligned(&self, side: ProjectedSide, projection: Projection, centre: Vec2, position_mm: Vec2) -> Result<ViewFrame> {
         let basis = projected_basis(&self.basis, side, projection)?;
-        // The kept axis's coordinate of `centre` is the same in this view's plane.
-        let position = match side {
-            ProjectedSide::Left | ProjectedSide::Right => Vec2::new(position_mm.x, self.map.apply(Vec2::new(0.0, centre.y)).y),
-            ProjectedSide::Above | ProjectedSide::Below => Vec2::new(self.map.apply(Vec2::new(centre.x, 0.0)).x, position_mm.y),
-        };
+        // The kept axis's coordinate of `centre` is the same in this view's plane, and this view's
+        // map turns nothing, so across the free axis `centre` lands where this view puts it.
+        let position = side.on_free_axis(self.map.apply(centre), side.along(position_mm));
         ViewFrame::new(basis, self.scale, centre, position)
     }
 

@@ -383,3 +383,15 @@ fn a_frame_refuses_hostile_input() {
     }
     assert!(ViewFrame::new(front, one, Vec2::ZERO, Vec2::new(5000.0, -5000.0)).is_ok());
 }
+
+/// A side's free axis is x for a view to the left or right of its parent, y above or below it.
+#[test]
+fn a_sides_free_axis_is_x_beside_its_parent_and_y_above_or_below() {
+    let p = Vec2::new(3.0, 4.0);
+    for side in [ProjectedSide::Left, ProjectedSide::Right] {
+        assert_eq!((side.along(p), side.on_free_axis(p, 9.0)), (3.0, Vec2::new(9.0, 4.0)), "{side:?}");
+    }
+    for side in [ProjectedSide::Above, ProjectedSide::Below] {
+        assert_eq!((side.along(p), side.on_free_axis(p, 9.0)), (4.0, Vec2::new(3.0, 9.0)), "{side:?}");
+    }
+}

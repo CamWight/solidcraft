@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
 use serde_json::json;
+use solidcraft_doc::MAX_PLACEMENT_DEPTH;
+use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_view::ProjectedSide;
 
 use super::*;
@@ -37,10 +39,20 @@ fn boundary(v: &Value) -> (Vec2, Vec2) {
     (max - min, (min + max) * 0.5)
 }
 
+/// `v`'s boundary is the box from `min` to `max` on the sheet.
+fn assert_box(v: &Value, min: [f64; 2], max: [f64; 2]) {
+    let (lo, hi) = (point(&v["boundary_mm"]["min"]), point(&v["boundary_mm"]["max"]));
+    assert!((lo - Vec2::from(min)).len() < EPS && (hi - Vec2::from(max)).len() < EPS, "{v}");
+}
+
 /// A drawing of the block: its front view at 1:2 drawing hidden lines too, the right view lined up
 /// with it, and the right view's top view placed apart. The session and the three views' ids.
 fn three_views() -> (Session, [u64; 3]) {
-    let mut s = block();
+    three_views_of(block())
+}
+
+/// [`three_views`] of the design `s`.
+fn three_views_of(mut s: Session) -> (Session, [u64; 3]) {
     run(&mut s, "drawing.create", json!({}));
     let mut d = (**s.drawing("test").unwrap()).clone();
     let mut id_source = solidcraft_doc::ids::IdSource::seeded(4816);
@@ -73,6 +85,23 @@ fn edit_view(s: &mut Session, view: u64, set: Value) -> Value {
     let schema = output_schema_for::<EditResult>();
     assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
     reply
+}
+
+fn set_projection(s: &mut Session, projection: Projection) {
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    d.projection = projection;
+    s.doc_mut().put_drawing(Arc::new(d));
+}
+
+/// Component `L{level}`, placed inside `L{level - 1}` (the design itself at level 0).
+fn nest(s: &mut Session, level: u64) {
+    let (component, parent) = (1000 + level, if level == 0 { 0 } else { 1000 + level - 1 });
+    let doc = s.doc_mut();
+    doc.components.push(solidcraft_doc::Component { id: component, name: format!("L{level}"), parent, ..Default::default() });
+    let name = format!("L{level}");
+    // From JSON, so a field another change adds to occurrences takes its default here.
+    let occurrence = json!({"id": 5000 + level, "component": component, "parent": parent, "name": name});
+    doc.occurrences.push(serde_json::from_value(occurrence).unwrap());
 }
 
 fn edit_refused(s: &mut Session, view: u64, set: Value) -> String {
@@ -281,15 +310,6 @@ fn hostile_snapshots_are_refused() {
 #[test]
 fn a_view_of_an_assembly_past_the_walks_limit_is_refused() {
     let mut s = block();
-    let nest = |s: &mut Session, level: u64| {
-        let (component, parent) = (1000 + level, if level == 0 { 0 } else { 1000 + level - 1 });
-        let doc = s.doc_mut();
-        doc.components.push(solidcraft_doc::Component { id: component, name: format!("L{level}"), parent, ..Default::default() });
-        let name = format!("L{level}");
-        // From JSON, so a field another change adds to occurrences takes its default here.
-        let occurrence = json!({"id": 5000 + level, "component": component, "parent": parent, "name": name});
-        doc.occurrences.push(serde_json::from_value(occurrence).unwrap());
-    };
     // The deepest occurrence's path is MAX_PLACEMENT_DEPTH + 1 long: walked, its children not.
     for level in 0..=MAX_PLACEMENT_DEPTH as u64 {
         nest(&mut s, level);
@@ -300,4 +320,74 @@ fn a_view_of_an_assembly_past_the_walks_limit_is_refused() {
     assert!(!s.doc.placements_complete());
     let e = refused(&mut s, json!({"scale": "1:1"}));
     assert!(e.contains("deeper than 64 levels or has more than 100000 placements"), "{e}");
+}
+
+/// A saved view's boundary, worked by hand for the block at 1:2 (front 50 x 10, right 25 x 10, the
+/// right view's top 25 x 50): the front view round its point (150, 150), the right view at its 300
+/// across and the front view's 150 up, the top view round its own point; the same boxes in first
+/// angle, as each of the block's sides is the size of the one opposite. The extents are the
+/// model's own millimetres, and inspect evaluates no model.
+#[test]
+fn a_saved_views_boundary_is_its_extents_at_its_scale_round_its_centre() {
+    let (mut s, [front, right, top]) = three_views();
+    let evaluations = s.evaluations;
+    for projection in [Projection::Third, Projection::First] {
+        set_projection(&mut s, projection);
+        assert_box(&inspect_view(&mut s, front), [125.0, 145.0], [175.0, 155.0]);
+        assert_box(&inspect_view(&mut s, right), [287.5, 145.0], [312.5, 155.0]);
+        assert_box(&inspect_view(&mut s, top), [287.5, 225.0], [312.5, 275.0]);
+    }
+    let base = inspect_view(&mut s, front);
+    let extents = &base["extents"];
+    assert!((point(&extents["min"]) - Vec2::ZERO).len() < EPS && (point(&extents["max"]) - Vec2::new(100.0, 20.0)).len() < EPS, "{base}");
+    assert_eq!((extents["status"].as_str(), extents["provenance"].as_str()), (Some("approximate"), Some("display_mesh")));
+    assert_eq!(s.evaluations, evaluations, "no model is evaluated");
+}
+
+/// The right view follows the front view up and down when it moves, and keeps its own place
+/// across; at its own scale (1:1, 50 x 20) it is still lined up through its centre, and the top
+/// view projected from it takes that scale too. The top view's 5 mm reference margin grows it by
+/// 2.5 mm a side at 1:2, its extents unchanged. The largest margin at the largest scale still
+/// gives a finite box.
+#[test]
+fn a_lined_up_view_follows_its_parent_and_a_margin_grows_the_boundary() {
+    let (mut s, [front, right, top]) = three_views();
+    edit_view(&mut s, front, json!({"place": {"at": [160.0, 140.0]}}));
+    assert_box(&inspect_view(&mut s, front), [135.0, 135.0], [185.0, 145.0]);
+    assert_box(&inspect_view(&mut s, right), [287.5, 135.0], [312.5, 145.0]);
+    edit_view(&mut s, top, json!({"reference_margin_mm": 5.0}));
+    let margin = inspect_view(&mut s, top);
+    assert_box(&margin, [285.0, 222.5], [315.0, 277.5]);
+    let size = point(&margin["extents"]["max"]) - point(&margin["extents"]["min"]);
+    assert!((size - Vec2::new(50.0, 100.0)).len() < EPS, "{margin}");
+    edit_view(&mut s, right, json!({"scale": "1:1"}));
+    assert_box(&inspect_view(&mut s, right), [275.0, 130.0], [325.0, 150.0]);
+    assert_box(&inspect_view(&mut s, top), [270.0, 195.0], [330.0, 305.0]);
+    edit_view(&mut s, top, json!({"reference_margin_mm": 100000.0, "scale": "50:1"}));
+    let (huge, centre) = boundary(&inspect_view(&mut s, top));
+    assert!(huge.x.is_finite() && huge.x > 1e7 && (centre - Vec2::new(300.0, 250.0)).len() < 1e-6, "{huge:?} {centre:?}");
+}
+
+/// With nothing to measure a view gets a 20 x 20 mm placeholder round its centre, and says why:
+/// its design places more than a view walks, or has no bodies.
+#[test]
+fn a_view_with_nothing_to_measure_gets_a_placeholder() {
+    let placeholder = |s: &mut Session, view: u64, why: &str| {
+        let v = inspect_view(s, view);
+        assert_eq!((v["extents"]["status"].as_str(), v["extents"]["provenance"].as_str()), (Some("placeholder"), Some(why)), "{v}");
+        v
+    };
+    let (mut s, [front, right, _]) = three_views();
+    for level in 0..=MAX_PLACEMENT_DEPTH as u64 + 1 {
+        nest(&mut s, level);
+    }
+    assert_box(&placeholder(&mut s, front, "past_walk_limit"), [140.0, 140.0], [160.0, 160.0]);
+    assert_box(&placeholder(&mut s, right, "past_walk_limit"), [290.0, 140.0], [310.0, 160.0]);
+    // One sketch: something to draw (an empty design isn't), and no bodies.
+    let mut sketch_only = Session::default();
+    run(&mut sketch_only, "sketch.create", json!({"plane": "XY"}));
+    run(&mut sketch_only, "sketch.rectangle.two_point", json!({"p0": [0, 0], "p1": [10, 5]}));
+    run(&mut sketch_only, "sketch.finish", json!({}));
+    let (mut sketch_only, [front, ..]) = three_views_of(sketch_only);
+    assert_box(&placeholder(&mut sketch_only, front, "no_bodies"), [140.0, 140.0], [160.0, 160.0]);
 }

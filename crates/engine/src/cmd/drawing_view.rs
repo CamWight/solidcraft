@@ -2,8 +2,9 @@
 //! returned without saving anything. It reads the evaluated model and changes nothing.
 //!
 //! `drawing.view.inspect` and `drawing.view.edit` (W17c, #4816) read and change a saved view of a
-//! drawing: each setting with where its value comes from ([`solidcraft_doc::drawing::Drawing::resolve_view`]),
-//! and a change as one undo step that evaluates no model.
+//! drawing: each setting with where its value comes from ([`solidcraft_doc::drawing::Drawing::resolve_view`])
+//! and where the view sits on its sheet ([`crate::drawing_view::on_sheet`]), and a change as one
+//! undo step that evaluates no model.
 //!
 //! The view's settings are `doc::drawing_view::ViewSettings`; its basis, scale and map onto
 //! paper are `geom::drawing_view`'s. Without a scale it takes the largest ISO 5455 scale at
@@ -15,15 +16,15 @@ use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_doc::ids;
-use solidcraft_doc::{MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS};
 use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
-use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale, ViewFrame};
+use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale};
 use solidcraft_geom::paper::MAX_COORDINATE_MM;
 use solidcraft_geom::{Aabb2, Vec2};
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
+use crate::drawing_view::{Extents, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
     BoxResult, ChoicesResult, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult, PlaceParam, ScaleResult,
@@ -52,7 +53,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&INSPECT_CONTRACT)
         .output(output_schema_for::<InspectResult>)
-        .params("view: a saved view's id → {view, sheet, kind: base|projected, source, parent?, side?, direction, place: {at: [x, y]} or {aligned: n}, settings: {scale, display_style, reference_style, reference_hides_model, tangent_edges: {value, from: this|parent|default, parent?, set}}, reference_margin_mm, linked? (a projected view's display settings: true, false or \"partly\"), choices: {display_style, scale}}. Read-only."),
+        .params("view: a saved view's id → {view, sheet, kind: base|projected, source, parent?, side?, direction, place: {at: [x, y]} or {aligned: n}, settings: {scale, display_style, reference_style, reference_hides_model, tangent_edges: {value, from: this|parent|default, parent?, set}}, reference_margin_mm, boundary_mm: {min, max} on the sheet (a 20 x 20 mm placeholder round the view's centre when there's nothing to measure), extents: {min, max, error_mm, status: approximate|placeholder, provenance} in model mm on the view's plane, linked? (a projected view's display settings: true, false or \"partly\"), choices: {display_style, scale}}. Read-only; no model is evaluated."),
     CommandSpec::new(EDIT, "Edit Drawing View", crate::checked!("drawing.view.edit", EDIT_CONTRACT, edit))
         .icon("edit")
         .in_drawing()
@@ -76,22 +77,14 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     let paper = sheet.size_mm().map_err(|e| bad(CMD, e.to_string()))?;
     let border = DrawingBorderProfile::iso().layout(&sheet).map_err(|e| bad(CMD, e.to_string()))?.drawing_border;
 
-    if !s.doc.placements_complete() {
-        let limits = format!("deeper than {MAX_PLACEMENT_DEPTH} levels or has more than {MAX_PLACEMENTS} placements");
-        return Err(bad(CMD, format!("the assembly is {limits}: a view of it would leave parts out")));
-    }
-    let extents = crate::drawing_view::extents(s, &basis);
-    if extents.model.is_empty() {
-        return Err(bad(CMD, "the view's source has no bodies"));
-    }
+    let extents = crate::drawing_view::measure(s, &basis).map_err(|why| bad(CMD, why.to_string()))?;
     let shown = extents.model.inflated(settings.reference_margin_mm);
     let position = request.position_mm.map_or(paper * 0.5, |p| p.0);
     let (scale, fitted) = match settings.scale {
         Some(scale) => (scale, false),
         None => (fit(shown.size(), position, border)?, true),
     };
-    let frame = ViewFrame::new(basis, scale, shown.center(), position).map_err(|e| bad(CMD, e.to_string()))?;
-    let boundary = frame.boundary(&shown).map_err(|e| bad(CMD, e.to_string()))?;
+    let boundary = crate::drawing_view::boundary(basis, scale, &shown, position, CMD)?;
     let on_paper = [boundary.min, boundary.max].iter().all(|c| c.is_finite() && c.x.abs() <= MAX_COORDINATE_MM && c.y.abs() <= MAX_COORDINATE_MM);
     if !on_paper {
         return Err(bad(CMD, format!("at scale {scale} the view reaches past ±{MAX_COORDINATE_MM} mm on paper: choose a smaller scale")));
@@ -115,13 +108,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
         sheet: request.sheet,
         display_style: snake_name(settings.display_style),
         reference_style: snake_name(settings.reference_style),
-        extents: ExtentsResult {
-            min: extents.model.min.into(),
-            max: extents.model.max.into(),
-            error_mm: extents.error_mm,
-            status: "approximate",
-            provenance: "display_mesh",
-        },
+        extents: extents_result(&extents, None),
         boundary_mm: BoxResult { min: boundary.min.into(), max: boundary.max.into() },
         source: SourceResult { bodies: extents.bodies, timeline_at_end: s.doc.marker.is_none() },
         param_warnings: Vec::new(),
@@ -134,6 +121,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.drawing(INSPECT)?;
     let view = find(d, request.view.0, INSPECT)?;
     let resolved = d.resolve_view(view.id).map_err(|e| bad(INSPECT, e.to_string()))?;
+    let placed = crate::drawing_view::on_sheet(s, d, view.id, INSPECT)?;
     let (parent, side) = match view.kind {
         ViewKind::Base { .. } => (None, None),
         ViewKind::Projected { parent, side } => (Some(ids::encode(parent)), Some(snake_name(side))),
@@ -159,6 +147,8 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
             tangent_edges: setting(resolved.tangent_edges, own.tangent_edges, snake_name),
         },
         reference_margin_mm: view.reference_margin_mm,
+        boundary_mm: BoxResult { min: placed.boundary.min.into(), max: placed.boundary.max.into() },
+        extents: extents_result(&placed.extents, placed.unmeasured),
         linked: matches!(view.kind, ViewKind::Projected { .. }).then(|| match display_set(&own) {
             0 => Value::Bool(true),
             DISPLAY_GROUP => Value::Bool(false),
@@ -291,6 +281,17 @@ fn changed_fields(a: &View, b: &View) -> Vec<String> {
         ("place", a.place != b.place),
     ];
     fields.into_iter().filter(|(_, changed)| *changed).map(|(name, _)| name.to_string()).collect()
+}
+
+/// Extents as the replies give them: measured on the display mesh, or a placeholder's and why.
+fn extents_result(extents: &Extents, unmeasured: Option<Unmeasured>) -> ExtentsResult {
+    ExtentsResult {
+        min: extents.model.min.into(),
+        max: extents.model.max.into(),
+        error_mm: extents.error_mm,
+        status: if unmeasured.is_some() { "placeholder" } else { "approximate" },
+        provenance: unmeasured.map_or("display_mesh", Unmeasured::name),
+    }
 }
 
 /// A resolved setting as inspect shows it: its value, where it comes from and what the view sets.
