@@ -9,10 +9,11 @@
 //! and [`MAX_PLACEMENT_DEPTH`] levels covers the whole list, folded parts' contents included: a
 //! larger assembly is refused, never listed in part.
 //!
-//! A row is named by its [`RowKey`]: the rows it is listed under and its lowest member (a
+//! A row is named by its `RowKey`: the rows it is listed under and its lowest member (a
 //! component and the type it counts as there), however its part number or contents read. Its
-//! mass is what one of its parts weighs as the row stands for it ([`Holds`]), so the rows of any
-//! list add up to the assembly once. Placements are rigid, so each definition is weighed once
+//! mass is what one of its parts weighs as the row stands for it (`Holds`), so the rows of any
+//! list add up to the assembly once. The keys, what rows stand for, their members and `row_of`
+//! stay inside this crate until item numbers and balloons read them. Placements are rigid, so each definition is weighed once
 //! however often it is placed, and kept in the [`Tree`] for every list made from it. The
 //! assembly's own mass is weighed the same way, never added up from rows: a row whose definitions
 //! weigh differently has none.
@@ -113,15 +114,15 @@ pub struct Member {
 /// top), and its own lowest member. It doesn't change with the row's part number or contents, so
 /// item numbers, overrides and balloons can follow the row through those edits.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RowKey {
-    pub parents: Vec<Member>,
-    pub member: Member,
+pub(crate) struct RowKey {
+    pub(crate) parents: Vec<Member>,
+    pub(crate) member: Member,
 }
 
 /// What one of a row's parts stands for when it is weighed, so that the rows of any list add up
 /// to the assembly once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Holds {
+pub(crate) enum Holds {
     /// Its own bodies and everything placed inside it.
     All,
     /// Its own bodies alone: what it holds is listed beside it.
@@ -155,13 +156,13 @@ pub enum Unknown {
 /// One row of a bill of materials view.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
-    pub key: RowKey,
+    pub(crate) key: RowKey,
     /// Its position among the rows it is listed with, from 1: its item number until numbers are
     /// saved.
     pub item: u32,
     pub bom_type: BomType,
     /// What one of its parts stands for when weighed.
-    pub stands_for: Holds,
+    pub(crate) stands_for: Holds,
     /// The definitions it gathers, by id (ascending), and their names, each once.
     pub components: Vec<u64>,
     pub names: Vec<String>,
@@ -181,7 +182,7 @@ pub struct Row {
     pub count: u64,
     pub each: u64,
     /// The placements it counts, by occurrence path from the assembly listed, in path order.
-    pub members: Vec<Vec<u64>>,
+    pub(crate) members: Vec<Vec<u64>>,
     pub mass: Mass,
     /// What one of it holds, listed under it: a folded part's contents as parts only lists them,
     /// or in all levels a subassembly's own rows.
@@ -211,7 +212,8 @@ pub struct Bom {
 
 /// Why a placement is counted in no row of a list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Unlisted {
+#[cfg_attr(not(test), expect(dead_code, reason = "item numbers and balloons follow rows by them (#3874)"))]
+pub(crate) enum Unlisted {
     /// No placement below the assembly listed has that path.
     NotFound,
     /// It counts as a reference, or is inside one: no bill of materials counts it.
@@ -241,7 +243,8 @@ impl Bom {
     /// The row a placement is counted in, by its occurrence path from the assembly listed: the row
     /// that lists it, else the row of the part it is inside (a nut inside a purchased bolt is
     /// counted in the bolt's). `tree` is the one the list was made from.
-    pub fn row_of(&self, tree: &Tree, path: &[u64]) -> std::result::Result<&Row, Unlisted> {
+    #[cfg_attr(not(test), expect(dead_code, reason = "item numbers and balloons follow rows by them (#3874)"))]
+    pub(crate) fn row_of(&self, tree: &Tree, path: &[u64]) -> std::result::Result<&Row, Unlisted> {
         if path.len() > MAX_PLACEMENT_DEPTH {
             return Err(Unlisted::NotFound);
         }
