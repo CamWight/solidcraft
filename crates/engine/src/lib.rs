@@ -260,6 +260,10 @@ pub struct Session {
     pub open_drawing: Option<u64>,
     pub selection: Vec<Sel>,
     pub path: Option<String>,
+    /// Where the drawing commands' object ids come from: one source for the session, kept across
+    /// a file change, so a session seeded alike and run alike gives the same ids
+    /// ([`Session::seed_ids`]). A failed command draws none.
+    pub(crate) ids: solidcraft_doc::ids::IdSource,
     /// One-shot display-only notification during doc.open, before authoritative evaluation.
     /// Interactive loaders may show it provisionally; it never becomes model state.
     pub open_preview: Option<Box<dyn Fn(solidcraft_io::DesignPreview) + Send + Sync>>,
@@ -434,6 +438,7 @@ impl Session {
             open_drawing: None,
             selection: Vec::new(),
             path: None,
+            ids: solidcraft_doc::ids::IdSource::from_entropy(),
             open_preview: None,
             log: Vec::new(),
             revision: 1,
@@ -479,6 +484,7 @@ impl Session {
         let render_jobs = self.render_jobs.scratch();
         let checkpoints = std::mem::take(&mut self.checkpoints);
         let next_checkpoint = self.next_checkpoint;
+        let ids = self.ids.clone();
         *self = fresh;
         self.auto_project = auto_project;
         self.param_check = param_check;
@@ -486,6 +492,13 @@ impl Session {
         self.render_jobs = render_jobs;
         self.checkpoints = checkpoints;
         self.next_checkpoint = next_checkpoint;
+        self.ids = ids;
+    }
+
+    /// Object ids from `seed` from here on, as a replay of a session whose ids stood there
+    /// (`replay.json`'s `ids`) gives.
+    pub fn seed_ids(&mut self, seed: u64) {
+        self.ids = solidcraft_doc::ids::IdSource::seeded(seed);
     }
 
     /// The design has changes not in its file: in the document, or in what is hidden.
@@ -833,6 +846,7 @@ impl Session {
         spec.allowed(self).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
         let open_drawing = self.open_drawing;
         let before = Snapshot { part: open_drawing.filter(|_| spec.part == cmd::Part::Drawing), ..Snapshot::of(self, spec.label) };
+        let ids = self.ids.clone();
         let null = Value::Object(Default::default());
         let params = if params.is_null() { &null } else { params };
         let given = params;
@@ -873,7 +887,7 @@ impl Session {
                 || self.pending_moves != before.pending_moves
                 || self.open_drawing != open_drawing
                 || spec.id.starts_with("select.");
-            crash::command_done(self.crash_journal, changed, &before.doc, after, spec.id, given, failed.map_or(Ok(()), Err));
+            crash::command_done(self.crash_journal, changed, &before.doc, after, (spec.id, given, ids.seed()), failed.map_or(Ok(()), Err));
         }
         let changed = !Arc::ptr_eq(&self.doc, &before.doc);
         match r {
@@ -901,6 +915,8 @@ impl Session {
                 Ok(v)
             }
             Err(e) => {
+                // A failed command draws no ids, so a replay of what succeeded draws the same.
+                self.ids = ids;
                 self.open_drawing = open_drawing;
                 if changed || self.pending_moves != before.pending_moves {
                     self.doc = before.doc;
@@ -994,6 +1010,7 @@ impl Session {
             open_drawing: self.open_drawing,
             selection: self.selection.clone(),
             path: None,
+            ids: self.ids.clone(),
             open_preview: None,
             saved: self.saved.clone(),
             log: Vec::new(),

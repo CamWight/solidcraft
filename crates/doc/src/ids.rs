@@ -51,6 +51,12 @@ impl IdSource {
         IdSource::seeded(RandomState::new().hash_one((nanos, MADE.fetch_add(1, Ordering::Relaxed))))
     }
 
+    /// Where the source stands: [`IdSource::seeded`] with it gives the ids this one gives next
+    /// (a replay's start).
+    pub fn seed(&self) -> u64 {
+        self.state
+    }
+
     /// The next id that isn't 0 and isn't `in_use`. A run never draws a number twice, so at most
     /// one draw per id in use, and one 0, come before a free one.
     pub fn next(&mut self, in_use: &BTreeSet<u64>) -> Result<u64> {

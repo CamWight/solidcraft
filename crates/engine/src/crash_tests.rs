@@ -256,7 +256,7 @@ fn startup_steps_survive_a_rebase_and_running_ends_startup() {
     let mut j = Journal::open(&d, &build(), now());
     j.phase = Some(json!({"phase": "first frame", "ms": 5}).to_string());
     j.environment = Some(json!({"environment": "Renderer: X"}).to_string());
-    j.rebase(&json!("new"), 1);
+    j.rebase(&json!("new"), 1, None);
     // Read through the journal's own handle, as `read_live_journal` does: Windows refuses a
     // second handle on a live journal's locked range (#1448).
     let r = read_journal_file(j.file.as_ref().unwrap().try_clone().unwrap());

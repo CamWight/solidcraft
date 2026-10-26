@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_doc::drawing::{self, Drawing, Source, Units};
-use solidcraft_doc::ids::{self, IdSource};
+use solidcraft_doc::ids;
 use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Orientation, PaperSize, Sheet};
 
@@ -107,11 +107,10 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     // Not the id of a drawing undo or redo could bring back either.
     let steps = s.undo.iter().chain(&s.redo).filter_map(|step| step.part);
     let taken: BTreeSet<u64> = s.doc.drawings.iter().map(|d| d.id).chain(steps).collect();
-    let mut id_source = IdSource::from_entropy();
     let a3 = Sheet::standard(PaperSize::A3, Orientation::Landscape);
     let fail = |e: solidcraft_doc::DocError| bad(cmd, e.to_string());
-    let mut d = Drawing::new(&name, language, "Sheet 1", a3, Some(DrawingBorderProfile::iso()), &taken, &mut id_source).map_err(fail)?;
-    let source = d.allocate_id(&mut id_source).map_err(fail)?;
+    let mut d = Drawing::new(&name, language, "Sheet 1", a3, Some(DrawingBorderProfile::iso()), &taken, &mut s.ids).map_err(fail)?;
+    let source = d.allocate_id(&mut s.ids).map_err(fail)?;
     d.sources.push(Source { id: source });
     if let Some(units) = units(cmd, p)? {
         d.units = units;

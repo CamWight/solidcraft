@@ -62,6 +62,21 @@ fn a_drawing_of_the_design_is_kept_in_it_and_opened() {
     assert_eq!(open_one(&s).name, s.doc.name);
 }
 
+/// A drawing's ids come from the session's id source: two sessions seeded alike make a drawing
+/// with the same ids (where a crash replay starts), another seed other ids.
+#[test]
+fn drawing_ids_come_from_the_sessions_seed() {
+    let ids = |seed: u64| {
+        let mut s = design();
+        s.seed_ids(seed);
+        run(&mut s, "drawing.create", json!({}));
+        let d = open_one(&s);
+        (d.id, d.sheets[0].id, d.sources[0].id)
+    };
+    assert_eq!(ids(7), ids(7));
+    assert_ne!(ids(7), ids(8));
+}
+
 /// What making a drawing refuses, the design unchanged: an empty design, units, a language and a
 /// name the record can't take, and a design that holds the most drawings already.
 #[test]

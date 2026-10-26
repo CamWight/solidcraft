@@ -503,20 +503,20 @@ pub(crate) fn command_begin(s: &Session, id: &str, params: &Value) {
         } else {
             json!("unknown")
         };
-        j.rebase(&base, ptr);
+        j.rebase(&base, ptr, Some(s.ids.seed()));
     }
     j.run(id, params);
 }
 
 /// A top-level command ended: the journal records how, and panics caught inside it are reported
-/// with `before` (the design it started from) and the command, which together reproduce them.
+/// with `before` (the design it started from) and the command (its id, its parameters and the
+/// session's id seed when it started), which together reproduce them.
 pub(crate) fn command_done(
     journaled: bool,
     changed: bool,
     before: &Document,
     after: &std::sync::Arc<Document>,
-    id: &str,
-    params: &Value,
+    (id, params, ids): (&str, &Value, u64),
     outcome: std::result::Result<(), String>,
 ) {
     let Some(state) = STATE.get() else { return };
@@ -531,7 +531,7 @@ pub(crate) fn command_done(
     for p in pending {
         let kind = if p.recovered { "kernel_panic_recovered" } else { "command_panic" };
         let design = solidcraft_io::write_design(before);
-        let replay = json!({ "commands": [{ "command": id, "params": params }] });
+        let replay = json!({ "commands": [{ "command": id, "params": params }], "ids": ids });
         let recent = if journaled { read_live_journal(state).recent } else { Vec::new() };
         let extra = Extra {
             command: Some(json!({ "command": id, "params": params })),
@@ -562,7 +562,7 @@ pub(crate) fn rebased(s: &Session, file: Option<&Path>, autosave: bool) {
         (None, _) if s.doc.features.is_empty() => json!("new"),
         _ => json!("unknown"),
     };
-    j.rebase(&base, std::sync::Arc::as_ptr(&s.doc) as usize);
+    j.rebase(&base, std::sync::Arc::as_ptr(&s.doc) as usize, Some(s.ids.seed()));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -602,7 +602,7 @@ impl Journal {
             phase_step: None,
             environment: None,
         };
-        j.rebase(&json!("new"), 0);
+        j.rebase(&json!("new"), 0, None);
         j
     }
 
@@ -618,7 +618,9 @@ impl Journal {
         self.write(&v.to_string());
     }
 
-    fn rebase(&mut self, base: &Value, doc: usize) {
+    /// A new base: `base`, the design the commands after it start from, and `ids`, the session's
+    /// id seed there.
+    fn rebase(&mut self, base: &Value, doc: usize, ids: Option<u64>) {
         if let Some(f) = &self.file
             && f.set_len(0).is_err()
         {
@@ -630,7 +632,11 @@ impl Journal {
         self.last_doc = doc;
         let h = self.header.clone();
         self.write(&h);
-        self.record(&json!({ "base": base }));
+        let mut line = json!({ "base": base });
+        if let Some(ids) = ids {
+            line["ids"] = json!(ids);
+        }
+        self.record(&line);
         for line in [self.phase.clone(), self.environment.clone()].into_iter().flatten() {
             self.write(&line);
         }
@@ -681,6 +687,8 @@ impl Journal {
 struct JournalRead {
     header: Value,
     base: Value,
+    /// The session's id seed at the base, when it was kept.
+    ids: Option<u64>,
     /// Commands since the base that changed something or did nothing wrong, in order.
     replay: Vec<Value>,
     /// The command that was running, if one was.
@@ -723,6 +731,7 @@ fn read_journal_file(mut file: File) -> JournalRead {
         }
         if let Some(b) = v.get("base") {
             r.base = b.clone();
+            r.ids = v.get("ids").and_then(Value::as_u64);
             r.replay.clear();
             r.recent.clear();
             running = None;
@@ -928,7 +937,10 @@ fn from_journal(j: JournalRead) -> Extra {
     Extra {
         command: j.in_flight,
         design,
-        replay: replay.then(|| json!({ "commands": commands })),
+        replay: replay.then(|| match j.ids {
+            Some(ids) => json!({ "commands": commands, "ids": ids }),
+            None => json!({ "commands": commands }),
+        }),
         recent: j.recent,
         base: j.base,
         notes,
