@@ -346,6 +346,56 @@ pub struct EditResult {
     pub param_warnings: Vec<String>,
 }
 
+/// What `drawing.view.move_to_sheet` takes.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct MoveParams {
+    pub view: ViewIdParam,
+    /// The sheet, by id or name.
+    #[serde(deserialize_with = "super::drawing_sheet::sheet_ref")]
+    pub sheet: String,
+    /// Where its centre goes, in paper millimetres from the sheet's lower-left corner.
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Point2")]
+    pub position_mm: Option<Point2>,
+    /// A view lined up with its parent moves only when this is true, and is then placed apart.
+    #[serde(default)]
+    pub break_alignment: bool,
+}
+
+/// What `drawing.view.copy_to_sheet` takes.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct CopyParams {
+    pub view: ViewIdParam,
+    /// The sheet, by id or name.
+    #[serde(deserialize_with = "super::drawing_sheet::sheet_ref")]
+    pub sheet: String,
+    /// Where the copy's centre goes, in paper millimetres from the sheet's lower-left corner.
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Point2")]
+    pub position_mm: Option<Point2>,
+    /// Whether the views lined up with it are copied too, lined up with the copy. Needed when it
+    /// has any.
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub with_linked: Option<bool>,
+}
+
+/// What `drawing.view.move_to_sheet` and `drawing.view.copy_to_sheet` return.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ToSheetResult {
+    /// The view moved, or its copy.
+    pub view: String,
+    pub sheet: String,
+    /// Every view moved or made: the view's first, then the views lined up with it.
+    pub views: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
 /// A view's extents on its own plane, in model millimetres.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ExtentsResult {

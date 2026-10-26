@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 use super::check::whole;
 
 /// A sheet named by its id or, when only one has it, its name.
-fn sheet_ref<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+pub(super) fn sheet_ref<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
     match Value::deserialize(d)? {
         Value::String(s) => Ok(s),
         _ => Err(serde::de::Error::custom("must be a sheet's id or name")),

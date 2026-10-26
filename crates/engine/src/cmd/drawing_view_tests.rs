@@ -191,6 +191,154 @@ fn an_edit_is_one_undo_step_and_names_its_followers() {
     assert_eq!(s.evaluations, evaluations, "no model is evaluated");
 }
 
+/// A second sheet in the drawing, A3 landscape as the first: its id.
+fn second_sheet(s: &mut Session) -> u64 {
+    let added = run(s, "drawing.sheet.add", json!({}));
+    ids::decode(added["sheet"].as_str().unwrap()).unwrap()
+}
+
+/// View `id` as the drawing holds it.
+fn saved(s: &Session, id: u64) -> View {
+    s.drawing("test").unwrap().views.iter().find(|v| v.id == id).map(|v| (**v).clone()).unwrap()
+}
+
+fn to_sheet(s: &mut Session, cmd: &str, p: Value) -> Value {
+    let reply = run(s, cmd, p);
+    let schema = output_schema_for::<ToSheetResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    reply
+}
+
+fn listed(reply: &Value) -> Vec<u64> {
+    reply["views"].as_array().unwrap().iter().map(|v| ids::decode(v.as_str().unwrap()).unwrap()).collect()
+}
+
+/// A move is one undo step: the view and the views lined up with it go to the sheet and keep their
+/// places beside it, and a view placed apart stays. Without a position it keeps its own; to its
+/// own sheet it changes nothing.
+#[test]
+fn a_moved_view_takes_the_views_lined_up_with_it() {
+    let (mut s, [front, right, top]) = three_views();
+    let (first, second) = (saved(&s, front).sheet, second_sheet(&mut s));
+    let steps = s.undo.len();
+    let moved = to_sheet(&mut s, MOVE, json!({"view": ids::encode(front), "sheet": ids::encode(second), "position_mm": [100.0, 120.0]}));
+    assert_eq!((listed(&moved), moved["sheet"].clone()), (vec![front, right], json!(ids::encode(second))));
+    assert_eq!(s.undo.len(), steps + 1);
+    assert_eq!((saved(&s, front).sheet, saved(&s, front).place), (second, ViewPlace::At([100.0, 120.0])));
+    assert_eq!((saved(&s, right).sheet, saved(&s, right).place), (second, ViewPlace::Aligned(250.0)), "50 mm left, as its parent went");
+    assert_eq!(saved(&s, top).sheet, first, "a view placed apart stays");
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!((saved(&s, front).sheet, saved(&s, right).sheet, saved(&s, right).place), (first, first, ViewPlace::Aligned(300.0)));
+    to_sheet(&mut s, MOVE, json!({"view": ids::encode(front), "sheet": "Sheet 2"}));
+    assert_eq!((saved(&s, front).place, saved(&s, right).place), (ViewPlace::At([150.0, 150.0]), ViewPlace::Aligned(300.0)), "by name, where it was");
+    let steps = s.undo.len();
+    assert_eq!(to_sheet(&mut s, MOVE, json!({"view": ids::encode(front), "sheet": ids::encode(second)}))["views"], json!([]));
+    assert_eq!(s.undo.len(), steps, "its own sheet: no step");
+}
+
+/// A view lined up with its parent moves only with `break_alignment`, and is then placed apart: at
+/// the position, else the sheet's centre; the views lined up with it keep their places beside it.
+/// What would break the record (an unknown view or sheet, a place off the paper) is refused, and
+/// changes nothing.
+#[test]
+fn a_lined_up_view_moves_only_when_its_line_up_is_broken() {
+    let (mut s, [front, right, top]) = three_views();
+    let second = second_sheet(&mut s);
+    let to = |view: u64, more: Value| {
+        let mut p = json!({"view": ids::encode(view), "sheet": ids::encode(second)});
+        p.as_object_mut().unwrap().extend(more.as_object().unwrap().clone());
+        p
+    };
+    let refused = |s: &mut Session, p: Value| s.execute(MOVE, &p).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("accepted: {p}"));
+    assert!(refused(&mut s, to(right, json!({}))).contains("break_alignment"));
+    // The top view lined up above the right view, whose centre is (300, 150).
+    edit_view(&mut s, top, json!({"place": {"aligned": 250.0}}));
+    let moved = to_sheet(&mut s, MOVE, to(right, json!({"break_alignment": true, "position_mm": [200.0, 100.0]})));
+    assert_eq!(listed(&moved), [right, top]);
+    assert_eq!(
+        (saved(&s, right).place, saved(&s, top).place, saved(&s, top).sheet),
+        (ViewPlace::At([200.0, 100.0]), ViewPlace::Aligned(200.0), second)
+    );
+    assert_eq!(saved(&s, front).sheet, s.drawing("test").unwrap().sheets[0].id, "its parent stays");
+    run(&mut s, "edit.undo", json!({}));
+    to_sheet(&mut s, MOVE, to(right, json!({"break_alignment": true})));
+    assert_eq!((saved(&s, right).place, saved(&s, top).place), (ViewPlace::At([210.0, 148.5]), ViewPlace::Aligned(248.5)), "the A3 sheet's centre");
+    run(&mut s, "edit.undo", json!({}));
+    let before = s.drawing("test").unwrap().clone();
+    assert!(refused(&mut s, to(99, json!({}))).contains("no view"));
+    assert!(refused(&mut s, json!({"view": ids::encode(front), "sheet": "Sheet 9"})).contains("no sheet"));
+    assert!(refused(&mut s, to(front, json!({"position_mm": [1e8, 0.0]}))).contains("5000"));
+    assert!(refused(&mut s, to(front, json!({"position_mm": [4990.0, 150.0]}))).contains("5000"), "the right view would land off the paper");
+    assert!(refused(&mut s, to(front, json!({"break_alignment": "yes"}))).contains("break_alignment"));
+    assert_eq!(*s.drawing("test").unwrap(), before);
+}
+
+/// A copy is one undo step of new views, independent of the ones it came from: with its linked
+/// views, they are copied lined up with the copy; without, it goes alone. Without a choice, a view
+/// with views lined up with it is refused, naming them.
+#[test]
+fn a_copy_takes_its_linked_views_only_when_asked() {
+    let (mut s, [front, right, top]) = three_views();
+    let second = second_sheet(&mut s);
+    let message = s.execute(COPY, &json!({"view": ids::encode(front), "sheet": ids::encode(second)})).unwrap_err().to_string();
+    assert!(message.contains("with_linked") && message.contains(&ids::encode(right)), "{message}");
+    let steps = s.undo.len();
+    let p = json!({"view": ids::encode(front), "sheet": ids::encode(second), "position_mm": [100.0, 100.0], "with_linked": true});
+    let copied = to_sheet(&mut s, COPY, p);
+    let [copy, side] = listed(&copied)[..] else { panic!("{copied}") };
+    assert_eq!(s.undo.len(), steps + 1);
+    assert!(![front, right, top].contains(&copy) && ![front, right, top].contains(&side), "new ids");
+    assert_eq!(copied["view"], json!(ids::encode(copy)));
+    let (original, made) = (saved(&s, front), saved(&s, copy));
+    assert_eq!((made.sheet, made.kind, made.settings, made.place), (second, original.kind, original.settings, ViewPlace::At([100.0, 100.0])));
+    assert_eq!(saved(&s, side).kind, ViewKind::Projected { parent: copy, side: ProjectedSide::Right }, "lined up with the copy, not the original");
+    assert_eq!((saved(&s, side).place, saved(&s, side).sheet), (ViewPlace::Aligned(250.0), second));
+    assert_eq!((saved(&s, front).place, saved(&s, right).place), (ViewPlace::At([150.0, 150.0]), ViewPlace::Aligned(300.0)), "the originals stay");
+    // An edit of the original changes nothing of the copies.
+    edit_view(&mut s, front, json!({"scale": "1:5"}));
+    assert_eq!(inspect_view(&mut s, side)["settings"]["scale"]["value"], "1:2");
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.drawing("test").unwrap().views.len(), 3, "the undo takes both copies away");
+    let alone = to_sheet(&mut s, COPY, json!({"view": ids::encode(front), "sheet": ids::encode(second), "with_linked": false}));
+    assert_eq!(listed(&alone).len(), 1);
+    assert_eq!(saved(&s, listed(&alone)[0]).place, ViewPlace::At([210.0, 148.5]), "the sheet's centre");
+    // Beside the original, on its own sheet.
+    let first = saved(&s, front).sheet;
+    let beside = to_sheet(&mut s, COPY, json!({"view": ids::encode(top), "sheet": ids::encode(first), "position_mm": [60.0, 60.0]}));
+    assert_eq!(saved(&s, listed(&beside)[0]).sheet, first);
+}
+
+/// A projected view copied alone is a base view of its own: looking the way it did (by name when it
+/// is exactly a named view, else by its line of sight and up), with the settings it resolved to as
+/// its own, whatever its old parents do after.
+#[test]
+fn a_side_view_copied_alone_is_a_base_view_looking_the_way_it_did() {
+    let (mut s, [front, right, top]) = three_views();
+    let source = s.drawing("test").unwrap().sources[0].id;
+    let copy = |s: &mut Session, view: u64| listed(&to_sheet(s, COPY, json!({"view": ids::encode(view), "sheet": "Sheet 1"})))[0];
+    let of_right = copy(&mut s, right);
+    let made = saved(&s, of_right);
+    assert_eq!(made.kind, ViewKind::Base { source, view: ViewDirection::Named(NamedView::Right) });
+    let own = ViewOverrides {
+        scale: Some("1:2".parse().unwrap()),
+        display_style: Some(VisualStyle::VisibleHidden),
+        reference_style: Some(VisualStyle::Visible),
+        reference_hides_model: Some(false),
+        tangent_edges: Some(Default::default()),
+    };
+    assert_eq!(made.settings, own);
+    let of_top = copy(&mut s, top);
+    let d = s.drawing("test").unwrap().clone();
+    let ViewKind::Base { view: ViewDirection::Looking(_), .. } = saved(&s, of_top).kind else { panic!("the right view's top view is no named view") };
+    let (was, is) = (d.resolve_view(top).unwrap().basis, d.resolve_view(of_top).unwrap().basis);
+    for (a, b) in [(was.x, is.x), (was.y, is.y), (was.origin, is.origin)] {
+        assert!((a - b).len() < 1e-12, "{a:?} {b:?}");
+    }
+    edit_view(&mut s, front, json!({"display_style": "visible", "scale": "1:10"}));
+    assert_eq!(saved(&s, of_right).settings, own, "the copy follows nothing");
+}
+
 /// The block's boundary in each view at 1:2, worked by hand: front 50 x 10, top 50 x 25, right
 /// 25 x 10, and from an isometric corner (100 + 50)/sqrt(2)/2 by (100 + 50 + 2 x 20)/sqrt(6)/2.
 /// The centre lands on the position, and the extents are the model's own millimetres.

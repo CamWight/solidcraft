@@ -6,19 +6,25 @@
 //! and where the view sits on its sheet ([`crate::drawing_view::on_sheet`]), and a change as one
 //! undo step that evaluates no model.
 //!
+//! `drawing.view.move_to_sheet` and `drawing.view.copy_to_sheet` (#4816) put a saved view on a
+//! sheet: the views lined up with it go with it, and keep their places beside it. A copy is
+//! independent of the views it was copied from (Cameron, 2026-10-26).
+//!
 //! The view's settings are `doc::drawing_view::ViewSettings`; its basis, scale and map onto
 //! paper are `geom::drawing_view`'s. Without a scale it takes the largest ISO 5455 scale at
 //! which the view, centred where it goes, lies inside the sheet's drawing border.
+
+use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
 use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace};
-use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
+use solidcraft_doc::drawing_view::{Looking, ViewDirection, ViewOverrides};
 use solidcraft_doc::ids;
 use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
-use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale};
+use solidcraft_geom::drawing_view::{NamedView, PRESETS, ProjectedSide, Scale};
 use solidcraft_geom::paper::MAX_COORDINATE_MM;
 use solidcraft_geom::{Aabb2, Vec2};
 use solidcraft_render::VisualStyle;
@@ -27,8 +33,8 @@ use super::CommandSpec;
 use crate::drawing_view::{Extents, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
-    BoxResult, ChoicesResult, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult, PlaceParam, ScaleResult,
-    SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ViewResult, ViewSet,
+    BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult, MoveParams,
+    PlaceParam, ScaleResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewResult, ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -39,6 +45,10 @@ const INSPECT: &str = "drawing.view.inspect";
 const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 const EDIT: &str = "drawing.view.edit";
 const EDIT_CONTRACT: TypedContract<EditParams> = TypedContract::new();
+const MOVE: &str = "drawing.view.move_to_sheet";
+const MOVE_CONTRACT: TypedContract<MoveParams> = TypedContract::new();
+const COPY: &str = "drawing.view.copy_to_sheet";
+const COPY_CONTRACT: TypedContract<CopyParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snapshot", crate::checked!("drawing.view.snapshot", CONTRACT, snapshot))
     .icon("export")
@@ -61,6 +71,20 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .contract(&EDIT_CONTRACT)
         .output(output_schema_for::<EditResult>)
         .params("view: a saved view's id; set: {scale?, display_style?, reference_style?, reference_hides_model?, tangent_edges?: each a value, or null to follow the parent (a base view keeps a scale); reference_margin_mm?; view?: a base view's direction; place?: {at: [x, y]} or {aligned: n}; linked?: a projected view's display settings all following its parent (true) or all its own, as they are now (false)} → {view, changed: [fields], followers: [the views projected from it whose settings changed with it]}. One undo step; no model is evaluated."),
+    CommandSpec::new(MOVE, "Move View to Sheet", crate::checked!("drawing.view.move_to_sheet", MOVE_CONTRACT, move_to_sheet))
+        .icon("move")
+        .in_drawing()
+        .doc_only()
+        .contract(&MOVE_CONTRACT)
+        .output(output_schema_for::<ToSheetResult>)
+        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for its centre (default: where it is, or the sheet's centre for a view lined up with its parent); break_alignment?: true to move a view lined up with its parent, which is then placed apart → {view, sheet, views: [it, then the views lined up with it, which go with it]}. One undo step, none for the sheet it is on."),
+    CommandSpec::new(COPY, "Copy View to Sheet", crate::checked!("drawing.view.copy_to_sheet", COPY_CONTRACT, copy_to_sheet))
+        .icon("copy")
+        .in_drawing()
+        .doc_only()
+        .contract(&COPY_CONTRACT)
+        .output(output_schema_for::<ToSheetResult>)
+        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for the copy's centre (default the sheet's centre); with_linked?: the views lined up with it copied too, lined up with the copy (true), or not (false); needed when it has any → {view: the copy, sheet, views: [the copies, its first]}. A copy follows none of the views it was copied from: a projected view copied alone becomes a base view, looking the way it did, with the settings it had. One undo step."),
 ];
 
 fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
@@ -166,7 +190,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     let request: EditParams = crate::schema::read(EDIT, p)?;
     let id = request.view.0;
-    let descendants = descendants(s.drawing(EDIT)?, id);
+    let descendants = descendants(s.drawing(EDIT)?, id, |_| true);
     let resolve = |d: &Drawing, ids: &[u64]| ids.iter().map(|id| d.resolve_view(*id).ok()).collect::<Vec<Option<ResolvedView>>>();
     let before = resolve(s.drawing(EDIT)?, &descendants);
     let changed = s.edit_drawing(EDIT, |d| change(d, id, &request.set))?;
@@ -193,15 +217,16 @@ fn find<'a>(d: &'a Drawing, id: u64, cmd: &str) -> Result<&'a View> {
     d.views.iter().find(|v| v.id == id).map(|v| &**v).ok_or_else(|| bad(cmd, format!("the drawing has no view {}", ids::encode(id))))
 }
 
-/// The views projected from view `id`, directly or through others, in the drawing's order.
-fn descendants(d: &Drawing, id: u64) -> Vec<u64> {
+/// The views projected from view `id`, directly or through others, in the drawing's order: each
+/// one `follows` takes, whose parent is `id` or one of them.
+fn descendants(d: &Drawing, id: u64, follows: impl Fn(&View) -> bool) -> Vec<u64> {
     let mut found = vec![id];
     // Each pass adds the views whose parent is found; a chain is at most MAX_VIEW_DEPTH views.
     for _ in 0..solidcraft_doc::drawing::view::MAX_VIEW_DEPTH {
         let more: Vec<u64> = d
             .views
             .iter()
-            .filter(|v| !found.contains(&v.id) && matches!(v.kind, ViewKind::Projected { parent, .. } if found.contains(&parent)))
+            .filter(|v| !found.contains(&v.id) && matches!(v.kind, ViewKind::Projected { parent, .. } if found.contains(&parent)) && follows(v))
             .map(|v| v.id)
             .collect();
         if more.is_empty() {
@@ -304,10 +329,173 @@ fn setting<T: Copy, U>(resolved: Setting<T>, own: Option<T>, show: impl Fn(T) ->
     SettingResult { value: show(resolved.value), from, parent, set: own.map(&show) }
 }
 
+/// The views lined up with view `id`, directly or through others: the views that go where it goes.
+fn lined_up(d: &Drawing, id: u64) -> Vec<u64> {
+    descendants(d, id, |v| matches!(v.place, ViewPlace::Aligned(_)))
+}
+
+/// Where view `id`'s centre is on its sheet: its point, or, lined up with its parent, its place
+/// along the free axis and its parent's centre across it (both views draw the same model, so their
+/// extents share that axis's middle).
+fn centre(d: &Drawing, id: u64, cmd: &str) -> Result<Vec2> {
+    let mut lined = Vec::new();
+    let mut at = id;
+    for _ in 0..solidcraft_doc::drawing::view::MAX_VIEW_DEPTH {
+        let view = find(d, at, cmd)?;
+        match (view.place, view.kind) {
+            (ViewPlace::At([x, y]), _) => return Ok(lined.iter().rev().fold(Vec2::new(x, y), |c, (side, along)| on_free_axis(c, *side, *along))),
+            (ViewPlace::Aligned(along), ViewKind::Projected { parent, side }) => {
+                lined.push((side, along));
+                at = parent;
+            }
+            (ViewPlace::Aligned(_), ViewKind::Base { .. }) => break,
+        }
+    }
+    Err(bad(cmd, format!("view {} has no place on its sheet", ids::encode(id))))
+}
+
+/// `point` with its coordinate on `side`'s free axis set to `along`: x for a view to the left or
+/// right of its parent, y for one above or below.
+fn on_free_axis(point: Vec2, side: ProjectedSide, along: f64) -> Vec2 {
+    match side {
+        ProjectedSide::Left | ProjectedSide::Right => Vec2::new(along, point.y),
+        ProjectedSide::Above | ProjectedSide::Below => Vec2::new(point.x, along),
+    }
+}
+
+/// `view`'s place moved by `by`: a point moves, and a place lined up with a parent moves along
+/// its free axis, so the views lined up with a moved view stay where they were beside it.
+fn shifted(view: &View, by: Vec2) -> ViewPlace {
+    match (view.place, view.kind) {
+        (ViewPlace::At([x, y]), _) => ViewPlace::At([x + by.x, y + by.y]),
+        (ViewPlace::Aligned(along), ViewKind::Projected { side: ProjectedSide::Left | ProjectedSide::Right, .. }) => ViewPlace::Aligned(along + by.x),
+        (ViewPlace::Aligned(along), _) => ViewPlace::Aligned(along + by.y),
+    }
+}
+
+/// The sheet `named` names in `d` (its id or its one name), and its centre.
+fn sheet_named(d: &Drawing, named: &str, cmd: &str) -> Result<(u64, Vec2)> {
+    let at = d.sheet_index(named).map_err(|e| bad(cmd, e.to_string()))?;
+    let sheet = d.sheets.get(at).ok_or_else(|| bad(cmd, format!("no sheet `{named}`")))?;
+    Ok((sheet.id, sheet.sheet.size_mm().map_err(|e| bad(cmd, e.to_string()))? * 0.5))
+}
+
+fn move_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: MoveParams = crate::schema::read(MOVE, p)?;
+    let id = request.view.0;
+    let (sheet, views) = s.edit_drawing(MOVE, |d| {
+        let (sheet, middle) = sheet_named(d, &request.sheet, MOVE)?;
+        let view = find(d, id, MOVE)?;
+        if view.sheet == sheet {
+            return Ok((sheet, Vec::new()));
+        }
+        let lined = matches!(view.place, ViewPlace::Aligned(_));
+        if lined && !request.break_alignment {
+            return Err(bad(MOVE, "it is lined up with its parent, which stays on its sheet: give `break_alignment: true` to place it apart"));
+        }
+        let from = centre(d, id, MOVE)?;
+        let to = match request.position_mm {
+            Some(p) => p.0,
+            None if lined => middle,
+            None => from,
+        };
+        let moved: Vec<u64> = std::iter::once(id).chain(lined_up(d, id)).collect();
+        for view in d.views.iter_mut().filter(|v| moved.contains(&v.id)) {
+            let place = if view.id == id { ViewPlace::At([to.x, to.y]) } else { shifted(view, to - from) };
+            let view = Arc::make_mut(view);
+            view.sheet = sheet;
+            view.place = place;
+        }
+        Ok((sheet, moved))
+    })?;
+    to_sheet_answer(id, sheet, &views)
+}
+
+fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: CopyParams = crate::schema::read(COPY, p)?;
+    let id = request.view.0;
+    let record = s.drawing(COPY)?.clone();
+    find(&record, id, COPY)?;
+    let linked = lined_up(&record, id);
+    let with_linked = match request.with_linked {
+        Some(with) => with,
+        None if linked.is_empty() => false,
+        None => {
+            let names = linked.iter().map(|v| ids::encode(*v)).collect::<Vec<_>>().join(", ");
+            return Err(bad(COPY, format!("views {names} are lined up with it: give `with_linked` (true to copy them too, false for it alone)")));
+        }
+    };
+    let originals: Vec<u64> = std::iter::once(id).chain(linked.into_iter().filter(|_| with_linked)).collect();
+    let copies = originals
+        .iter()
+        .map(|_| record.allocate_id(&mut s.ids))
+        .collect::<solidcraft_doc::Result<Vec<u64>>>()
+        .map_err(|e| bad(COPY, e.to_string()))?;
+    let copy_of = |old: u64| originals.iter().position(|o| *o == old).and_then(|i| copies.get(i)).copied();
+    let sheet = s.edit_drawing(COPY, |d| {
+        let (sheet, middle) = sheet_named(d, &request.sheet, COPY)?;
+        let from = centre(d, id, COPY)?;
+        let to = request.position_mm.map_or(middle, |p| p.0);
+        let resolved = d.resolve_view(id).map_err(|e| bad(COPY, e.to_string()))?;
+        let mut made = Vec::with_capacity(copies.len());
+        for (old, new) in originals.iter().zip(&copies) {
+            let original = find(d, *old, COPY)?;
+            let mut view = View { id: *new, sheet, ..original.clone() };
+            view.place = shifted(original, to - from);
+            match original.kind {
+                // The copy follows none of the views it came from: a projected view copied alone is
+                // a base view, looking the way it did, with the settings it had as its own.
+                ViewKind::Projected { .. } if *old == id => {
+                    view.kind = ViewKind::Base { source: resolved.source, view: looking(&resolved.basis) };
+                    view.settings = ViewOverrides {
+                        scale: Some(resolved.scale.value),
+                        display_style: Some(resolved.display_style.value),
+                        reference_style: Some(resolved.reference_style.value),
+                        reference_hides_model: Some(resolved.reference_hides_model.value),
+                        tangent_edges: Some(resolved.tangent_edges.value),
+                    };
+                    view.place = ViewPlace::At([to.x, to.y]);
+                }
+                ViewKind::Projected { parent, side } => view.kind = ViewKind::Projected { parent: copy_of(parent).unwrap_or(parent), side },
+                ViewKind::Base { .. } => {}
+            }
+            made.push(Arc::new(view));
+        }
+        d.views.extend(made);
+        Ok(sheet)
+    })?;
+    let first = copies.first().copied().unwrap_or_default();
+    to_sheet_answer(first, sheet, &copies)
+}
+
+fn to_sheet_answer(view: u64, sheet: u64, views: &[u64]) -> Result<Value> {
+    let reply = ToSheetResult {
+        view: ids::encode(view),
+        sheet: ids::encode(sheet),
+        views: views.iter().map(|v| ids::encode(*v)).collect(),
+        param_warnings: Vec::new(),
+    };
+    serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
+}
+
+/// The named view that is exactly `basis`, if one is.
+fn named(basis: &Plane) -> Option<NamedView> {
+    NamedView::ALL.iter().copied().find(|v| v.basis() == *basis)
+}
+
+/// `basis` as a base view saves it: by name when it is exactly a named view's, so nothing rounds;
+/// else its line of sight and up, which give the same basis back to within rounding.
+fn looking(basis: &Plane) -> ViewDirection {
+    named(basis).map_or_else(
+        || ViewDirection::Looking(Looking { direction: basis.y.cross(basis.x).into(), up: basis.y.into(), origin: basis.origin.into() }),
+        ViewDirection::Named,
+    )
+}
+
 /// A basis as the replies give it: its name when it is exactly a named view's.
 fn direction(basis: &Plane) -> ViewResult {
     ViewResult {
-        named: NamedView::ALL.iter().find(|v| v.basis() == *basis).map(|v| snake_name(*v)),
+        named: named(basis).map(snake_name),
         // The line of sight, -(x × y), written so no component reads -0.
         direction: basis.y.cross(basis.x).into(),
         x: basis.x.into(),
