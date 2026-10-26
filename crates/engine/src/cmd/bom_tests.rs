@@ -971,6 +971,15 @@ fn a_body_that_measures_inside_out_has_no_mass() {
     }
     let r = run(&mut s, "assembly.bom", json!({"mass": true}));
     assert_eq!(weights(&r), [weight("Facing down", "Default", None), weight("Flat", "Default", Some(0.0))], "{r}");
+    // The flat one beside a definition with nothing to weigh, under one part number: weighing
+    // nothing and having nothing to weigh aren't one mass.
+    run(&mut s, "component.create", json!({"name": "Empty", "activate": false}));
+    for c in ["Flat", "Empty"] {
+        run(&mut s, "component.metadata.set", json!({"component": c, "part_number": "FL-1"}));
+    }
+    let r = run(&mut s, "assembly.bom", json!({"mass": true}));
+    let row = r["rows"].as_array().unwrap().iter().find(|r| r["part_number"] == "FL-1").cloned().unwrap();
+    assert_eq!((row["components"].as_array().map(Vec::len), &row["mass_g"]), (Some(2), &Value::Null), "{r}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
