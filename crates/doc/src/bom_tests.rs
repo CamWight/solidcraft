@@ -265,6 +265,31 @@ fn kits_are_told_apart_by_what_they_hold_not_by_how_it_reads() {
     assert!(each.contains(&vec![b4, b5]) && each.contains(&vec![b6]), "{each:?}");
 }
 
+/// All levels walks under the list's one budget: 100,000 placements and 64 levels are listed, and
+/// one more of either is refused, never listed in part.
+#[test]
+fn all_levels_lists_at_each_cap_and_refuses_one_more() {
+    let mut doc = Document::default();
+    let (part, _) = add(&mut doc, "Part", 0);
+    let base = doc.occurrences.iter().map(|o| o.id).max().unwrap_or(0);
+    let placement =
+        |id: u64| Occurrence { id, component: part, parent: 0, name: format!("Part:{id}"), transform: IDENTITY, grounded: false, bom_type: None };
+    doc.occurrences.extend((1..MAX_PLACEMENTS as u64).map(|i| placement(base + i)));
+    let all = listed(&doc, view(View::AllLevels)).unwrap();
+    assert_eq!((all.rows.len(), all.total.occurrences), (1, MAX_PLACEMENTS as u64));
+    doc.occurrences.push(placement(base + MAX_PLACEMENTS as u64));
+    assert!(listed(&doc, view(View::AllLevels)).is_err(), "100,001 placements");
+    let mut doc = Document::default();
+    let mut parent = 0;
+    for i in 0..MAX_PLACEMENT_DEPTH {
+        parent = add(&mut doc, &format!("L{i}"), parent).0;
+    }
+    let all = listed(&doc, view(View::AllLevels)).unwrap();
+    assert_eq!(all.rows_deep().last().map(|(item, _)| item.len()), Some(MAX_PLACEMENT_DEPTH));
+    add(&mut doc, "Too deep", parent);
+    assert!(listed(&doc, view(View::AllLevels)).is_err(), "65 levels");
+}
+
 /// Two parts with one part number are one row only when what they hold is the same all the way
 /// down: here they differ two levels below, so in all levels they are two rows, each with its own.
 #[test]
