@@ -6,7 +6,7 @@
 //! of reference fields with their labels, and the centring and trimming marks.
 //! [`DrawingBorderProfile::validate`] checks a profile on its own, as when one is read, and
 //! [`DrawingBorderProfile::layout`] works it out for one sheet, so a new size regrows it. Nothing
-//! here is frozen geometry, saved in a design or drawn: a writer draws the [`SheetLayout`] later.
+//! here is frozen geometry or saved in a design: [`SheetLayout::paper`] gives a writer what it draws.
 //!
 //! Sheet coordinates are millimetres from the sheet's lower-left corner, x to the right and y up.
 //! The drawing border's line is centred on [`SheetLayout::drawing_border`].
@@ -32,10 +32,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::paper::MAX_LINE_MM;
 /// The longest side a custom sheet may have, in millimetres: the paper scene's limit.
 pub use crate::paper::MAX_SIDE_MM;
-use crate::{Aabb2, Vec2};
+use crate::paper::{Group, Item, MAX_LINE_MM, ObjectKind};
+use crate::{Aabb2, Loop2, Region2, Seg2, Vec2};
 
 /// The most fields an equal division may cut each way.
 pub const MAX_EQUAL_FIELDS: u32 = 200;
@@ -431,6 +431,50 @@ impl DrawingBorderProfile {
             trimming_marks,
         })
     }
+}
+
+/// ISO 5457's grid line width (the drawings study, section 11.3): the grid reference border and the
+/// marks at its field edges.
+pub const GRID_LINE_MM: f64 = 0.35;
+
+impl SheetLayout {
+    /// What the drawing border draws, as paper groups of kind `drawing_border` for `object`, in this
+    /// order and each left out when it has nothing: the drawing border, closed,
+    /// `drawing_border_line_mm` wide; the grid reference border and a mark at each edge between two
+    /// fields, from the drawing border out to it on every side, [`GRID_LINE_MM`] wide; the centring
+    /// marks in the drawing border's width; the trimming marks, filled. The grid's labels are text,
+    /// which the paper scene doesn't have yet.
+    pub fn paper(&self, object: u64) -> Vec<Group> {
+        let line = |a, b, width_mm| Item::Stroke { path: vec![Seg2::Line { a, b }], closed: false, width_mm };
+        let outline = |r, width_mm| Item::Stroke { path: rectangle(r).segs, closed: true, width_mm };
+        let (d, g) = (self.drawing_border, self.grid_border);
+        let mut grid = Vec::new();
+        // No fields, or a grid reference border on the drawing border: no grid to draw.
+        if !self.columns.is_empty() && g.min.x < d.min.x {
+            grid.push(outline(g, GRID_LINE_MM));
+            // Each field's far edge but the last's: left to right, and top to bottom.
+            for x in self.columns.iter().take(self.columns.len().saturating_sub(1)).map(|f| f.to_mm) {
+                grid.push(line(Vec2::new(x, g.min.y), Vec2::new(x, d.min.y), GRID_LINE_MM));
+                grid.push(line(Vec2::new(x, d.max.y), Vec2::new(x, g.max.y), GRID_LINE_MM));
+            }
+            for y in self.rows.iter().take(self.rows.len().saturating_sub(1)).map(|f| f.from_mm) {
+                grid.push(line(Vec2::new(g.min.x, y), Vec2::new(d.min.x, y), GRID_LINE_MM));
+                grid.push(line(Vec2::new(d.max.x, y), Vec2::new(g.max.x, y), GRID_LINE_MM));
+            }
+        }
+        let centring = self.centring_marks.iter().map(|&[a, b]| line(a, b, self.drawing_border_line_mm)).collect();
+        let trimming = self.trimming_marks.iter().map(|&r| Item::Fill { region: Region2 { outer: rectangle(r), holes: vec![] } }).collect();
+        [vec![outline(d, self.drawing_border_line_mm)], grid, centring, trimming]
+            .into_iter()
+            .filter(|items| !items.is_empty())
+            .map(|items| Group { object, kind: ObjectKind::DrawingBorder, items })
+            .collect()
+    }
+}
+
+/// `r`'s outline, anticlockwise from its lower-left corner.
+fn rectangle(r: Aabb2) -> Loop2 {
+    Loop2::polygon(&[r.min, Vec2::new(r.max.x, r.min.y), r.max, Vec2::new(r.min.x, r.max.y)])
 }
 
 /// The four centring marks: on the sheet's centre lines, from the edges of `start` to `reach`
