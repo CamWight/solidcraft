@@ -375,13 +375,18 @@ fn paste_new(s: &mut Session, p: &Value) -> Result<Value> {
     super::component_clone::paste(s, comp, occ, transform, parent, p)
 }
 
+/// An occurrence path as a command takes it: 1 to 64 occurrence ids.
+pub(crate) fn path_ids(value: &Value) -> std::result::Result<Vec<u64>, &'static str> {
+    value
+        .as_array()
+        .filter(|a| !a.is_empty() && a.len() <= solidcraft_doc::MAX_PLACEMENT_DEPTH)
+        .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
+        .ok_or("`path` must list 1..64 occurrence ids")
+}
+
 pub(super) fn occurrence_path(s: &Session, p: &Value, id: u64, cmd: &str) -> Result<Vec<u64>> {
     let path = if let Some(value) = p.get("path") {
-        value
-            .as_array()
-            .filter(|a| !a.is_empty() && a.len() <= 64)
-            .and_then(|a| a.iter().map(Value::as_u64).collect::<Option<Vec<_>>>())
-            .ok_or_else(|| bad(cmd, "`path` must list 1..64 occurrence ids"))?
+        path_ids(value).map_err(|e| bad(cmd, e))?
     } else {
         let o = s.doc.occurrences.iter().find(|o| o.id == id).ok_or_else(|| bad(cmd, "no occurrence"))?;
         let mut path = s.doc.first_path(o.parent);
