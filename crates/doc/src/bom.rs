@@ -212,8 +212,8 @@ pub enum Unlisted {
     NotFound,
     /// It counts as a reference, or is inside one: no bill of materials counts it.
     Reference,
-    /// It has no row of its own and isn't inside one: a phantom, or in parts only a subassembly
-    /// listed through its parts (the assembly listed, an empty path, is none either).
+    /// It has no row of its own and isn't inside one: a phantom without bodies, or in parts only
+    /// a subassembly listed through its parts (the assembly listed, an empty path, is none either).
     NoRow,
 }
 
@@ -608,8 +608,8 @@ struct Step {
 }
 
 /// How a placement counts in `view`: the one rule every list and every mass read. A reference
-/// counts nowhere and nothing inside it does; a phantom has no row and what it holds counts where
-/// it is placed; a purchased part is one row with nothing inside it listed (in all levels, its
+/// counts nowhere and nothing inside it does; a phantom's own bodies, when it has any, are a row of
+/// their own (as a subassembly's are in parts only) and what it holds counts where it is placed; a purchased part is one row with nothing inside it listed (in all levels, its
 /// contents under it when asked); an inseparable part is one row, and in parts only its purchased
 /// parts are listed beside it; a normal part is a row in the structured views, in all levels with
 /// what it holds under it, and in parts only a subassembly is listed through its parts unless it
@@ -620,7 +620,8 @@ fn classify(view: View, walk: Walk, bom_type: BomType, shape: Shape) -> Step {
     let contents = |walk| shape.contents.then_some(walk);
     match (bom_type, walk) {
         (BomType::Reference, _) => nothing,
-        (BomType::Phantom, _) => Step { inside: Some(walk), ..nothing },
+        (BomType::Phantom, Walk::Listed) => Step { row: shape.bodies, inside: Some(Walk::Listed), kit: false, holds: Holds::Own },
+        (BomType::Phantom, Walk::PurchasedOnly) => Step { inside: Some(walk), ..nothing },
         (BomType::Purchased, Walk::Listed) if view == View::AllLevels && shape.open_purchased => {
             Step { inside: contents(Walk::Listed), kit: true, ..row(Holds::All) }
         }
