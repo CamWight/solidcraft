@@ -265,6 +265,38 @@ fn kits_are_told_apart_by_what_they_hold_not_by_how_it_reads() {
     assert!(each.contains(&vec![b4, b5]) && each.contains(&vec![b6]), "{each:?}");
 }
 
+/// Two parts with one part number are one row only when what they hold is the same all the way
+/// down: here they differ two levels below, so in all levels they are two rows, each with its own.
+#[test]
+fn kits_are_compared_to_any_depth() {
+    let mut doc = Document::default();
+    let (a, _) = add(&mut doc, "A", 0);
+    let (b, _) = add(&mut doc, "B", 0);
+    let (x1, _) = add(&mut doc, "X1", a);
+    let (x2, _) = add(&mut doc, "X2", b);
+    let (bolt, _) = add(&mut doc, "Bolt", x1);
+    for (id, part_number) in [(a, "P"), (b, "P"), (x1, "X"), (x2, "X"), (bolt, "BOLT")] {
+        number(&mut doc, id, part_number);
+    }
+    let all = listed(&doc, view(View::AllLevels)).unwrap();
+    assert_eq!(
+        rows(&all),
+        [
+            row("1", "A", Normal, 1, 1),
+            row("1.1", "X1", Normal, 1, 1),
+            row("1.1.1", "Bolt", Normal, 1, 1),
+            row("2", "B", Normal, 1, 1),
+            row("2.1", "X2", Normal, 1, 1)
+        ],
+        "two P rows, never one with children at each 0"
+    );
+    // The same contents two levels down: one row again.
+    let (bolt2, _) = add(&mut doc, "Bolt 2", x2);
+    number(&mut doc, bolt2, "BOLT");
+    let all = listed(&doc, view(View::AllLevels)).unwrap();
+    assert_eq!(rows(&all), [row("1", "A; B", Normal, 2, 2), row("1.1", "X1; X2", Normal, 2, 1), row("1.1.1", "Bolt; Bolt 2", Normal, 2, 1)]);
+}
+
 /// What a folded part holds is listed as parts only lists it, in parts only and the first level,
 /// and isn't folded again: a numbered subassembly inside it is listed through its parts. In all
 /// levels it is listed in all levels again, so that subassembly is a row with its own rows.
