@@ -191,7 +191,7 @@ fn compact_exponentially_instanced_assembly_refuses_partial_totals() {
     }
     for command in ["component.properties", "occurrence.properties"] {
         let error = s.execute(command, &json!({"component": 0, "occurrence": last_occurrence})).unwrap_err();
-        assert!(error.to_string().contains("traversal limits"), "{error}");
+        assert!(error.to_string().contains("more than 100000 placements"), "{error}");
     }
 }
 
@@ -203,7 +203,7 @@ fn excessively_nested_assembly_refuses_partial_totals() {
         s.active_component = s.doc_mut().add_component(None, parent).unwrap();
     }
     let error = s.execute("component.properties", &json!({"component": 0})).unwrap_err();
-    assert!(error.to_string().contains("traversal limits"), "{error}");
+    assert!(error.to_string().contains("deeper than 64 levels"), "{error}");
 }
 
 /// #532: a product BOM needs materials outside the built-in library (walnut, polypropylene,

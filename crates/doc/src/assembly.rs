@@ -35,6 +35,11 @@ pub fn mat_volume_scale(m: &Mat) -> f64 {
     c(0).dot(c(1).cross(c(2))).abs()
 }
 
+/// Why an assembly too large to walk whole is refused.
+pub(crate) fn too_many_placements() -> crate::DocError {
+    crate::DocError::Invalid(format!("the assembly is deeper than {MAX_PLACEMENT_DEPTH} levels or has more than {MAX_PLACEMENTS} placements"))
+}
+
 pub fn apply_point(m: &Mat, p: Vec3) -> Vec3 {
     Vec3::new(
         m[0][0] * p.x + m[1][0] * p.y + m[2][0] * p.z + m[3][0],
@@ -356,6 +361,32 @@ impl Document {
         let walk = self.placements();
         let reached = walk.iter().fold(0usize, |n, (c, _, _)| n.saturating_add(children.get(c).copied().unwrap_or(0)));
         walk.len() == reached.saturating_add(1)
+    }
+
+    /// The placement `path` of `component` at `world`, and every placement below it: (component,
+    /// occurrence path ids, world transform), the start first. Unlike [`Self::placements`], which
+    /// stops a branch where the display does, a larger assembly is refused, never walked in part:
+    /// for totals that must cover all of it (physical properties).
+    pub fn placements_below(&self, component: u64, path: &[u64], world: Mat) -> crate::Result<Vec<(u64, Vec<u64>, Mat)>> {
+        let mut children: std::collections::HashMap<u64, Vec<&Occurrence>> = std::collections::HashMap::new();
+        for o in &self.occurrences {
+            children.entry(o.parent).or_default().push(o);
+        }
+        let mut out = vec![(component, path.to_vec(), world)];
+        let mut stack = vec![(component, path.to_vec(), world)];
+        while let Some((parent, path, world)) = stack.pop() {
+            for o in children.get(&parent).into_iter().flatten() {
+                if path.len() >= MAX_PLACEMENT_DEPTH || out.len() > MAX_PLACEMENTS {
+                    return Err(too_many_placements());
+                }
+                let mut child = path.clone();
+                child.push(o.id);
+                let w = mat_mul(&world, &o.transform);
+                out.push((o.component, child.clone(), w));
+                stack.push((o.component, child, w));
+            }
+        }
+        Ok(out)
     }
 
     /// Every body as the world shows it: its world name ("Body1", or "Body1 (Occ:2)" for a

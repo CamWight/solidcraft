@@ -790,7 +790,7 @@ fn push_once(names: &mut Vec<String>, name: String) {
 }
 
 fn too_big() -> DocError {
-    DocError::Invalid(format!("the assembly is deeper than {MAX_PLACEMENT_DEPTH} levels or has more than {MAX_PLACEMENTS} placements"))
+    crate::assembly::too_many_placements()
 }
 
 #[cfg(test)]
