@@ -28,6 +28,13 @@ pub fn mat_mul(a: &Mat, b: &Mat) -> Mat {
     r
 }
 
+/// How much `m` scales a volume: the size of the determinant of its linear part (1 for a rigid
+/// placement).
+pub fn mat_volume_scale(m: &Mat) -> f64 {
+    let c = |i: usize| m.get(i).map_or(Vec3::ZERO, |col| Vec3::new(col[0], col[1], col[2]));
+    c(0).dot(c(1).cross(c(2))).abs()
+}
+
 pub fn apply_point(m: &Mat, p: Vec3) -> Vec3 {
     Vec3::new(
         m[0][0] * p.x + m[1][0] * p.y + m[2][0] * p.z + m[3][0],

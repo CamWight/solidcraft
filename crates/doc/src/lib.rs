@@ -58,7 +58,7 @@ pub mod sheet;
 
 pub use assembly::{
     BomType, IDENTITY, MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, Mat, Occurrence, apply_point, apply_vector, is_identity, map_plane, map_point_expr,
-    mat_inverse, mat_mul, rigid,
+    mat_inverse, mat_mul, mat_volume_scale, rigid,
 };
 pub use document::*;
 pub use eval::KeptResults;
