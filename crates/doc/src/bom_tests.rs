@@ -477,7 +477,9 @@ fn a_row_has_a_mass_only_when_its_definitions_are_weighed_and_agree() {
     assert_eq!(agree(&[surface, surface]), Mass::Grams(0.0), "a body that weighs nothing (a surface) is weighed");
     assert_eq!(agree(&[surface, steel]), Mass::Unknown(Unknown::Differs));
     assert_eq!(agree(&[empty]), Mass::Unknown(Unknown::NothingToWeigh), "nothing to weigh");
-    assert_eq!(agree(&[steel, empty]), Mass::Unknown(Unknown::NothingToWeigh));
+    assert_eq!(agree(&[steel, empty]), Mass::Unknown(Unknown::Differs), "one weighs something, one nothing");
+    assert_eq!(agree(&[empty, steel]), Mass::Unknown(Unknown::Differs), "whichever comes first");
+    assert_eq!(agree(&[empty, empty]), Mass::Unknown(Unknown::NothingToWeigh));
     assert_eq!(agree(&[None]), Mass::Unknown(Unknown::Unmeasurable), "not measured");
     assert_eq!(agree(&[aluminium, None, steel]), Mass::Unknown(Unknown::Unmeasurable), "whichever definition it is");
     assert_eq!(agree(&[]), Mass::Unknown(Unknown::NothingToWeigh));
