@@ -1,5 +1,7 @@
 //! Semantic dimension annotations, independent of layout, UI language and saved data.
 
+use serde::{Deserialize, Serialize};
+
 use crate::{DocError, Result};
 
 /// Deviations are offsets from the unrounded nominal, in internal units (mm or rad).
@@ -41,7 +43,9 @@ pub enum Indicator {
     SphericalRadius,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// A drafting profile keeps it, so it is saved with the profile (W09d).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Repeat {
     Times,
     X,

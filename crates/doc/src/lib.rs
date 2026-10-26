@@ -22,6 +22,7 @@ pub mod config;
 pub mod construct;
 pub mod display_quality;
 pub mod display_units;
+pub mod drafting_profile;
 mod document;
 mod eval;
 pub mod expr;
@@ -106,6 +107,8 @@ pub type Result<T> = std::result::Result<T, DocError>;
 
 #[cfg(test)]
 mod coil_tests;
+#[cfg(test)]
+mod drafting_profile_tests;
 #[cfg(test)]
 mod feature_walk_tests;
 #[cfg(test)]
