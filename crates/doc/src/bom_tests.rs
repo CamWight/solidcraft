@@ -28,10 +28,10 @@ fn typed(doc: &mut Document, component: u64, bom_type: BomType) {
     set(doc, component, "bom_type", bom_type.as_str());
 }
 
-/// What `request` lists for `doc` (none of whose components has bodies).
+/// What `request` lists for `doc` (none of whose components has bodies), with each row's members.
 fn listed(doc: &Document, request: Request) -> Result<Bom> {
     let state = ModelState::default();
-    list(&mut Tree::new(doc, &state), &request)
+    list_with(&mut Tree::new(doc, &state), &request, true)
 }
 
 fn view(view: View) -> Request {
@@ -365,7 +365,9 @@ fn row_of_finds_the_row_a_placement_is_counted_in() {
     let state = ModelState::default();
     let mut tree = Tree::new(&doc, &state);
     let name = |r: std::result::Result<&Row, Unlisted>| r.map(|r| r.names.join("; "));
-    let flat = list(&mut tree, &Request::default()).unwrap();
+    let flat = list_with(&mut tree, &Request::default(), true).unwrap();
+    // Made for its rows alone, a list keeps no members.
+    assert!(list(&mut tree, &Request::default()).unwrap().rows.iter().all(|r| r.members.is_empty()));
     let cases: &[(&[&str], std::result::Result<&str, Unlisted>)] = &[
         (&["Bolt"], Ok("Bolt")),
         (&["Bolt", "Nut"], Ok("Bolt")),
@@ -400,14 +402,14 @@ fn row_of_finds_the_row_a_placement_is_counted_in() {
     ];
     assert_eq!(stands, want.map(|(n, h)| (n.to_string(), h)));
 
-    let top = list(&mut tree, &view(View::FirstLevel)).unwrap();
+    let top = list_with(&mut tree, &view(View::FirstLevel), true).unwrap();
     let cases: &[(&[&str], &str)] = &[(&["Sub", "Washer"], "Sub"), (&["Set", "Screw"], "Screw"), (&["Frame", "Clip"], "Frame")];
     for (names, found) in cases {
         assert_eq!(name(top.row_of(&tree, &path(names))), Ok(found.to_string()), "{names:?}");
     }
     assert!(top.rows.iter().all(|r| r.stands_for == Holds::All));
 
-    let kit = list(&mut tree, &folded(View::PartsOnly)).unwrap();
+    let kit = list_with(&mut tree, &folded(View::PartsOnly), true).unwrap();
     let sub = kit.row_of(&tree, &path(&["Sub"])).unwrap();
     let washer = kit.row_of(&tree, &path(&["Sub", "Washer"])).unwrap();
     assert_eq!((sub.names.join(""), sub.stands_for, washer.names.join("")), ("Sub".into(), Holds::All, "Washer".into()));
@@ -432,7 +434,7 @@ fn every_placement_is_in_one_row_or_none() {
         for fold in [false, true] {
             for group in Group::ALL {
                 let request = Request { view: v, fold, group, ..Request::default() };
-                let bom = list(&mut tree, &request).unwrap();
+                let bom = list_with(&mut tree, &request, true).unwrap();
                 let deep = bom.rows_deep();
                 let mut seen: Vec<&Vec<u64>> = deep.iter().flat_map(|(_, r)| &r.members).collect();
                 assert_eq!(seen.len() as u64, bom.total.occurrences, "{request:?}");
