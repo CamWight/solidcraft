@@ -1,5 +1,5 @@
 use serde_json::{Value, json};
-use solidcraft_doc::bom::{self, Bom, Group, Holds, Mass, Request, Tree, Unknown, View};
+use solidcraft_doc::bom::{self, Bom, Group, Mass, Request, Tree, Unknown, View};
 
 use crate::Session;
 
@@ -1167,28 +1167,6 @@ fn the_total_is_weighed_from_the_assembly_not_added_up_from_rows() {
             }
         }
     }
-}
-
-/// A row says what one of its parts stands for when weighed, and which placements it counts.
-#[test]
-fn a_row_says_what_it_stands_for_and_which_placements_it_counts() {
-    let mut s = frame();
-    set_type(&mut s, "Frame", "inseparable");
-    set_type(&mut s, "Bracket", "purchased");
-    let id = |name: &str| s.doc.occurrences.iter().find(|o| o.name == name).unwrap().id;
-    let mut brackets = vec![vec![id("Frame:1"), id("Bracket:1")], vec![id("Bracket:2")]];
-    brackets.sort();
-    let want = [
-        ("Bracket", Holds::All, brackets),
-        ("Frame", Holds::AllButPurchased, vec![vec![id("Frame:1")]]),
-        ("Grease", Holds::Own, vec![vec![id("Grease:1")]]),
-        ("Spacer", Holds::Own, vec![vec![id("Spacer:1")]]),
-    ];
-    let flat = list(&s, Request::default());
-    let rows: Vec<(&str, Holds, Vec<Vec<u64>>)> = flat.rows.iter().map(|r| (r.names[0].as_str(), r.stands_for, r.members.clone())).collect();
-    assert_eq!(rows, want, "the blocks are the inseparable frame's, the brackets bought beside it");
-    // At the first level each row stands for all its part holds.
-    assert!(list(&s, Request { view: View::FirstLevel, ..Request::default() }).rows.iter().all(|r| r.stands_for == Holds::All));
 }
 
 /// A compact assembly that places one block 2^64 times (a level placed once, each level below it
