@@ -1332,6 +1332,30 @@ fn all_levels_refuses_what_it_cant_list() {
     assert!(e.contains("more than 100000 placements"), "{e}");
 }
 
+/// 64 levels in all levels: the rows come one after another, so a JSON reader takes the list back
+/// (nested, it would be 129 containers deep, past serde_json's 128).
+#[test]
+fn all_levels_64_deep_reads_back_as_json() {
+    let mut s = Session::default();
+    let mut parent = 0;
+    for _ in 0..64 {
+        parent = s.doc_mut().add_component(None, parent).unwrap();
+    }
+    let r = run(&mut s, "assembly.bom", json!({"levels": "all"}));
+    let rows = r["rows"].as_array().unwrap();
+    assert_eq!(rows.len(), 64);
+    assert!(rows.iter().all(|row| row.get("children").is_none()));
+    assert_eq!(rows.last().unwrap()["item"], vec!["1"; 64].join("."));
+    let back: Value = serde_json::from_str(&serde_json::to_string(&r).unwrap()).unwrap();
+    assert_eq!(back, r);
+    let dir = scratch("deep");
+    let path = dir.join("deep.json");
+    run(&mut s, "assembly.bom", json!({"levels": "all", "path": path.to_str().unwrap()}));
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(file["rows"].as_array().map(Vec::len), Some(64));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// All levels gathers the rows under a row as it gathers the top: by part number two definitions
 /// of one part number under a subassembly are one row, by definition two.
 #[test]
