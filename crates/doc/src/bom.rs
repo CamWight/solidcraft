@@ -16,6 +16,10 @@
 //! however often it is placed, and kept in the [`Tree`] for every list made from it. The
 //! assembly's own mass is weighed the same way, never added up from rows: a row whose definitions
 //! weigh differently has none.
+//!
+//! Materials are bodies' (`material.assign`): a row names the materials of the bodies it stands for,
+//! and a row that stands for an assembly names one only when everything in it shares it. A
+//! component has no material of its own yet; when it has, this rule is where it joins.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -450,10 +454,10 @@ impl<'a> Tree<'a> {
         Some(row)
     }
 
-    /// Each row's materials, and its children's (Cameron, 2026-10-23): a part lists its own; a row
-    /// that stands for an assembly shows a material only when everything it stands for shares it,
-    /// so a frame of steel and aluminium parts reads blank and a bought bearing of steel parts
-    /// reads steel. A material set on a component is set on all its bodies, so it shows that way.
+    /// Each row's materials, and its children's (Cameron, 2026-10-23): a part lists its own bodies';
+    /// a row that stands for an assembly shows a material only when everything it stands for
+    /// shares it, so a frame of steel and aluminium parts reads blank and a bought bearing of steel
+    /// parts reads steel. Materials are set on bodies only (see the module notes).
     fn name_materials(&mut self, rows: &mut [Row]) -> Result<()> {
         for row in rows {
             let mut names: Vec<String> = Vec::new();
