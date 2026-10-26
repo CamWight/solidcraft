@@ -1,17 +1,17 @@
-//! Cell content: what a title-block cell shows, as text and fields, how it should fit, and the
-//! cell text rule that places a label and a value in a cell. Plain data in sheet millimetres, like
+//! Cell content: what a cell shows, as text and fields, how it should fit, and the cell text rule
+//! that places a label and a value in a cell. These are the rules every table of cells shares:
+//! title blocks now, parts lists later. Plain data in sheet millimetres, like
 //! [`crate::drawing_sheet`]: nothing here reads a field's value, measures text or draws.
 //!
 //! - [`Content`] is a list of [`Part`]s: text as written, or a field naming a value by its
 //!   [`Source`] and key, with a [`Format`]. Keys, units and decimals are kept as written; the
-//!   resolver checks them against each source. [`Content::validate`] bounds its size.
-//! - A resolved value is a [`Resolved`]: the text shown, whether it is live, typed over (an
-//!   [`Override`]) or missing, and why a part couldn't be read. [`MISSING`] stands in for a part
-//!   that couldn't.
+//!   resolver checks them against each source. [`Content::validate`] bounds its size, and
+//!   [`check_label`] a label's.
 //! - A value is never cut: when it has more than its [`Fit`] allows, it is shown whole with a
 //!   [`Warning`].
 //!
-//! The cell text rule (x to the right, y up):
+//! The cell text rule (x to the right, y up), in the cell inside its lines, so the padding is
+//! measured from a line's inner edge whatever the line's width:
 //! - a label's baseline starts [`PADDING_MM`] in from the cell's left side, and its cap height
 //!   plus [`PADDING_MM`] down from the cell's top ([`label_at`]);
 //! - the value box is the cell inset by [`PADDING_MM`], its top [`PADDING_MM`] below the label's
@@ -32,12 +32,10 @@ use crate::{Aabb2, EPS, Vec2};
 
 /// The most parts a cell's content may have.
 pub const MAX_PARTS: usize = 64;
-/// The most bytes of text a cell's content may hold in all, and each text of an override.
+/// The most bytes of text a cell's content may hold in all, and a label.
 pub const MAX_TEXT_BYTES: usize = 4096;
-/// The space between a cell's lines and its text, in millimetres.
+/// The space between the inner edge of a cell's lines and its text, in millimetres.
 pub const PADDING_MM: f64 = 1.0;
-/// What a part that couldn't be read shows.
-pub const MISSING: &str = "-";
 
 /// Where a field's value comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,56 +105,6 @@ pub enum HAlign {
     Right,
 }
 
-/// Text typed over a cell's value, with the value it replaced, so a later change shows as drift.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Override {
-    pub text: String,
-    pub source_was: String,
-}
-
-/// A cell's value as resolved.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Resolved {
-    /// What the cell shows.
-    pub text: String,
-    pub state: State,
-    pub problems: Vec<Problem>,
-}
-
-/// Where a resolved value's text comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum State {
-    /// Its source, as it is now.
-    Live,
-    /// An override; `drifted` when the source no longer gives what it replaced.
-    Overridden { drifted: bool },
-    /// Its source, with [`MISSING`] for a part that couldn't be read.
-    Missing,
-}
-
-/// A part of the content that couldn't be read, by its index, and why.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Problem {
-    pub part: usize,
-    pub reason: Reason,
-}
-
-/// Why a field couldn't be read.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Reason {
-    /// The source has no value under the key, such as a property never set.
-    NotSet,
-    /// The source no longer exists, such as a deleted component.
-    Gone,
-    /// The source's model hasn't been worked out since it changed.
-    Stale,
-    /// SolidCraft doesn't keep this value yet.
-    NotYet,
-    /// The value can't be measured, such as a mass when a part's isn't known.
-    Unmeasurable,
-}
-
 /// The projection a drawing's views use, first or third angle (ISO 5456-2): the value of
 /// `drawing.projection`, which the views and the title block's symbol both read.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -217,12 +165,9 @@ impl Content {
     }
 }
 
-impl Override {
-    /// Checks the typed text and the value it replaced, each by the module's text rule.
-    pub fn validate(&self) -> Result<()> {
-        check_text([self.text.as_str()])?;
-        check_text([self.source_was.as_str()])
-    }
+/// Checks a label's text: one line of at most [`MAX_TEXT_BYTES`], without control characters.
+pub fn check_label(text: &str) -> Result<()> {
+    require(text.len() <= MAX_TEXT_BYTES && !text.chars().any(char::is_control), "a label is one line of at most 4096 bytes")
 }
 
 impl Fit {
@@ -261,12 +206,13 @@ fn is_wide(c: char) -> bool {
     WIDE.iter().any(|&(first, last)| (first..=last).contains(&c))
 }
 
-/// Where a label `cap_mm` high goes in `cell`: its baseline's left end.
+/// Where a label `cap_mm` high goes in `cell` (the cell inside its lines): its baseline's left end.
 pub fn label_at(cell: Aabb2, cap_mm: f64) -> Vec2 {
     Vec2::new(cell.min.x + PADDING_MM, cell.max.y - PADDING_MM - cap_mm)
 }
 
-/// The box a cell's value goes in, under a label `label_cap_mm` high when it has one.
+/// The box a cell's value goes in, under a label `label_cap_mm` high when it has one (`cell`: the
+/// cell inside its lines).
 pub fn value_box(cell: Aabb2, label_cap_mm: Option<f64>) -> Aabb2 {
     let inset = cell.inflated(-PADDING_MM);
     match label_cap_mm {

@@ -11,7 +11,8 @@
 //! has text; nothing here is saved or drawn yet.
 //!
 //! The outline is drawn `outline_line_mm` wide and the lines between cells `cell_line_mm`, each
-//! centred on its edge.
+//! centred on its edge. A cell's text is padded from the inner edge of its lines
+//! ([`TitleBlock::inside_lines`]), so a wide outline never covers it.
 
 use serde::{Deserialize, Serialize};
 
@@ -132,12 +133,23 @@ impl Cell {
         Aabb2 { min: corner + Vec2::new(x0, y0), max: corner + Vec2::new(x1, y1) }
     }
 
-    fn value_box(&self, rect: Aabb2) -> Aabb2 {
-        cell::value_box(rect, self.label.as_ref().map(|label| label.cap_mm))
+    /// The box its value goes in, in `inside`, the cell inside its lines.
+    fn value_box(&self, inside: Aabb2) -> Aabb2 {
+        cell::value_box(inside, self.label.as_ref().map(|label| label.cap_mm))
     }
 }
 
 impl TitleBlock {
+    /// `cell`'s rectangle `rect` inside its lines: each side moved in by half the line drawn on it,
+    /// the outline's on the block's edges and a cell line's inside the block.
+    fn inside_lines(&self, cell: &Cell, rect: Aabb2) -> Aabb2 {
+        let [x0, y0, x1, y1] = cell.rect_mm;
+        let half = |on_outline: bool| if on_outline { self.outline_line_mm } else { self.cell_line_mm } / 2.0;
+        let lower = Vec2::new(half(x0 == -self.size_mm.x), half(y0 == 0.0));
+        let upper = Vec2::new(half(x1 == 0.0), half(y1 == self.size_mm.y));
+        Aabb2 { min: rect.min + lower, max: rect.max - upper }
+    }
+
     /// Checks a definition on its own, counting its cells first: call it when one is read.
     /// [`Self::layout`] calls it too.
     pub fn validate(&self) -> Result<()> {
@@ -157,10 +169,9 @@ impl TitleBlock {
             require(earlier().all(|other| !overlap(other.rect(Vec2::ZERO), rect)), "no two cells overlap")?;
             if let Some(label) = &cell.label {
                 require(label.cap_mm.is_finite() && label.cap_mm > 0.0, "a label's cap height is finite and above 0")?;
-                let one_line = label.text.len() <= cell::MAX_TEXT_BYTES && !label.text.chars().any(char::is_control);
-                require(one_line, "a label is one line of at most 4096 bytes")?;
+                cell::check_label(&label.text).map_err(|cell::Invalid(message)| Invalid(message))?;
             }
-            let room = cell.value_box(rect).size();
+            let room = cell.value_box(self.inside_lines(cell, rect)).size();
             require(room.x > 0.0 && room.y > 0.0, "a cell has room for its value below its label")?;
             if let CellKind::Text(text) = &cell.kind {
                 text.content.validate().map_err(|cell::Invalid(message)| Invalid(message))?;
@@ -183,8 +194,9 @@ impl TitleBlock {
             .iter()
             .map(|cell| {
                 let rect = cell.rect(corner);
-                let label_at = cell.label.as_ref().map(|label| cell::label_at(rect, label.cap_mm));
-                CellLayout { rect, label_at, value_box: cell.value_box(rect) }
+                let inside = self.inside_lines(cell, rect);
+                let label_at = cell.label.as_ref().map(|label| cell::label_at(inside, label.cap_mm));
+                CellLayout { rect, label_at, value_box: cell.value_box(inside) }
             })
             .collect();
         Ok(TitleBlockLayout {

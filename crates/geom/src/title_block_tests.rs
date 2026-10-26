@@ -68,6 +68,22 @@ fn cell_named<'a>(block: &TitleBlock, layout: &'a TitleBlockLayout, name: &str) 
     &layout.cells[i]
 }
 
+/// `a` and `b` within 1e-9 mm at both corners.
+fn near(a: Aabb2, b: Aabb2) -> bool {
+    a.min.dist(b.min) < 1e-9 && a.max.dist(b.max) < 1e-9
+}
+
+/// `cell`'s rectangle placed at `corner`, inside its lines by the module's rule worked out by hand:
+/// half the 0.7 mm outline on the block's edges, half the 0.35 mm cell line inside.
+fn inside(cell: &Cell, corner: Vec2) -> Aabb2 {
+    let [x0, y0, x1, y1] = cell.rect_mm;
+    let half = |outline: bool| if outline { 0.35 } else { 0.175 };
+    Aabb2 {
+        min: corner + Vec2::new(x0 + half(x0 == -180.0), y0 + half(y0 == 0.0)),
+        max: corner + Vec2::new(x1 - half(x1 == 0.0), y1 - half(y1 == 54.0)),
+    }
+}
+
 fn text_of(cell: &Cell) -> &TextCell {
     match &cell.kind {
         CellKind::Text(text) => text,
@@ -84,7 +100,7 @@ fn the_default_geometry_validates_and_its_cells_tile_the_block() {
     assert_eq!((area, 180.0 * 54.0), (9720.0, 9720.0));
     // Each text cell's value box holds one line of its cap height.
     for cell in &block.cells {
-        let room = cell.value_box(cell.rect(Vec2::ZERO)).size();
+        let room = cell.value_box(block.inside_lines(cell, cell.rect(Vec2::ZERO))).size();
         if let CellKind::Text(text) = &cell.kind {
             assert!(text.cap_mm <= room.y, "{}: {} in {room:?}", cell.name, text.cap_mm);
         }
@@ -99,21 +115,38 @@ fn on_a3_landscape_the_block_sits_on_the_drawing_borders_lower_right_corner() {
     assert_eq!(layout.outline.size().x, 180.0);
     assert_eq!((layout.outline_line_mm, layout.cell_line_mm), (0.7, 0.35));
     assert_eq!(layout.cells.len(), 12);
-    // The title cell: its label's baseline 3.5 mm below its top, its value box under that.
+    // The title cell, on the outline at its left and bottom (0.35 mm in), a cell line at its right
+    // and top (0.175 in): its label's baseline 1 + 2.5 mm below its top's inner edge, its value box
+    // 1 mm in from the lines' inner edges and 1 mm under the label.
     let title = cell_named(&block, &layout, "title");
     assert_eq!(title.rect, rect(230.0, 10.0, 342.0, 24.0));
-    assert_eq!(title.label_at, Some(Vec2::new(231.0, 20.5)));
-    assert_eq!(title.value_box, rect(231.0, 11.0, 341.0, 19.5));
-    assert_eq!(place_lines(title.value_box, 1, 5.0, 8.0, HAlign::Left, false), Ok((Vec2::new(231.0, 12.75), None)));
+    assert!(title.label_at.is_some_and(|at| at.dist(Vec2::new(231.35, 20.325)) < 1e-9), "{:?}", title.label_at);
+    assert!(near(title.value_box, rect(231.35, 11.35, 340.825, 19.325)), "{:?}", title.value_box);
+    let (at, warning) = place_lines(title.value_box, 1, 5.0, 8.0, HAlign::Left, false).unwrap();
+    assert!(at.dist(Vec2::new(231.35, 12.8375)) < 1e-9 && warning.is_none(), "{at:?}");
+    // The projection cell, on the outline at its right and top.
     let projection = cell_named(&block, &layout, "projection");
     assert_eq!(projection.rect, rect(380.0, 44.0, 410.0, 64.0));
-    assert_eq!(projection.label_at, Some(Vec2::new(381.0, 60.5)));
-    assert_eq!(projection.value_box, rect(381.0, 45.0, 409.0, 59.5));
-    // A cell without a label gives its value the whole cell, padded.
+    assert!(projection.label_at.is_some_and(|at| at.dist(Vec2::new(381.175, 60.15)) < 1e-9), "{:?}", projection.label_at);
+    assert!(near(projection.value_box, rect(381.175, 45.175, 408.65, 59.15)), "{:?}", projection.value_box);
+    // A cell without a label gives its value the whole cell inside its lines, padded.
     let mut bare = block.clone();
     bare.cells[0].label = None;
     let title = bare.layout(&sheet).unwrap().cells[0];
-    assert_eq!((title.label_at, title.value_box), (None, rect(231.0, 11.0, 341.0, 23.0)));
+    assert!(title.label_at.is_none() && near(title.value_box, rect(231.35, 11.35, 340.825, 22.825)), "{:?}", title.value_box);
+}
+
+/// Padding is measured from a line's inner edge: a 3 mm outline moves the title's text 1.5 mm in
+/// from where a hairline puts it, so the line never covers it.
+#[test]
+fn the_padding_starts_at_the_lines_inner_edge() {
+    let sheet = iso(PaperSize::A3, Orientation::Landscape);
+    let hairline = TitleBlock { outline_line_mm: 1e-9, cell_line_mm: 1e-9, ..block() }.layout(&sheet).unwrap();
+    let wide = TitleBlock { outline_line_mm: 3.0, ..block() }.layout(&sheet).unwrap();
+    let (thin, thick) = (hairline.cells[0].value_box, wide.cells[0].value_box);
+    assert!((thick.min.x - thin.min.x - 1.5).abs() < 1e-6 && (thick.min.y - thin.min.y - 1.5).abs() < 1e-6, "{thin:?} {thick:?}");
+    // The outline's inner edge is 1.5 mm inside the cell's left side; the text starts 1 mm past it.
+    assert!((thick.min.x - (230.0 + 1.5 + 1.0)).abs() < 1e-9, "{thick:?}");
 }
 
 #[test]
@@ -176,9 +209,11 @@ fn on_every_sheet_each_cell_keeps_its_place_from_the_corner() {
                     let [x0, y0, x1, y1] = cell.rect_mm;
                     let expected = Aabb2 { min: corner + Vec2::new(x0, y0), max: corner + Vec2::new(x1, y1) };
                     assert_eq!(placed.rect, expected, "{size:?} {orientation:?} {}", cell.name);
-                    assert_eq!(placed.label_at, Some(Vec2::new(expected.min.x + 1.0, expected.max.y - 3.5)));
-                    let value_box = Aabb2 { min: expected.min + Vec2::new(1.0, 1.0), max: Vec2::new(expected.max.x - 1.0, expected.max.y - 4.5) };
-                    assert!(placed.value_box.min.dist(value_box.min) < 1e-9 && placed.value_box.max.dist(value_box.max) < 1e-9, "{}", cell.name);
+                    let lines = inside(cell, corner);
+                    let label_at = Vec2::new(lines.min.x + 1.0, lines.max.y - 3.5);
+                    assert!(placed.label_at.is_some_and(|at| at.dist(label_at) < 1e-9), "{}", cell.name);
+                    let value_box = Aabb2 { min: lines.min + Vec2::new(1.0, 1.0), max: Vec2::new(lines.max.x - 1.0, lines.max.y - 4.5) };
+                    assert!(near(placed.value_box, value_box), "{}", cell.name);
                 }
             }
         }
@@ -197,8 +232,9 @@ fn the_wrapped_cells_hold_the_lines_the_plan_gives_them() {
         let text = text_of(&block.cells[i]);
         let pitch = text.cap_mm * 2355.0 / 1409.0;
         let place = |n| place_lines(layout.cells[i].value_box, n, text.cap_mm, pitch, text.align, text.fit.wrap).unwrap();
-        // From the value box's top, 59.5 mm up the sheet.
-        assert_eq!(place(lines), (Vec2::new(layout.cells[i].value_box.min.x, 59.5 - text.cap_mm), None), "{name}");
+        // From the value box's top, 59.15 mm up the sheet: under the 0.7 mm outline's inner edge.
+        let (at, warning) = place(lines);
+        assert!(at.dist(Vec2::new(layout.cells[i].value_box.min.x, 59.15 - text.cap_mm)) < 1e-9 && warning.is_none(), "{name}: {at:?}");
         assert_eq!(place(lines + 1).1, Some(Warning::Height), "{name}");
     }
 }
@@ -256,15 +292,20 @@ fn hostile_definitions_are_refused() {
     for text in ["Title\nblock".to_string(), "\t".into(), "a".repeat(4097)] {
         cases.push((with(&label_text(text)), "a label is one line of at most 4096 bytes"));
     }
-    // A 14 mm cell under a 12 mm label, a 2 mm wide cell, a symbol under a label filling its cell.
+    // A 14 mm cell under a 12 mm label, a 2 mm wide cell, a symbol under a label filling its cell:
+    // the projection cell is 19.475 mm high inside its lines, so a label of 16.475 leaves no room.
     cases.push((with(&label_cap(12.0)), "a cell has room for its value below its label"));
+    cases.push((
+        with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 16.475 + 1e-9 })),
+        "a cell has room for its value below its label",
+    ));
     cases.push((with(&at([-180.0, 0.0, -178.0, 14.0])), "a cell has room for its value below its label"));
     cases.push((
         with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 17.0 })),
         "a cell has room for its value below its label",
     ));
-    // The title's value box is 8.5 mm high.
-    for cap in [0.0, -5.0, 8.500_001, f64::NAN, f64::INFINITY] {
+    // The title's value box is 7.975 mm high inside its lines.
+    for cap in [0.0, -5.0, 7.975 + 1e-9, f64::NAN, f64::INFINITY] {
         cases.push((with(&value_cap(cap)), "a value's cap height is above 0 and fits its value box"));
     }
     // The cell content's own rule, under this module's name.
@@ -296,12 +337,14 @@ fn hostile_definitions_are_refused() {
         many(MAX_CELLS),
         TitleBlock { size_mm: Vec2::new(1.0, 1.0), cells: vec![], ..block() },
         TitleBlock { size_mm: Vec2::new(1000.0, 1000.0), cells: vec![], ..block() },
-        with(&|b| b.outline_line_mm = 10.0),
+        // The widest outline on its own: the default's text doesn't fit inside a 10 mm line.
+        TitleBlock { outline_line_mm: 10.0, cells: vec![], ..block() },
         with(&|b| b.cell_line_mm = 1e-9),
         with(&named("a")),
         with(&named("title_2")),
         with(&named(longest)),
-        with(&value_cap(8.5)),
+        with(&value_cap(7.975 - 1e-9)),
+        with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 16.475 - 1e-9 })),
         with(&label_text("a".repeat(4096))),
         with(&|b| b.cells[0].label = None),
     ];
@@ -377,12 +420,12 @@ fn a_drawing_border_that_isnt_finite_holds_no_block() {
 }
 
 /// Random changes to the default's numbers, hostile ones among them: a definition is accepted or
-/// refused without panicking, and an accepted one placed on A3 keeps every cell inside the outline,
-/// apart from the others, with its label and value box inside it.
+/// refused without panicking, and an accepted one placed on a sheet it fits (any standard size,
+/// either way, with or without the filing margin) keeps every cell inside the outline, apart from
+/// the others, with its label and value box inside it.
 #[test]
 fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outline() {
     const NUMBERS: [f64; 9] = [0.0, -0.0, 1e-9, 1e5, -1e5, 1000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
-    let a3 = iso(PaperSize::A3, Orientation::Landscape);
     let mut rng = Lcg(0x7b1c);
     let (mut accepted, mut laid_out) = (0, 0);
     for _ in 0..4000 {
@@ -408,7 +451,10 @@ fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outlin
             continue;
         }
         accepted += 1;
-        let Ok(layout) = block.layout(&a3) else { continue };
+        let size = PaperSize::ALL[(rng.unit() * PaperSize::ALL.len() as f64) as usize % PaperSize::ALL.len()];
+        let orientation = if rng.unit() < 0.5 { Orientation::Landscape } else { Orientation::Portrait };
+        let sheet = if rng.unit() < 0.5 { iso(size, orientation) } else { filing(size, orientation) };
+        let Ok(layout) = block.layout(&sheet) else { continue };
         laid_out += 1;
         let outline = layout.outline.inflated(1e-9);
         for (i, (cell, placed)) in block.cells.iter().zip(&layout.cells).enumerate() {
@@ -425,5 +471,5 @@ fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outlin
             }
         }
     }
-    assert!(accepted > 400 && laid_out > 400, "{accepted} accepted, {laid_out} laid out");
+    assert!(accepted > 400 && laid_out > 300, "{accepted} accepted, {laid_out} laid out");
 }

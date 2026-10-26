@@ -224,24 +224,13 @@ fn parts_read_and_write_as_externally_tagged_json() {
 }
 
 #[test]
-fn an_override_holds_two_texts_each_checked_by_the_text_rule() {
-    let typed = Override { text: "Bracket, left".into(), source_was: "Bracket".into() };
-    typed.validate().unwrap();
-    let value = serde_json::to_value(&typed).unwrap();
-    assert_eq!(value, json!({"text": "Bracket, left", "source_was": "Bracket"}));
-    assert_eq!(serde_json::from_value::<Override>(value).unwrap(), typed);
-    // Each holds up to 4096 bytes on its own.
-    Override { text: "a".repeat(4096), source_was: "b".repeat(4096) }.validate().unwrap();
-    for bad in [
-        Override { text: "a".repeat(4097), ..typed.clone() },
-        Override { source_was: "a".repeat(4097), ..typed.clone() },
-        Override { text: "a\tb".into(), ..typed.clone() },
-        Override { source_was: "\r".into(), ..typed.clone() },
-    ] {
-        assert!(bad.validate().is_err(), "{bad:?}");
+fn a_label_is_one_line_of_at_most_4096_bytes() {
+    const LABEL: Invalid = Invalid("a label is one line of at most 4096 bytes");
+    for ok in ["Created by", "", "Masse (kg)", &"é".repeat(2048)] {
+        check_label(ok).unwrap();
     }
-    for bad in [json!({"text": "a"}), json!({"text": "a", "source_was": "b", "drifted": true})] {
-        assert!(serde_json::from_value::<Override>(bad.clone()).is_err(), "{bad}");
+    for bad in ["Title\nblock", "\t", "a\u{85}", &"a".repeat(4097), &"é".repeat(2049)] {
+        assert_eq!(check_label(bad), Err(LABEL), "{bad:?}");
     }
 }
 
@@ -269,7 +258,6 @@ fn alignments_projections_and_fits_have_snake_case_names() {
     assert_eq!(serde_json::from_value::<Fit>(json!({})).unwrap(), Fit::default());
     assert!(serde_json::from_value::<Fit>(json!({"padding_mm": 1.0})).is_err());
     assert!(serde_json::from_value::<Fit>(json!({"max_chars": -1})).is_err());
-    assert_eq!(MISSING, "-");
 }
 
 /// A whole number below `n` from `rng`.
@@ -287,6 +275,7 @@ fn fuzzed_content_texts_and_boxes_never_panic_and_follow_the_rules() {
     let number = |rng: &mut Lcg| if pick(rng, 4) == 0 { NUMBERS[pick(rng, NUMBERS.len())] } else { rng.unit() * 200.0 - 50.0 };
     let mut rng = Lcg(0x5eed);
     let mut accepted = 0;
+    let mut combinations = std::collections::BTreeSet::new();
     for round in 0..3000 {
         let lengths = [0, 1, 7, 60, 1100, 4097];
         let mut parts = Vec::new();
@@ -325,11 +314,14 @@ fn fuzzed_content_texts_and_boxes_never_panic_and_follow_the_rules() {
         }
         let (x0, y0, x1, y1, cap, pitch) =
             (number(&mut rng), number(&mut rng), number(&mut rng), number(&mut rng), number(&mut rng), number(&mut rng));
-        let lines = [0, 1, 2, 5, 1000, usize::MAX][round % 6];
+        // Each of the lines, the alignment and the wrapping picked on its own, so every combination comes up.
+        let lines = [0, 1, 2, 5, 1000, usize::MAX][pick(&mut rng, 6)];
+        let (align, wrap) = ([HAlign::Left, HAlign::Centre, HAlign::Right][pick(&mut rng, 3)], pick(&mut rng, 2) == 0);
+        combinations.insert((lines, align as u8, wrap));
         let value_box = rect(x0, y0, x1, y1);
         let on_paper = [x0, y0, x1, y1].iter().all(|v| v.abs() <= MAX_COORDINATE_MM);
         let sane = on_paper && [cap, pitch].iter().all(|v| v.is_finite() && *v > 0.0) && x0 <= x1 && y0 <= y1;
-        let placed = place_lines(value_box, lines, cap, pitch, [HAlign::Left, HAlign::Centre, HAlign::Right][round % 3], round % 2 == 0);
+        let placed = place_lines(value_box, lines, cap, pitch, align, wrap);
         assert_eq!(placed.is_ok(), sane, "{value_box:?} {cap} {pitch}");
         if let Ok((at, warning)) = placed {
             assert!(at.is_finite() && at.x >= x0 && at.x <= x1 && at.y <= y1, "{at:?} in {value_box:?}");
@@ -339,4 +331,5 @@ fn fuzzed_content_texts_and_boxes_never_panic_and_follow_the_rules() {
         }
     }
     assert!(accepted > 500, "{accepted}");
+    assert_eq!(combinations.len(), 6 * 3 * 2, "every lines, alignment and wrapping together");
 }
