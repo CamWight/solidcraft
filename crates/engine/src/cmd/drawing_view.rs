@@ -24,7 +24,7 @@ use solidcraft_doc::drawing_view::{Looking, ViewDirection, ViewOverrides};
 use solidcraft_doc::ids;
 use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
-use solidcraft_geom::drawing_view::{NamedView, PRESETS, ProjectedSide, Scale};
+use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale};
 use solidcraft_geom::paper::MAX_COORDINATE_MM;
 use solidcraft_geom::{Aabb2, Vec2};
 use solidcraft_render::VisualStyle;
@@ -334,42 +334,13 @@ fn lined_up(d: &Drawing, id: u64) -> Vec<u64> {
     descendants(d, id, |v| matches!(v.place, ViewPlace::Aligned(_)))
 }
 
-/// Where view `id`'s centre is on its sheet: its point, or, lined up with its parent, its place
-/// along the free axis and its parent's centre across it (both views draw the same model, so their
-/// extents share that axis's middle).
-fn centre(d: &Drawing, id: u64, cmd: &str) -> Result<Vec2> {
-    let mut lined = Vec::new();
-    let mut at = id;
-    for _ in 0..solidcraft_doc::drawing::view::MAX_VIEW_DEPTH {
-        let view = find(d, at, cmd)?;
-        match (view.place, view.kind) {
-            (ViewPlace::At([x, y]), _) => return Ok(lined.iter().rev().fold(Vec2::new(x, y), |c, (side, along)| on_free_axis(c, *side, *along))),
-            (ViewPlace::Aligned(along), ViewKind::Projected { parent, side }) => {
-                lined.push((side, along));
-                at = parent;
-            }
-            (ViewPlace::Aligned(_), ViewKind::Base { .. }) => break,
-        }
-    }
-    Err(bad(cmd, format!("view {} has no place on its sheet", ids::encode(id))))
-}
-
-/// `point` with its coordinate on `side`'s free axis set to `along`: x for a view to the left or
-/// right of its parent, y for one above or below.
-fn on_free_axis(point: Vec2, side: ProjectedSide, along: f64) -> Vec2 {
-    match side {
-        ProjectedSide::Left | ProjectedSide::Right => Vec2::new(along, point.y),
-        ProjectedSide::Above | ProjectedSide::Below => Vec2::new(point.x, along),
-    }
-}
-
 /// `view`'s place moved by `by`: a point moves, and a place lined up with a parent moves along
 /// its free axis, so the views lined up with a moved view stay where they were beside it.
 fn shifted(view: &View, by: Vec2) -> ViewPlace {
     match (view.place, view.kind) {
         (ViewPlace::At([x, y]), _) => ViewPlace::At([x + by.x, y + by.y]),
-        (ViewPlace::Aligned(along), ViewKind::Projected { side: ProjectedSide::Left | ProjectedSide::Right, .. }) => ViewPlace::Aligned(along + by.x),
-        (ViewPlace::Aligned(along), _) => ViewPlace::Aligned(along + by.y),
+        (ViewPlace::Aligned(along), ViewKind::Projected { side, .. }) => ViewPlace::Aligned(along + side.along(by)),
+        (ViewPlace::Aligned(along), ViewKind::Base { .. }) => ViewPlace::Aligned(along + by.y),
     }
 }
 
@@ -393,7 +364,7 @@ fn move_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
         if lined && !request.break_alignment {
             return Err(bad(MOVE, "it is lined up with its parent, which stays on its sheet: give `break_alignment: true` to place it apart"));
         }
-        let from = centre(d, id, MOVE)?;
+        let from = d.view_centre(id).map_err(|e| bad(MOVE, e.to_string()))?;
         let to = match request.position_mm {
             Some(p) => p.0,
             None if lined => middle,
@@ -434,7 +405,7 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let copy_of = |old: u64| originals.iter().position(|o| *o == old).and_then(|i| copies.get(i)).copied();
     let sheet = s.edit_drawing(COPY, |d| {
         let (sheet, middle) = sheet_named(d, &request.sheet, COPY)?;
-        let from = centre(d, id, COPY)?;
+        let from = d.view_centre(id).map_err(|e| bad(COPY, e.to_string()))?;
         let to = request.position_mm.map_or(middle, |p| p.0);
         let resolved = d.resolve_view(id).map_err(|e| bad(COPY, e.to_string()))?;
         let mut made = Vec::with_capacity(copies.len());
