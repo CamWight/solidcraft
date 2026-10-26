@@ -38,7 +38,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("assembly.bom", "Bill of Materials", bom).at("SOLID", "INSPECT").icon("bom").noundo().params(
         "component?: id or name (default the design); levels?: flat (default: every part at any depth, counted through its \
          subassemblies) | top (the component's direct children, subassemblies as one row each) | all (as top, each subassembly's \
-         own rows listed under it as children, to any depth: items 1.1, 1.1.1); show_purchased_contents?: true (in all, a \
+         own rows listed after it, to any depth: items 1.1, 1.1.1, as in the CSV); show_purchased_contents?: true (in all, a \
          purchased part's contents listed under it too); group_by?: [\"part_number\"] \
          (default; components without a part number get a row per definition) | [\"definition\"]; group_children?: true (a component \
          with a part number is one row, the parts placed inside it listed under it as children: [{item, part_number, description, \
@@ -243,27 +243,48 @@ fn grams(mass: Mass) -> Value {
     }
 }
 
-/// A row as `assembly.bom` gives it, under the rows whose item numbers are `under` (none at the
-/// top). A row listed under another reads its item as "1.2" and gives `each`, and leaves out its
-/// components and properties (the output #1888 set).
-fn row_json(row: &Row, under: &[u32], mass: bool) -> Value {
-    let mut item = under.to_vec();
-    item.push(row.item);
+/// The rows as `assembly.bom` gives them. In all levels they come one after another, each followed
+/// by the rows under it (items 1, 1.1, 1.1.1), as the CSV lists them: nested, 64 levels would be
+/// two containers a level, deeper than JSON readers take (serde_json stops at 128). Otherwise a
+/// row's children (a folded part's contents, one level) are listed in it.
+fn rows_json(list: &Bom, view: View, mass: bool) -> Vec<Value> {
+    if view == View::AllLevels {
+        list.rows_deep().iter().map(|(item, row)| row_json(row, item, mass, false)).collect()
+    } else {
+        list.rows.iter().map(|row| row_json(row, &[row.item], mass, true)).collect()
+    }
+}
+
+/// One row, `item` its item numbers from the top (`[2, 1]` reads 2.1), with its children in it when
+/// `nested`. A row listed under another reads its item as "2.1" and gives `each`, and leaves out
+/// its components and properties (the output #1888 set).
+fn row_json(row: &Row, item: &[u32], mass: bool, nested: bool) -> Value {
     let mut v = json!({"part_number": row.part_number, "description": row.description, "revision": row.revision,
         "bom_type": row.bom_type.as_str(), "count": row.count, "definition": row.names.join("; "), "material": row.materials.join("; ")});
-    if under.is_empty() {
+    if item.len() <= 1 {
         v["item"] = json!(row.item);
         v["components"] = json!(row.components);
         v["properties"] = json!(row.properties);
     } else {
-        v["item"] = json!(bom::item_text(&item));
+        v["item"] = json!(bom::item_text(item));
         v["each"] = json!(row.each);
     }
     if mass {
         v["mass_g"] = grams(row.mass);
     }
-    if !row.children.is_empty() {
-        v["children"] = row.children.iter().map(|c| row_json(c, &item, mass)).collect();
+    if nested && !row.children.is_empty() {
+        let mut under = item.to_vec();
+        under.push(0);
+        v["children"] = row
+            .children
+            .iter()
+            .map(|c| {
+                if let Some(last) = under.last_mut() {
+                    *last = c.item;
+                }
+                row_json(c, &under, mass, true)
+            })
+            .collect();
     }
     v
 }
@@ -292,7 +313,7 @@ fn bom(s: &mut Session, p: &Value) -> Result<Value> {
     let request = request(s, p, cmd)?;
     let state = s.model.state();
     let list = bom::list(&mut Tree::new(&s.doc, &state), &request).map_err(|e| bad(cmd, e.to_string()))?;
-    let rows: Vec<Value> = list.rows.iter().map(|r| row_json(r, &[], request.mass)).collect();
+    let rows = rows_json(&list, request.view, request.mass);
     let mut out = Map::new();
     out.insert("component".into(), json!(request.source));
     out.insert("levels".into(), json!(request.view.as_str()));
