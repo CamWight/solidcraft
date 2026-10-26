@@ -868,6 +868,30 @@ fn a_phantoms_own_bodies_are_a_row_of_their_own() {
     }
 }
 
+/// The bill of materials and the physical properties weigh a body from one measurement, kept with
+/// the evaluated model: the same grams to the bit, and asking again measures nothing new.
+#[test]
+fn the_bill_of_materials_and_the_physical_properties_weigh_one_measurement() {
+    let mut s = frame();
+    let bom = run(&mut s, "assembly.bom", json!({"mass": true}));
+    let block = bom["rows"][0]["mass_g"].as_f64().unwrap();
+    let properties = run(&mut s, "component.properties", json!({"component": "Block"}))["total"]["mass_g"].as_f64().unwrap();
+    assert_eq!(block.to_bits(), properties.to_bits(), "{block} g listed, {properties} g measured");
+    // A pin placed far from the origin, where measuring the placed body again would move the
+    // last bits: its placement weighs what its row does.
+    run(&mut s, "component.create", json!({"name": "Pin"}));
+    run(&mut s, "solid.cylinder", json!({"diameter": 7, "height": 31, "body_name": "Pin"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    let far = run(&mut s, "occurrence.copy", json!({"component": "Pin", "parent": 0, "translate": [1000, 700, 300]}))["occurrence"].clone();
+    let bom = run(&mut s, "assembly.bom", json!({"mass": true}));
+    let pin = bom["rows"].as_array().unwrap().iter().find(|r| r["definition"] == "Pin").and_then(|r| r["mass_g"].as_f64()).unwrap();
+    let placed = run(&mut s, "occurrence.properties", json!({"occurrence": far}))["total"]["mass_g"].as_f64().unwrap();
+    assert_eq!(pin.to_bits(), placed.to_bits(), "{pin} g listed, {placed} g measured where it is placed");
+    let state = s.model.state();
+    let body = state.bodies.iter().find(|b| b.name == "Block").unwrap();
+    assert_eq!(body.volume().map(f64::to_bits), body.clone().volume().map(f64::to_bits), "a clone shares the measurement");
+}
+
 /// One pin modelled two ways, as a cylinder and as a revolved rectangle: tessellated differently,
 /// measured a little apart, still one part with one mass. A pin 0.1% wider is another part.
 #[test]

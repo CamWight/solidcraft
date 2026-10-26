@@ -536,16 +536,13 @@ impl<'a> Tree<'a> {
         Ok(weighed)
     }
 
-    /// What one body weighs, in grams.
+    /// What one body weighs, in grams: its volume, measured once for the model
+    /// ([`ModelBody::volume`]), scaled by a body offset as the offset scales what is drawn (a
+    /// damaged file's scaled offset weighs what is drawn).
     fn measure(&self, body: &ModelBody) -> Weighed {
-        // Only the volume is needed: `measure_mass` skips the topology counts' tessellation. A
-        // body offset is applied first, so a damaged file's scaled offset weighs what is drawn.
-        let measured = match self.doc.model_body_offset(body) {
-            Some(offset) => solidcraft_kernel::transform_matrix(&body.body, *offset).and_then(|b| solidcraft_kernel::measure_mass(&b)),
-            None => solidcraft_kernel::measure_mass(&body.body),
-        };
+        let scale = self.doc.model_body_offset(body).map_or(1.0, crate::mat_volume_scale);
         // A negative volume (a body inside out) is unknown, never a negative mass.
-        measured.ok().filter(|m| m.volume >= 0.0).map(|m| (m.volume * self.doc.density(&body.name) / 1000.0, 1))
+        body.volume().map(|v| v * scale).filter(|v| *v >= 0.0).map(|v| (v * self.doc.density(&body.name) / 1000.0, 1))
     }
 }
 
