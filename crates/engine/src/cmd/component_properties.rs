@@ -29,25 +29,7 @@ fn placed_doc(s: &Session) -> Document {
 /// A property total must cover the entire assembly. The display traversal intentionally
 /// truncates hostile designs, so use an explicit error instead of accepting its prefix.
 pub(in crate::cmd) fn placements(doc: &Document, cmd: &str) -> Result<Vec<(u64, Vec<u64>, Mat)>> {
-    let mut out = vec![(0, Vec::new(), solidcraft_doc::IDENTITY)];
-    let mut stack = vec![(0, Vec::<u64>::new(), solidcraft_doc::IDENTITY)];
-    let mut children: std::collections::BTreeMap<u64, Vec<_>> = std::collections::BTreeMap::new();
-    for occurrence in &doc.occurrences {
-        children.entry(occurrence.parent).or_default().push(occurrence);
-    }
-    while let Some((component, path, transform)) = stack.pop() {
-        for occurrence in children.get(&component).into_iter().flatten() {
-            if path.len() >= 64 || out.len() >= 100_000 {
-                return Err(bad(cmd, "assembly exceeds physical-properties traversal limits (64 levels or 100000 placements)"));
-            }
-            let mut child_path = path.clone();
-            child_path.push(occurrence.id);
-            let world = solidcraft_doc::mat_mul(&transform, &occurrence.transform);
-            out.push((occurrence.component, child_path.clone(), world));
-            stack.push((occurrence.component, child_path, world));
-        }
-    }
-    Ok(out)
+    doc.placements_below(0, &[], solidcraft_doc::IDENTITY).map_err(|e| bad(cmd, e.to_string()))
 }
 
 pub(super) fn component(s: &mut Session, p: &Value) -> Result<Value> {
@@ -99,21 +81,11 @@ fn properties(s: &Session, doc: &Document, selected: &[u64], descendants: bool, 
         if descendants { placements(doc, cmd)? } else { vec![(0, Vec::new(), solidcraft_doc::IDENTITY)] }
     } else {
         let placement = s.occurrence_placement(selected).map_err(|e| bad(cmd, e.to_string()))?;
-        let mut out = vec![(placement.component, selected.to_vec(), placement.world)];
-        let mut stack = if descendants { out.clone() } else { Vec::new() };
-        while let Some((component, path, transform)) = stack.pop() {
-            for occurrence in doc.occurrences.iter().filter(|o| o.parent == component) {
-                if path.len() >= 64 || out.len() >= 100_000 {
-                    return Err(bad(cmd, "assembly exceeds physical-properties traversal limits (64 levels or 100000 placements)"));
-                }
-                let mut child = path.clone();
-                child.push(occurrence.id);
-                let world = solidcraft_doc::mat_mul(&transform, &occurrence.transform);
-                out.push((occurrence.component, child.clone(), world));
-                stack.push((occurrence.component, child, world));
-            }
+        if descendants {
+            doc.placements_below(placement.component, selected, placement.world).map_err(|e| bad(cmd, e.to_string()))?
+        } else {
+            vec![(placement.component, selected.to_vec(), placement.world)]
         }
-        out
     };
     // As in the bill of materials, a placement that counts as a reference adds nothing, nor does
     // anything inside it; the one measured counts whatever its type.
