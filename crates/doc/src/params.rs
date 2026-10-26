@@ -109,14 +109,6 @@ pub struct ParamRow {
     pub text: Option<String>,
 }
 
-fn unit_of(k: Kind) -> &'static str {
-    match k {
-        Kind::Length => "mm",
-        Kind::Angle => "deg",
-        Kind::Unitless => "",
-    }
-}
-
 impl Document {
     /// Every (name, expression, kind) the expressions can refer to: stored parameters and the
     /// named feature inputs.
@@ -388,7 +380,7 @@ impl Document {
                 rows.push(ParamRow {
                     name: name.clone(),
                     expression: e,
-                    unit: unit_of(k).into(),
+                    unit: k.default_unit().into(),
                     value: value(name, k),
                     error: errs.get(name).cloned(),
                     comment: self.param_comments.get(name).cloned().unwrap_or_default(),
@@ -664,7 +656,7 @@ impl Document {
                         Kind::Length if !expr::is_literal(&e) && expr::unit_info(self.units.trim()).is_some_and(|(k, _)| k == Kind::Length) => {
                             self.units.trim().to_string()
                         }
-                        _ => unit_of(k).to_string(),
+                        _ => k.default_unit().to_string(),
                     };
                     v.push(ParamDef { name: name.clone(), expr: e, unit });
                 }
@@ -673,7 +665,7 @@ impl Document {
         v
     }
 
-    /// Evaluate all parameters: values (mm / rad / unit-less) and errors by name. Errors name
+    /// Evaluate all parameters: values (mm, rad, g, unit-less…) and errors by name. Errors name
     /// the problem (`circular reference: a → b → a`, `cannot add a length and an angle`).
     pub fn param_values(&self) -> (BTreeMap<String, Value>, BTreeMap<String, String>) {
         expr::eval_params(&self.param_defs(), doc_len(&self.units))
@@ -684,13 +676,13 @@ impl Document {
         let v = vals.get(name)?;
         let unit = match self.param(name) {
             Some(p) => p.unit.clone(),
-            None => v.kind().map(|k| unit_of(k).to_string()).unwrap_or_default(),
+            None => v.kind().map(|k| k.default_unit().to_string()).unwrap_or_default(),
         };
         Some(expr::value_in_unit(*v, &unit))
     }
 
-    /// The unit for a new parameter with this expression: that of its value; a bare number is
-    /// a length (mm).
+    /// The unit for a new parameter with this expression: its kind's (`50 g` is a mass, shown in
+    /// kg); a bare number, or a value of no kind, is a length (mm).
     pub(crate) fn infer_unit(&self, e: &str) -> String {
         Self::infer_unit_in(&self.param_values().0, e)
     }
@@ -700,8 +692,8 @@ impl Document {
         let v = expr::eval_with(e, &|n| vals.get(n).copied().ok_or_else(|| DocError::Expr(format!("unknown parameter `{n}`"))));
         match v.ok().and_then(|v| v.kind()) {
             Some(Kind::Unitless) if !expr::references(e).is_empty() => String::new(),
-            Some(Kind::Angle) => "deg".into(),
-            _ => "mm".into(),
+            Some(Kind::Unitless) | None => "mm".into(),
+            Some(k) => k.default_unit().into(),
         }
     }
 
