@@ -53,7 +53,8 @@ pub static COMMANDS: &[CommandSpec] = &[
          of one component that count as different types are different rows → rows: [{item, part_number, description, revision, \
          bom_type, count, definition, material (the physical materials of the definitions' own bodies, \"; \" between them; a \
          row that weighs what is placed inside it shows the one material all of that shares, else \"\"), mass_g?, components, \
-         properties, children?}] sorted by part number, total_occurrences (children included)",
+         properties, children?}] sorted by part number, total_occurrences (children included), total_mass_g (with mass: \
+         what the assembly weighs, measured from the design rather than added up from rows; null when unknown)",
     ),
 ];
 
@@ -234,6 +235,14 @@ fn group_key(g: &str, cmd: &str) -> Result<Group> {
     Group::parse(g).ok_or_else(|| bad(cmd, format!("can't group by `{g}` (part_number or definition)")))
 }
 
+/// A mass as `assembly.bom` gives it: grams, or null when it isn't known.
+fn grams(mass: Mass) -> Value {
+    match mass {
+        Mass::Grams(grams) => json!(grams),
+        Mass::NotAsked | Mass::Unknown(_) => Value::Null,
+    }
+}
+
 /// A row as `assembly.bom` gives it, under the rows whose item numbers are `under` (none at the
 /// top). A row listed under another reads its item as "1.2" and gives `each`, and leaves out its
 /// components and properties (the output #1888 set).
@@ -251,10 +260,7 @@ fn row_json(row: &Row, under: &[u32], mass: bool) -> Value {
         v["each"] = json!(row.each);
     }
     if mass {
-        v["mass_g"] = match row.mass {
-            Mass::Grams(grams) => json!(grams),
-            Mass::NotAsked | Mass::Unknown(_) => Value::Null,
-        };
+        v["mass_g"] = grams(row.mass);
     }
     if !row.children.is_empty() {
         v["children"] = row.children.iter().map(|c| row_json(c, &item, mass)).collect();
@@ -303,8 +309,13 @@ fn bom(s: &mut Session, p: &Value) -> Result<Value> {
         };
         let text = match format.as_str() {
             "csv" => csv(&list),
-            "json" => serde_json::to_string_pretty(&json!({"rows": rows, "total_occurrences": list.total.occurrences}))
-                .map_err(|e| bad(cmd, e.to_string()))?,
+            "json" => {
+                let mut file = json!({"rows": rows, "total_occurrences": list.total.occurrences});
+                if request.mass {
+                    file["total_mass_g"] = grams(list.total.mass);
+                }
+                serde_json::to_string_pretty(&file).map_err(|e| bad(cmd, e.to_string()))?
+            }
             other => return Err(bad(cmd, format!("unknown format `{other}` (csv or json)"))),
         };
         solidcraft_io::vfs::write(path, text.as_bytes()).map_err(|e| EngineError::Other(format!("{path}: {e}")))?;
@@ -313,6 +324,9 @@ fn bom(s: &mut Session, p: &Value) -> Result<Value> {
     }
     out.insert("rows".into(), Value::Array(rows));
     out.insert("total_occurrences".into(), json!(list.total.occurrences));
+    if request.mass {
+        out.insert("total_mass_g".into(), grams(list.total.mass));
+    }
     Ok(Value::Object(out))
 }
 
