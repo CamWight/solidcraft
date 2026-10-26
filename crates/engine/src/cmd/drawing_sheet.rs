@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use solidcraft_doc::drawing::{Drawing, Excluded, Sheet, SheetComponent};
-use solidcraft_doc::ids::{self, IdSource};
+use solidcraft_doc::ids;
 use solidcraft_geom::drawing_sheet::{Orientation, SheetSize};
 
 use super::CommandSpec;
@@ -118,7 +118,8 @@ fn apply(cmd: &str, sheet: &mut Sheet, p: &Value) -> Result<()> {
 
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "drawing.sheet.add";
-    let id = s.drawing(cmd)?.allocate_id(&mut IdSource::from_entropy()).map_err(|e| bad(cmd, e.to_string()))?;
+    let record = s.drawing(cmd)?.clone();
+    let id = record.allocate_id(&mut s.ids).map_err(|e| bad(cmd, e.to_string()))?;
     s.edit_drawing(cmd, |d| {
         let after = if p.get("after").is_some() { sheet_at(cmd, d, p, "after")? } else { d.sheets.len().saturating_sub(1) };
         let model = d.sheets.get(after).ok_or_else(|| bad(cmd, "the drawing has no sheet to follow"))?;

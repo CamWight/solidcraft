@@ -61,6 +61,27 @@ fn a_new_sheet_takes_the_paper_of_the_sheet_it_follows() {
     assert!(added.documents.is_some() && added.excluded.print && !added.excluded.count);
 }
 
+/// A sheet's id comes from the session's id source: two sessions seeded alike and run alike give
+/// the same ids (where a crash replay starts), another seed others, and a failed add draws none.
+#[test]
+fn sheet_ids_come_from_the_sessions_seed() {
+    let made = |seed: u64, fail: bool| {
+        let mut s = Session::default();
+        s.seed_ids(seed);
+        run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 10}));
+        run(&mut s, "drawing.create", json!({}));
+        if fail {
+            refused(&mut s, "drawing.sheet.add", json!({"after": "Nowhere"}));
+        }
+        run(&mut s, "drawing.sheet.add", json!({}));
+        let record = s.drawing("test").unwrap().clone();
+        record.sheets.iter().map(|sheet| sheet.id).chain(record.sources.iter().map(|source| source.id)).collect::<Vec<_>>()
+    };
+    assert_eq!(made(7, false), made(7, false));
+    assert_eq!(made(7, true), made(7, false), "the failed add drew none");
+    assert_ne!(made(7, false), made(8, false));
+}
+
 /// 1000 sheets at most: the 1000th is added, the 1001st refused with nothing changed.
 #[test]
 fn a_drawing_has_at_most_1000_sheets() {
