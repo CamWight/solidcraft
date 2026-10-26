@@ -48,8 +48,8 @@ pub static COMMANDS: &[CommandSpec] = &[
          and of an inseparable one's only its purchased parts are), so the rows add up to the assembly; a reference placement \
          adds nothing; null when nothing in it has a body, a body can't be measured or the row's definitions differ); path?: write \
          a .csv or .json file (children as items 1.1, 1.2…); format?: csv|json (default from the path). Each placement counts as \
-         its occurrence's bom_type, else its component's: phantom has no row (what it holds counts here), reference counts \
-         nowhere, purchased and inseparable are one row (in flat, an inseparable one's purchased parts are listed too); placements \
+         its occurrence's bom_type, else its component's: phantom has no row (what it holds counts here; its own bodies, \
+         if it has any, are a row of their own), reference counts nowhere, purchased and inseparable are one row (in flat, an inseparable one's purchased parts are listed too); placements \
          of one component that count as different types are different rows → rows: [{item, part_number, description, revision, \
          bom_type, count, definition, material (the physical materials of the definitions' own bodies, \"; \" between them; a \
          row that weighs what is placed inside it shows the one material all of that shares, else \"\"), mass_g?, components, \

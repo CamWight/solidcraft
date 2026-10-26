@@ -840,6 +840,30 @@ fn the_rows_of_every_list_add_up_to_the_assembly() {
     check(&mut s, "a block kept for reference", &[&flat, &top, &folded]);
 }
 
+/// A phantom's own bodies are a row of their own, its type's, as a subassembly's are in parts
+/// only: they are counted in no other row, so without it the rows wouldn't add up.
+#[test]
+fn a_phantoms_own_bodies_are_a_row_of_their_own() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Kit"}));
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "body_name": "Cube"}));
+    run(&mut s, "component.create", json!({"name": "Part", "parent": "Kit"}));
+    run(&mut s, "solid.box", json!({"length": 40, "width": 20, "height": 3, "body_name": "Plate"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    for (body, material) in [("Cube", "Steel"), ("Plate", "Aluminum")] {
+        run(&mut s, "material.assign", json!({"bodies": [body], "material": material}));
+    }
+    set_type(&mut s, "Kit", "phantom");
+    let assembly = run(&mut s, "component.properties", json!({"component": "root"}))["total"]["mass_g"].as_f64().unwrap();
+    for levels in ["flat", "top", "all"] {
+        let r = run(&mut s, "assembly.bom", json!({"levels": levels, "mass": true}));
+        assert_eq!(typed(&r), [row("", "phantom", 1), row("", "normal", 1)], "{levels}: {r}");
+        assert_eq!(weights(&r), [weight("Kit", "Steel", Some(7.85)), weight("Part", "Aluminum", Some(6.48))], "{levels}");
+        let listed: f64 = r["rows"].as_array().unwrap().iter().map(|row| row["mass_g"].as_f64().unwrap()).sum();
+        assert!((listed - assembly).abs() < 1e-6 * assembly, "{levels}: {listed} g listed, {assembly} g in all");
+    }
+}
+
 #[test]
 fn one_part_number_has_one_mass_only_when_its_definitions_agree() {
     let mut s = frame();
