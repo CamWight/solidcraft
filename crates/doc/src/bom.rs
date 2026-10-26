@@ -342,15 +342,15 @@ impl<'a> Tree<'a> {
     /// says, listed under the rows `parents` names, `per` of them in all (1 for the assembly).
     /// The rows under these are gathered as `under` says.
     #[allow(clippy::too_many_arguments)]
-    fn level(&self, entries: &[Entry], kids: &[Vec<usize>], at: &[usize], group: Group, under: Group, parents: &[Member], per: u64) -> Vec<Row> {
+    fn level(&self, listing: &Listing, at: &[usize], group: Group, under: Group, parents: &[Member], per: u64) -> Vec<Row> {
         let mut grouped: BTreeMap<GroupKey, Vec<usize>> = BTreeMap::new();
         for &i in at {
-            let Some(entry) = entries.get(i) else { continue };
+            let Some(entry) = listing.entries.get(i) else { continue };
             let Some(part) = self.part(entry.member, group) else { continue };
-            let kit = self.kit(entries, kids.get(i).map_or(&[], Vec::as_slice));
+            let kit = listing.kits.get(i).copied().unwrap_or_default();
             grouped.entry(GroupKey { part, bom_type: entry.member.bom_type, kit }).or_default().push(i);
         }
-        let mut rows: Vec<Row> = grouped.values().filter_map(|members| self.row(entries, kids, members, under, parents, per)).collect();
+        let mut rows: Vec<Row> = grouped.values().filter_map(|members| self.row(listing, members, under, parents, per)).collect();
         // By part number; rows without one after them, by name; one part's rows by type.
         rows.sort_by(|a, b| {
             (a.part_number.is_empty(), &a.part_number, &a.names, &a.components, a.bom_type).cmp(&(
@@ -367,22 +367,35 @@ impl<'a> Tree<'a> {
         rows
     }
 
-    /// What one folded placement holds, as its row's children read it: each part, the type it
-    /// counts as and how many.
-    fn kit(&self, entries: &[Entry], kids: &[usize]) -> BTreeMap<(Part, BomType), u64> {
-        let mut kit: BTreeMap<(Part, BomType), u64> = BTreeMap::new();
-        for entry in kids.iter().filter_map(|&i| entries.get(i)) {
-            if let Some(part) = self.part(entry.member, Group::PartNumber) {
-                *kit.entry((part, entry.member.bom_type)).or_default() += 1;
+    /// Each entry's kit, as a number: what it holds as its row's children read it, to any depth.
+    /// Two entries have the same kit when what they hold is the same parts (by part number, else
+    /// definition), counted as the same types, each holding the same again all the way down. One
+    /// pass from the last entry back: an entry's children come after it, so theirs are known first.
+    fn kits(&self, entries: &[Entry], kids: &[Vec<usize>]) -> Vec<u32> {
+        let mut kit_ids: HashMap<Vec<u32>, u32> = HashMap::new();
+        let mut placed_ids: HashMap<(Option<Part>, BomType, u32), u32> = HashMap::new();
+        // Each entry as a child reads: its part, its type and its own kit.
+        let mut placed = vec![0u32; entries.len()];
+        let mut kits = vec![0u32; entries.len()];
+        for (i, entry) in entries.iter().enumerate().rev() {
+            let mut held: Vec<u32> = kids.get(i).into_iter().flatten().filter_map(|&k| placed.get(k).copied()).collect();
+            held.sort_unstable();
+            let next = kit_ids.len() as u32;
+            let kit = *kit_ids.entry(held).or_insert(next);
+            let next = placed_ids.len() as u32;
+            let key = (self.part(entry.member, Group::PartNumber), entry.member.bom_type, kit);
+            if let (Some(k), Some(p)) = (kits.get_mut(i), placed.get_mut(i)) {
+                *k = kit;
+                *p = *placed_ids.entry(key).or_insert(next);
             }
         }
-        kit
+        kits
     }
 
     /// One row: the placements `members` (positions in `entries`) of one part, type and kit, with
     /// the rows under it gathered as `under` says.
-    fn row(&self, entries: &[Entry], kids: &[Vec<usize>], members: &[usize], under: Group, parents: &[Member], per: u64) -> Option<Row> {
-        let listed: Vec<&Entry> = members.iter().filter_map(|&i| entries.get(i)).collect();
+    fn row(&self, listing: &Listing, members: &[usize], under: Group, parents: &[Member], per: u64) -> Option<Row> {
+        let listed: Vec<&Entry> = members.iter().filter_map(|&i| listing.entries.get(i)).collect();
         let first = listed.first()?;
         let mut components: Vec<u64> = listed.iter().map(|e| e.member.component).collect();
         components.sort_unstable();
@@ -392,7 +405,7 @@ impl<'a> Tree<'a> {
         let mut paths: Vec<Vec<u64>> = listed.iter().map(|e| e.path.clone()).collect();
         paths.sort_unstable();
         // What one of it holds is listed under it.
-        let inside: Vec<usize> = members.iter().flat_map(|&i| kids.get(i).into_iter().flatten().copied()).collect();
+        let inside: Vec<usize> = members.iter().flat_map(|&i| listing.kids.get(i).into_iter().flatten().copied()).collect();
         let mut chain = parents.to_vec();
         chain.push(member);
         let mut row = Row {
@@ -409,11 +422,12 @@ impl<'a> Tree<'a> {
             revision: String::new(),
             properties: BTreeMap::new(),
             count,
-            // Rows with different kits are different rows, so every part of the parent row holds as many.
+            // Rows with different kits are different rows, to any depth, so every part of the parent
+            // row holds as many.
             each: count / per.max(1),
             members: paths,
             mass: Mass::NotAsked,
-            children: self.level(entries, kids, &inside, under, under, &chain, count),
+            children: self.level(listing, &inside, under, under, &chain, count),
         };
         for (i, c) in row.components.iter().filter_map(|id| self.components.get(id)).enumerate() {
             let m = &c.metadata;
@@ -539,12 +553,21 @@ enum Part {
 }
 
 /// How one row is told from another of its level: what it gathers by, the type its parts count
-/// as, and what one of them holds as the row's children read it (empty unless it is folded).
+/// as, and its kit: what one of them holds as the row's children read it, to any depth (`Tree::kits`;
+/// the same for all that hold nothing listed).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct GroupKey {
     part: Part,
     bom_type: BomType,
-    kit: BTreeMap<(Part, BomType), u64>,
+    kit: u32,
+}
+
+/// The placements a list counts, what each folded or all-levels row holds, and each one's kit.
+struct Listing {
+    entries: Vec<Entry>,
+    /// What each entry holds: the entries listed as its children.
+    kids: Vec<Vec<usize>>,
+    kits: Vec<u32>,
 }
 
 /// How a walk lists what it passes.
@@ -700,11 +723,13 @@ pub fn list(tree: &mut Tree, request: &Request) -> Result<Bom> {
             of.push(i);
         }
     }
-    let top: Vec<usize> = entries.iter().enumerate().filter(|(_, e)| e.kit.is_none()).map(|(i, _)| i).collect();
+    let kits = tree.kits(&entries, &kids);
+    let listing = Listing { entries, kids, kits };
+    let top: Vec<usize> = listing.entries.iter().enumerate().filter(|(_, e)| e.kit.is_none()).map(|(i, _)| i).collect();
     // What a folded part holds is gathered by part number in any list; all levels gathers every
     // level as it gathers the first.
     let under = if request.view == View::AllLevels { request.group } else { Group::PartNumber };
-    let rows = tree.level(&entries, &kids, &top, request.group, under, &[], 1);
+    let rows = tree.level(&listing, &top, request.group, under, &[], 1);
     let mut bom = Bom { source: request.source, rows, total: Total::default() };
     tree.name_materials(&mut bom.rows)?;
     if request.mass {
