@@ -745,14 +745,19 @@ pub fn list(tree: &mut Tree, request: &Request) -> Result<Bom> {
 }
 
 /// One of a row's parts, from what each of its definitions weighs: known when every one can be
-/// measured, has something to weigh, and they agree.
+/// measured, has something to weigh, and they agree. Some with something to weigh and some with
+/// nothing differ.
 fn agree(weighed: &[Weighed]) -> Mass {
     let Some(known) = weighed.iter().copied().collect::<Option<Vec<(f64, usize)>>>() else {
         return Mass::Unknown(Unknown::Unmeasurable);
     };
+    if known.iter().all(|&(_, bodies)| bodies == 0) {
+        return Mass::Unknown(Unknown::NothingToWeigh);
+    }
     match known.first() {
-        Some(_) if known.iter().any(|&(_, bodies)| bodies == 0) => Mass::Unknown(Unknown::NothingToWeigh),
-        Some(&(first, _)) if known.iter().any(|&(grams, _)| (grams - first).abs() > 1e-9 * first.abs()) => Mass::Unknown(Unknown::Differs),
+        Some(&(first, _)) if known.iter().any(|&(grams, bodies)| bodies == 0 || (grams - first).abs() > 1e-9 * first.abs()) => {
+            Mass::Unknown(Unknown::Differs)
+        }
         Some(&(first, _)) => Mass::Grams(first),
         None => Mass::Unknown(Unknown::NothingToWeigh),
     }
