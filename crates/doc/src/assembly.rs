@@ -412,6 +412,20 @@ impl Document {
         out
     }
 
+    /// The world names ([`Document::body_frames`]) of the bodies placed through a reference
+    /// component (bill of materials type `reference`), at any depth: as the bill of materials
+    /// counts nothing inside a reference, a drawing draws all of it as reference parts.
+    pub fn reference_bodies(&self, st: &crate::ModelState) -> std::collections::HashSet<String> {
+        let reference: std::collections::HashSet<u64> =
+            self.components.iter().filter(|c| c.metadata.bom_type() == BomType::Reference).map(|c| c.id).collect();
+        // The occurrences that place one, so each path is checked by lookups.
+        let placing: std::collections::HashSet<u64> = self.occurrences.iter().filter(|o| reference.contains(&o.component)).map(|o| o.id).collect();
+        if placing.is_empty() {
+            return Default::default();
+        }
+        self.body_frames(st).into_iter().filter(|(_, _, path, _)| path.iter().any(|id| placing.contains(id))).map(|(name, ..)| name).collect()
+    }
+
     /// Computed placement name. Source names retain priority; ambiguous labels use full IDs.
     /// Resolves label ambiguity with bounded dynamic counts instead of expanding all placements.
     pub fn world_body_name(&self, st: &crate::ModelState, source: &str, component: u64, path: &[u64]) -> String {
