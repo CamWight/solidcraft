@@ -6,6 +6,9 @@
 //!   `x × y` toward the viewer. [`NamedView`] gives the principal views and the four upper
 //!   isometric corners exactly, never from a camera, which tilts a top view by its pitch clamp;
 //!   [`basis_looking`] gives any other view from its direction and up.
+//! - A **projected view** sits on one side of its parent ([`ProjectedSide`]) and looks from that
+//!   side in third angle, from the side away from it in first ([`projected_basis`]); its frame
+//!   lines up with the parent's ([`ViewFrame::aligned`]).
 //! - A **[`Scale`]** is a ratio of two numbers from 0.000001 to 1000000, written `"1:2"` (paper :
 //!   model), from 1:100000 to 1000:1. [`Scale::fit`] picks the largest of ISO 5455's preset
 //!   scales at which a view fits a space.
@@ -18,6 +21,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::cell::Projection;
 use crate::paper::MAX_SIDE_MM;
 use crate::section::{CurveAccuracy, MAX_NUMBER, validate_plane};
 use crate::{Aabb2, Plane, Seg2, Similarity2, Vec2, Vec3};
@@ -117,6 +121,51 @@ pub fn basis_looking(direction: Vec3, up: Vec3, origin: Vec3) -> Result<Plane> {
     let basis = Plane { origin, x, y: x.cross(d) };
     validate_plane(&basis).map_err(|_| Invalid("a view's basis is finite and orthonormal"))?;
     Ok(basis)
+}
+
+/// The side of its parent a projected view sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectedSide {
+    Left,
+    Right,
+    Above,
+    Below,
+}
+
+impl ProjectedSide {
+    pub const ALL: [ProjectedSide; 4] = [ProjectedSide::Left, ProjectedSide::Right, ProjectedSide::Above, ProjectedSide::Below];
+}
+
+/// The basis of the view projected from `parent` onto `side` of it, in `projection` (ISO 5456-2):
+/// in third angle a view shows the side of the model it sits on (one to the right looks from the
+/// right), and in first angle the side away from it. It is the parent's basis turned a quarter
+/// turn about one of its paper axes, through the parent's origin, with no rounding beyond the
+/// parent's normal (a principal view's projections are exact), and it lines up with the parent: a
+/// view to the left or right keeps the parent's paper y, one above or below its paper x.
+pub fn projected_basis(parent: &Plane, side: ProjectedSide, projection: Projection) -> Result<Plane> {
+    validate_plane(parent).map_err(|_| Invalid("a view's basis is finite and orthonormal"))?;
+    // 1 when the view looks from the side it sits on, -1 when from the side away from it.
+    let from = match projection {
+        Projection::Third => 1.0,
+        Projection::First => -1.0,
+    };
+    // The normal, toward the parent's viewer, becomes the paper axis the turn doesn't keep.
+    let normal = parent.x.cross(parent.y);
+    let (x, y) = match side {
+        ProjectedSide::Right => (normal * -from, parent.y),
+        ProjectedSide::Left => (normal * from, parent.y),
+        ProjectedSide::Above => (parent.x, normal * -from),
+        ProjectedSide::Below => (parent.x, normal * from),
+    };
+    Ok(Plane { origin: parent.origin, x: positive_zeros(x), y: positive_zeros(y) })
+}
+
+/// `v` with any -0 made 0 (turning by a sign makes a zero component -0), so a view's axes write
+/// out as `[0.0, 1.0, 0.0]`, never `[-0.0, 1.0, -0.0]`.
+fn positive_zeros(v: Vec3) -> Vec3 {
+    let positive = |c: f64| if c == 0.0 { 0.0 } else { c };
+    Vec3::new(positive(v.x), positive(v.y), positive(v.z))
 }
 
 /// Paper x and y for an isometric view from the upper corner `(cx, cy, 1)`: x is horizontal, the
@@ -243,6 +292,20 @@ impl ViewFrame {
         let factor = scale.factor();
         let map = Similarity2::new(factor, 0.0, position_mm - centre * factor).ok_or(Invalid("a view's position is finite"))?;
         Ok(ViewFrame { basis, scale, map })
+    }
+
+    /// The view projected from this one onto `side` of it in `projection`, at this view's scale and
+    /// lined up with it: the point `centre` of its plane lands at `position_mm` along the free axis
+    /// (paper x for a view to the left or right, y above or below), and on this view's line along
+    /// the other, so each point of the model sits as high in both views (or as far across).
+    pub fn aligned(&self, side: ProjectedSide, projection: Projection, centre: Vec2, position_mm: Vec2) -> Result<ViewFrame> {
+        let basis = projected_basis(&self.basis, side, projection)?;
+        // The kept axis's coordinate of `centre` is the same in this view's plane.
+        let position = match side {
+            ProjectedSide::Left | ProjectedSide::Right => Vec2::new(position_mm.x, self.map.apply(Vec2::new(0.0, centre.y)).y),
+            ProjectedSide::Above | ProjectedSide::Below => Vec2::new(self.map.apply(Vec2::new(centre.x, 0.0)).x, position_mm.y),
+        };
+        ViewFrame::new(basis, self.scale, centre, position)
     }
 
     pub fn basis(&self) -> Plane {
