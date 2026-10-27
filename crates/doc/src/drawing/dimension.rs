@@ -157,7 +157,7 @@ impl Drawing {
 
     fn check_dimension(&self, d: &Dimension) -> Result<()> {
         let on = || format!("it is on view {}, which the drawing doesn't have", ids::encode(d.view));
-        require(self.views.binary_search_by_key(&d.view, |v| v.id).is_ok(), on)?;
+        require(self.view(d.view).is_some(), on)?;
         match &d.kind {
             DimensionKind::Linear { a, b, direction, reading } => {
                 check_point(a)?;

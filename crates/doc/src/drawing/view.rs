@@ -14,7 +14,6 @@
 //! view lined up with its parent is on the parent's sheet; a view's place is on paper
 //! ([`is_paper_coordinate`]); at most [`MAX_VIEWS`] views, listed by id ([`Drawing::add_views`]).
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -158,18 +157,28 @@ impl Drawing {
         add_by_id(&mut self.views, views, |v| v.id);
     }
 
+    /// View `id`, found by halves in the views' id order.
+    pub fn view(&self, id: u64) -> Option<&View> {
+        self.view_index(id).and_then(|i| self.views.get(i)).map(|v| &**v)
+    }
+
+    /// Where view `id` is in [`Drawing::views`].
+    pub fn view_index(&self, id: u64) -> Option<usize> {
+        self.views.binary_search_by_key(&id, |v| v.id).ok()
+    }
+
     /// The views' rules (the module's notes).
     pub(super) fn check_views(&self) -> Result<()> {
         require(self.views.len() <= MAX_VIEWS, || format!("a drawing has at most {MAX_VIEWS} views"))?;
+        // In id order, so each view after this is found by halves.
         require(in_id_order(&self.views, |v| v.id), || "a drawing lists its views by id".into())?;
-        let views: BTreeMap<u64, &View> = self.views.iter().map(|v| (v.id, &**v)).collect();
         for view in &self.views {
-            self.check_view(view, &views).map_err(|e| DocError::Invalid(format!("view {}: {e}", ids::encode(view.id))))?;
+            self.check_view(view).map_err(|e| DocError::Invalid(format!("view {}: {e}", ids::encode(view.id))))?;
         }
         Ok(())
     }
 
-    fn check_view(&self, view: &View, views: &BTreeMap<u64, &View>) -> Result<()> {
+    fn check_view(&self, view: &View) -> Result<()> {
         let on = |sheet: u64| format!("it is on sheet {}, which the drawing doesn't have", ids::encode(sheet));
         require(self.sheets.iter().any(|s| s.id == view.sheet), || on(view.sheet))?;
         let margin = view.reference_margin_mm;
@@ -190,8 +199,8 @@ impl Drawing {
                 direction.basis().map(|_| ()).map_err(|e| DocError::Invalid(e.to_string()))
             }
             ViewKind::Projected { parent, .. } => {
-                chain(view.id, |id| views.get(&id).copied())?;
-                let parent_sheet = views.get(&parent).map(|p| p.sheet);
+                self.chain_of(view.id)?;
+                let parent_sheet = self.view(parent).map(|p| p.sheet);
                 let lined_up = matches!(view.place, ViewPlace::Aligned(_));
                 require(!lined_up || parent_sheet == Some(view.sheet), || "a view lined up with its parent is on its parent's sheet".into())
             }
@@ -247,7 +256,7 @@ impl Drawing {
 
     /// The views from `id` up to its base view, nearest first ([`chain`]).
     fn chain_of(&self, id: u64) -> Result<Vec<&View>> {
-        chain(id, |id| self.views.iter().find(|v| v.id == id).map(|v| &**v))
+        chain(id, |id| self.view(id))
     }
 }
 

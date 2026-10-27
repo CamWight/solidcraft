@@ -216,7 +216,7 @@ fn display_set(own: &ViewOverrides) -> usize {
 
 /// View `id` of `d`, for `cmd`.
 fn find<'a>(d: &'a Drawing, id: u64, cmd: &str) -> Result<&'a View> {
-    d.views.iter().find(|v| v.id == id).map(|v| &**v).ok_or_else(|| bad(cmd, format!("the drawing has no view {}", ids::encode(id))))
+    d.view(id).ok_or_else(|| bad(cmd, format!("the drawing has no view {}", ids::encode(id))))
 }
 
 /// The views projected from view `id`, directly or through others, in the drawing's order: each
@@ -243,7 +243,7 @@ fn descendants(d: &Drawing, id: u64, follows: impl Fn(&View) -> bool) -> Vec<u64
 /// `set` made on view `id` of `d`: the fields it changes, by name.
 fn change(d: &mut Drawing, id: u64, set: &ViewSet) -> Result<Vec<String>> {
     let resolved = d.resolve_view(id).map_err(|e| bad(EDIT, e.to_string()))?;
-    let at = d.views.iter().position(|v| v.id == id).ok_or_else(|| bad(EDIT, format!("the drawing has no view {}", ids::encode(id))))?;
+    let at = d.view_index(id).ok_or_else(|| bad(EDIT, format!("the drawing has no view {}", ids::encode(id))))?;
     let Some(view) = d.views.get_mut(at).map(std::sync::Arc::make_mut) else { return Ok(Vec::new()) };
     let before = view.clone();
     let base = matches!(view.kind, ViewKind::Base { .. });
