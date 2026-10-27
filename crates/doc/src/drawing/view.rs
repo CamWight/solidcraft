@@ -12,9 +12,10 @@
 //! of its sources, has a scale and looks from a direction that makes a view; every parent is a view
 //! of the drawing, no chain of parents loops, and a chain is at most [`MAX_VIEW_DEPTH`] views; a
 //! view lined up with its parent is on the parent's sheet; a view's place is on paper
-//! ([`is_paper_coordinate`]); at most [`MAX_VIEWS`] views.
+//! ([`is_paper_coordinate`]); at most [`MAX_VIEWS`] views, listed by id ([`Drawing::add_views`]).
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_view::{ProjectedSide, Scale, is_paper_coordinate, projected_basis};
@@ -150,9 +151,18 @@ fn or_default<T: Copy>(chain: &[&View], field: impl Fn(&ViewOverrides) -> Option
 }
 
 impl Drawing {
+    /// Adds `views`, each where its id puts it: a drawing lists its views by id, never in the order
+    /// they were added in, so the same views always save as the same bytes. Every edit keeps the
+    /// order ([`Drawing::validate`]), and reading puts a file's views in it.
+    pub fn add_views(&mut self, views: impl IntoIterator<Item = Arc<View>>) {
+        self.views.extend(views);
+        self.views.sort_by_key(|v| v.id);
+    }
+
     /// The views' rules (the module's notes).
     pub(super) fn check_views(&self) -> Result<()> {
         require(self.views.len() <= MAX_VIEWS, || format!("a drawing has at most {MAX_VIEWS} views"))?;
+        require(self.views.is_sorted_by_key(|v| v.id), || "a drawing lists its views by id".into())?;
         let views: BTreeMap<u64, &View> = self.views.iter().map(|v| (v.id, &**v)).collect();
         for view in &self.views {
             self.check_view(view, &views).map_err(|e| DocError::Invalid(format!("view {}: {e}", ids::encode(view.id))))?;

@@ -28,12 +28,13 @@
 //! - 1 to [`MAX_SHEETS`] sheets; names of 1 to [`MAX_NAME_BYTES`] bytes.
 //! - Nothing derived is saved, and a drawing always saves as the same bytes: fields in their
 //!   order, maps sorted, and lists of records in a fixed order (sheets as arranged; later
-//!   records by id), never the order they were added in.
+//!   records by id), never the order they were added in. Records listed by id read in that order
+//!   whatever order a file lists them in: the order means nothing, so it is never damage.
 //! - A later change to the record is one file in `src/drawing/format/pending/` (its README).
 //!
 //! [`Drawing::from_json`] reads a drawing in this order: at most [`MAX_DRAWING_BYTES`] of text,
-//! the family's format check, every number in range, the upgrade, the typed record, then
-//! [`Drawing::validate`]; [`Drawing::from_value`] the same from the format check on.
+//! the family's format check, every number in range, the upgrade, the typed record with its views
+//! by id, then [`Drawing::validate`]; [`Drawing::from_value`] the same from the format check on.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -100,7 +101,7 @@ pub struct Drawing {
     pub language: String,
     /// In order, each behind its own `Arc`, so an undo step shares every sheet it didn't change.
     pub sheets: Vec<Arc<Sheet>>,
-    /// In order, each behind its own `Arc`, as the sheets are.
+    /// By id ([`Drawing::add_views`]), each behind its own `Arc`, as the sheets are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<Arc<View>>,
 }
@@ -232,7 +233,9 @@ impl Drawing {
         let (version, applied) = DRAWING.take_version(&mut v)?;
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
-        let d: Drawing = serde_json::from_value(v).map_err(damaged)?;
+        let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
+        let views = std::mem::take(&mut d.views);
+        d.add_views(views);
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }

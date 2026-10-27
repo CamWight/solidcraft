@@ -59,7 +59,7 @@ fn three_views_of(mut s: Session) -> (Session, [u64; 3]) {
     let (sheet, source) = (d.sheets[0].id, d.sources[0].id);
     let mut add = |d: &mut Drawing, kind: ViewKind, place: ViewPlace, settings: ViewOverrides| {
         let id = d.allocate_id(&mut id_source).unwrap();
-        d.views.push(Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 }));
+        d.add_views([Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 })]);
         id
     };
     let front_settings =
@@ -179,7 +179,7 @@ fn an_edit_is_one_undo_step_and_names_its_followers() {
     // The front view turned to the top, and the right view placed apart.
     let turned = edit_view(&mut s, front, json!({"view": "top", "scale": "1:5"}));
     assert_eq!(turned["changed"], json!(["scale", "view"]));
-    assert_eq!(turned["followers"], json!([ids::encode(right), ids::encode(top)]));
+    assert_eq!(turned["followers"], json!([ids::encode(top), ids::encode(right)]), "by id");
     assert_eq!(edit_view(&mut s, right, json!({"place": {"at": [320.0, 150.0]}}))["changed"], json!(["place"]));
     assert_eq!(edit_view(&mut s, top, json!({"reference_margin_mm": 5.0}))["changed"], json!(["reference_margin_mm"]));
     assert_eq!(inspect_view(&mut s, top)["reference_margin_mm"], 5.0);
@@ -569,14 +569,14 @@ fn a_change_of_paper_lists_the_views_it_leaves_outside_and_moves_none() {
     let places = |s: &Session| [front, right, top].map(|v| saved(s, v).place);
     let before = places(&s);
     let (listed, views) = outside(&sheet_set(&mut s, sheet, json!({"size": {"standard": "a4"}})));
-    assert_eq!(views, [right, top]);
-    assert_box(&listed[0], [287.5, 145.0], [312.5, 155.0]);
-    assert_box(&listed[1], [287.5, 225.0], [312.5, 275.0]);
+    assert_eq!(views, [top, right], "by id");
+    assert_box(&listed[0], [287.5, 225.0], [312.5, 275.0]);
+    assert_box(&listed[1], [287.5, 145.0], [312.5, 155.0]);
     assert_eq!(places(&s), before, "nothing moves");
-    assert_eq!(outside(&sheet_set(&mut s, sheet, json!({"orientation": "portrait"}))).1, [right, top]);
+    assert_eq!(outside(&sheet_set(&mut s, sheet, json!({"orientation": "portrait"}))).1, [top, right]);
     let up_to = sheet_set(&mut s, sheet, json!({"size": {"custom": {"sides_mm": [322.5, 297.0]}}, "orientation": "landscape"}));
     assert!(up_to.get("outside").is_none(), "a view on the border is inside: {up_to}");
-    assert_eq!(outside(&sheet_set(&mut s, sheet, json!({"size": {"custom": {"sides_mm": [322.4, 297.0]}}}))).1, [right, top]);
+    assert_eq!(outside(&sheet_set(&mut s, sheet, json!({"size": {"custom": {"sides_mm": [322.4, 297.0]}}}))).1, [top, right]);
     assert!(sheet_set(&mut s, sheet, json!({"name": "Views"})).get("outside").is_none(), "only a change of paper checks");
     run(&mut s, "edit.undo", json!({}));
     run(&mut s, "edit.undo", json!({}));

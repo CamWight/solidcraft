@@ -445,7 +445,7 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             }
             made.push(Arc::new(view));
         }
-        d.views.extend(made);
+        d.add_views(made);
         Ok(sheet)
     })?;
     let first = copies.first().copied().unwrap_or_default();
