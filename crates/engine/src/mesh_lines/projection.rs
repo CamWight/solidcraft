@@ -2,7 +2,7 @@
 //! its depth plane, then union occluded parameter intervals. A BVH bounds the candidate work.
 #[cfg(test)]
 use solidcraft_geom::Mesh;
-use solidcraft_geom::{Aabb3, Vec2, Vec3};
+use solidcraft_geom::{Aabb3, Plane, Vec2, Vec3};
 use solidcraft_render::Camera;
 use std::collections::BTreeMap;
 
@@ -48,6 +48,12 @@ impl View {
         Self { origin: cam.target, right, up, back, perspective: (cam.fov > 0.).then_some(cam.distance) }
     }
 
+    /// A drawing view's: orthographic, on `basis`, so lines come out in its plane's coordinates
+    /// ([`Plane::to_local`]) and depth grows toward the viewer.
+    pub(crate) fn orthographic(basis: &Plane) -> Self {
+        Self { origin: basis.origin, right: basis.x, up: basis.y, back: basis.normal(), perspective: None }
+    }
+
     /// `p` in the view: right and up, and a depth that grows toward the eye (the distance
     /// along back, or its reciprocal's change in perspective).
     pub(super) fn project(&self, p: Vec3) -> Result<Vec3, &'static str> {
@@ -82,6 +88,27 @@ pub(crate) struct Line {
     pub a: Vec2,
     pub b: Vec2,
     pub hidden: bool,
+    /// What drew it, when the scene keeps sources ([`super::meshes::Ask::sources`]).
+    pub owner: Option<Owner>,
+    /// Another source lay on this stretch too, and this one's owner drew it.
+    pub covered: bool,
+}
+
+/// What drew a line: a placement, and its edge or a silhouette. Owners compare in this order, so
+/// a stretch two sources share belongs to the first visible one, else the first hidden one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Owner {
+    /// The index of the placement among the scene's.
+    pub placement: u32,
+    pub origin: Origin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Origin {
+    /// The placement's edge, as the body's edges are numbered.
+    Edge(u32),
+    /// A silhouette across the B-rep face of a triangle that faces the view.
+    Silhouette(u32),
 }
 
 pub(super) fn xy(p: Vec3) -> Vec2 {
@@ -190,9 +217,11 @@ pub(super) fn key(p: Vec3, eps: f64) -> [i64; 3] {
 }
 
 /// Merge collinear projected intervals, giving visible strokes precedence. This also removes
-/// a rear edge underneath only part of a visible edge, and rejoins subdivided silhouettes.
+/// a rear edge underneath only part of a visible edge, and rejoins subdivided silhouettes. With
+/// owners, a stretch belongs to its first visible owner, else its first hidden one, and ends
+/// where that changes; the others there are counted as covered (`covered` on the drawn line).
 pub(super) fn merge_lines(lines: Vec<Line>, eps: f64) -> Vec<Line> {
-    type Events = (Vec2, Vec2, Vec<(f64, i32, i32)>);
+    type Events = (Vec2, Vec2, Vec<(f64, Option<Owner>, i32, i32)>);
     let mut groups: BTreeMap<[i64; 3], Events> = BTreeMap::new();
     for line in lines {
         let delta = line.b - line.a;
@@ -205,34 +234,46 @@ pub(super) fn merge_lines(lines: Vec<Line>, eps: f64) -> Vec<Line> {
         let (origin, dir, events) = groups.entry(k).or_insert((line.a, dir, Vec::new()));
         let (a, b) = ((line.a - *origin).dot(*dir), (line.b - *origin).dot(*dir));
         let (v, h) = if line.hidden { (0, 1) } else { (1, 0) };
-        events.push((a.min(b), v, h));
-        events.push((a.max(b), -v, -h));
+        events.push((a.min(b), line.owner, v, h));
+        events.push((a.max(b), line.owner, -v, -h));
     }
     let mut result = Vec::new();
     for (_, (origin, dir, mut events)) in groups {
         events.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-        let (mut visible, mut hidden, mut last) = (0, 0, 0.0);
+        // How many visible and hidden stretches of each owner lie here (one entry without owners).
+        let mut active: BTreeMap<Option<Owner>, (i32, i32)> = BTreeMap::new();
+        let mut last = 0.0;
         let mut path: Option<Line> = None;
-        for (at, v, h) in events {
+        for (at, owner, v, h) in events {
             if at - last > eps {
-                if visible > 0 || hidden > 0 {
-                    let is_hidden = visible == 0;
+                let drawn = active
+                    .iter()
+                    .find(|(_, (v, _))| *v > 0)
+                    .map(|(o, _)| (*o, false))
+                    .or_else(|| active.iter().find(|(_, (_, h))| *h > 0).map(|(o, _)| (*o, true)));
+                if let Some((owner, is_hidden)) = drawn {
                     let a = origin + dir * last;
                     let b = origin + dir * at;
-                    if let Some(p) = path.as_mut().filter(|p| p.hidden == is_hidden && p.b.dist(a) <= eps) {
+                    let covered = active.len() > 1;
+                    if let Some(p) = path.as_mut().filter(|p| p.hidden == is_hidden && p.owner == owner && p.b.dist(a) <= eps) {
                         p.b = b;
+                        p.covered |= covered;
                     } else {
                         if let Some(p) = path.take() {
                             result.push(p);
                         }
-                        path = Some(Line { a, b, hidden: is_hidden });
+                        path = Some(Line { a, b, hidden: is_hidden, owner, covered });
                     }
                 } else if let Some(p) = path.take() {
                     result.push(p);
                 }
             }
-            visible += v;
-            hidden += h;
+            let count = active.entry(owner).or_insert((0, 0));
+            count.0 += v;
+            count.1 += h;
+            if *count == (0, 0) {
+                active.remove(&owner);
+            }
             last = at;
         }
         if let Some(p) = path {
@@ -335,7 +376,7 @@ pub(super) fn reference_drawing(meshes: &[Mesh], cam: &Camera) -> Result<Vec<Lin
             if a.dist(b) <= eps {
                 return;
             }
-            result.push(Line { a, b, hidden });
+            result.push(Line { a, b, hidden, owner: None, covered: false });
         };
         let mut cursor = 0.0;
         for (lo, hi) in merged {
@@ -356,12 +397,34 @@ mod tests {
     use super::*;
     #[test]
     fn a_visible_edge_overrides_only_the_overlapping_part_of_a_hidden_edge() {
-        let lines =
-            vec![Line { a: Vec2::ZERO, b: Vec2::new(10., 0.), hidden: true }, Line { a: Vec2::new(3., 0.), b: Vec2::new(7., 0.), hidden: false }];
-        let merged = merge_lines(lines, 1e-8);
+        let line = |a: f64, b: f64, hidden| Line { a: Vec2::new(a, 0.), b: Vec2::new(b, 0.), hidden, owner: None, covered: false };
+        let merged = merge_lines(vec![line(0., 10., true), line(3., 7., false)], 1e-8);
         assert_eq!(merged.len(), 3);
         let length = |hidden| merged.iter().filter(|l| l.hidden == hidden).map(|l| l.a.dist(l.b)).sum::<f64>();
         assert!((length(false) - 4.).abs() < 1e-8 && (length(true) - 6.).abs() < 1e-8);
+    }
+
+    /// Two sources on one stretch: the first visible one draws it and the stretch says another lay
+    /// there; where only a hidden source lies, the first hidden one draws it; a stretch ends where
+    /// its owner changes, even at the same visibility.
+    #[test]
+    fn a_shared_stretch_belongs_to_its_first_visible_source() {
+        let owner = |placement| Some(Owner { placement, origin: Origin::Edge(0) });
+        let line = |a: f64, b: f64, hidden, placement| Line { a: Vec2::new(a, 0.), b: Vec2::new(b, 0.), hidden, owner: owner(placement), covered: false };
+        let merged = merge_lines(vec![line(0., 10., true, 0), line(2., 6., false, 1), line(4., 8., false, 2), line(5., 9., true, 3)], 1e-8);
+        let mut got: Vec<(i64, i64, bool, u32, bool)> = merged
+            .iter()
+            .map(|l| ((l.a.x * 1e6).round() as i64, (l.b.x * 1e6).round() as i64, l.hidden, l.owner.map_or(9, |o| o.placement), l.covered))
+            .collect();
+        got.sort_unstable();
+        let mm = |v: i64| v * 1_000_000;
+        let want = vec![
+            (mm(0), mm(2), true, 0, false),
+            (mm(2), mm(6), false, 1, true),
+            (mm(6), mm(8), false, 2, true),
+            (mm(8), mm(10), true, 0, true),
+        ];
+        assert_eq!(got, want);
     }
     #[test]
     fn a_line_is_split_at_triangle_boundaries_and_depth_crossings() {
