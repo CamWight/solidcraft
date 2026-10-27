@@ -237,3 +237,64 @@ fn a_pick_that_names_nothing_or_several_things_is_refused() {
     let e = s.execute(INSPECT, &json!({"dimension": ids::encode(99)})).err().map(|e| e.to_string()).unwrap_or_default();
     assert!(e.contains("the drawing has no dimension"), "{e}");
 }
+
+/// Every place a value can go in `v`, as JSON pointers: `v` itself, then each member and item.
+fn places(v: &Value, at: String, out: &mut Vec<String>) {
+    out.push(at.clone());
+    match v {
+        Value::Object(o) => o.iter().for_each(|(k, x)| places(x, format!("{at}/{k}"), out)),
+        Value::Array(l) => l.iter().enumerate().for_each(|(i, x)| places(x, format!("{at}/{i}"), out)),
+        _ => {}
+    }
+}
+
+/// A hostile value in each place of each command's parameters, at every depth (picks, paths,
+/// corners' edges, the edit's settings): never a panic, and the drawing keeps its rules.
+#[test]
+fn hostile_dimension_params_never_panic() {
+    let (mut s, view) = front_view();
+    let id = add(&mut s, view, json!({"length": {"edge": [40, 0, 30]}}))["dimension"].clone();
+    let v = json!(ids::encode(view));
+    let corner = json!({"edges": [{"body": "Box", "index": 0}, {"point": [0, 0, 15]}], "path": [1]});
+    let calls = [
+        (
+            ADD,
+            json!({"view": v, "kind": {"linear": {"a": [0, 0, 0], "b": corner, "direction": {"along": [1, 0]}, "reading": "projected"}},
+            "offset_mm": 5, "text": {"at": [1, 2]}, "decimals": 1, "override_text": "x"}),
+        ),
+        (ADD, json!({"view": v, "kind": {"angle": {"a": {"point": [40, 0, 30], "path": [1]}, "b": [0, 0, 15], "other_side": true}}})),
+        (
+            EDIT,
+            json!({"dimension": id, "set": {"offset_mm": 5, "text": "centred", "decimals": 1, "override_text": null, "direction": "vertical",
+            "reading": "projected"}}),
+        ),
+        (INSPECT, json!({"dimension": id})),
+    ];
+    let many = |v: Value| Value::Array(vec![v; 1000]);
+    let mut values = crate::tests::hostile_values();
+    values.extend([
+        json!({"body": "Box", "index": u64::MAX}),
+        json!({"edges": []}),
+        json!({"edges": many(json!([0, 0, 0]))}),
+        many(json!(1)),
+        json!([1e308, 0, 0]),
+        json!("x".repeat(600)),
+    ]);
+    let mut internal = Vec::new();
+    for (cmd, template) in calls {
+        let mut at = Vec::new();
+        places(&template, String::new(), &mut at);
+        for (place, value) in at.iter().flat_map(|place| values.iter().map(move |value| (place, value))) {
+            let mut p = template.clone();
+            if let Some(slot) = p.pointer_mut(place) {
+                *slot = value.clone();
+            }
+            let mut copy = s.scratch();
+            if let Err(crate::EngineError::Internal(_, msg)) = copy.execute(cmd, &p) {
+                internal.push(format!("{cmd} {p}: {msg}"));
+            }
+            copy.doc.drawings.iter().for_each(|d| d.validate().unwrap());
+        }
+    }
+    assert!(internal.is_empty(), "dimension commands panicked:\n{}", internal.join("\n"));
+}
