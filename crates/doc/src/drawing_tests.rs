@@ -1,10 +1,12 @@
 use serde_json::json;
+use solidcraft_geom::drawing_measure::{LinearDirection, Reading};
 use solidcraft_geom::drawing_sheet::{Margins, Orientation, PaperSize, SheetSize};
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
 
 use solidcraft_render::VisualStyle;
 
 use crate::drawing_view::{TangentEdges, ViewDirection, ViewOverrides};
+use dimension::{DimensionKind, ModelEdge, ModelPoint, TextPlace};
 use view::{ViewKind, ViewPlace};
 
 use super::*;
@@ -21,7 +23,9 @@ fn own_border() -> DrawingBorderProfile {
 /// the second (A4 portrait, a border of its own, 600 dpi, left out of printing) the design itself.
 /// On the first sheet, the front view at 1:2, its right view lined up with it and drawing hidden
 /// lines too, and the right view's top view placed apart; on the second, an iso view at 1:1,
-/// tangent edges shown, with a 5 mm reference margin.
+/// tangent edges shown, with a 5 mm reference margin. On the front view, a dimension of each kind:
+/// between two corners, a placed copy's edge length along a direction, and an angle with its text
+/// given.
 fn plate() -> Drawing {
     let mut id_source = IdSource::seeded(SEED);
     let a3 = drawing_sheet::Sheet::standard(PaperSize::A3, Orientation::Landscape);
@@ -59,6 +63,23 @@ fn plate() -> Drawing {
     let iso = ViewKind::Base { source: plate_id, view: ViewDirection::Named(NamedView::IsoFrontRight) };
     let full_size = ViewOverrides { scale: Some("1:1".parse().unwrap()), tangent_edges: Some(TangentEdges::Show), ..ViewOverrides::default() };
     add(&mut d, bolt_sheet, iso, ViewPlace::At([105.0, 148.5]), full_size, 5.0);
+    let corner = |edges: [&str; 2]| ModelPoint { body: "Plate".into(), origin_feature: 1, edges: edges.map(String::from).to_vec(), path: Vec::new() };
+    let edge = |name: &str| ModelEdge { body: "Plate".into(), origin_feature: 1, name: name.into(), path: vec![3, 7] };
+    let measures = [
+        DimensionKind::Linear {
+            a: corner(["F1:front|F1:bottom", "F1:front|F1:left"]),
+            b: corner(["F1:front|F1:bottom", "F1:front|F1:right"]),
+            direction: LinearDirection::Horizontal,
+            reading: Reading::Projected,
+        },
+        DimensionKind::Length { edge: edge("F1:front|F1:top"), direction: LinearDirection::Along(Vec2::new(1.0, 1.0)), reading: Reading::Projected },
+        DimensionKind::Angle { a: edge("F1:front|F1:top"), b: edge("F2:chamfer|F1:front"), reading: Reading::True, other_side: true },
+    ];
+    let texts = [(TextPlace::Centred, None), (TextPlace::At([0.0, -20.0]), None), (TextPlace::At([12.5, 30.0]), Some("≈45°".to_string()))];
+    for (kind, (text, override_text)) in measures.into_iter().zip(texts) {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        d.add_dimensions([Arc::new(Dimension { id, view: front, kind, offset_mm: -10.0, text, decimals: 1, override_text })]);
+    }
     d.validate().unwrap();
     d
 }

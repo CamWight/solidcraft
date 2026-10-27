@@ -23,7 +23,7 @@ use solidcraft_geom::paper::MAX_SIDE_MM;
 use solidcraft_geom::{Plane, Vec2};
 use solidcraft_render::VisualStyle;
 
-use super::{Drawing, require};
+use super::{Drawing, add_by_id, in_id_order, require};
 use crate::drawing_view::{MAX_REFERENCE_MARGIN_MM, TangentEdges, ViewDirection, ViewOverrides, ViewSettings};
 use crate::{DocError, Result, ids};
 
@@ -155,14 +155,13 @@ impl Drawing {
     /// they were added in, so the same views always save as the same bytes. Every edit keeps the
     /// order ([`Drawing::validate`]), and reading puts a file's views in it.
     pub fn add_views(&mut self, views: impl IntoIterator<Item = Arc<View>>) {
-        self.views.extend(views);
-        self.views.sort_by_key(|v| v.id);
+        add_by_id(&mut self.views, views, |v| v.id);
     }
 
     /// The views' rules (the module's notes).
     pub(super) fn check_views(&self) -> Result<()> {
         require(self.views.len() <= MAX_VIEWS, || format!("a drawing has at most {MAX_VIEWS} views"))?;
-        require(self.views.is_sorted_by_key(|v| v.id), || "a drawing lists its views by id".into())?;
+        require(in_id_order(&self.views, |v| v.id), || "a drawing lists its views by id".into())?;
         let views: BTreeMap<u64, &View> = self.views.iter().map(|v| (v.id, &**v)).collect();
         for view in &self.views {
             self.check_view(view, &views).map_err(|e| DocError::Invalid(format!("view {}: {e}", ids::encode(view.id))))?;

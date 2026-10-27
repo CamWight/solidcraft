@@ -18,6 +18,8 @@
 //!   interface's is. **Properties** follow [`Metadata`]'s rules.
 //! - **Views** of its designs on its sheets, base and projected ([`view`]), and the **projection**
 //!   (first or third angle) every projected view follows.
+//! - **Dimensions** on its views, each measuring named corners or edges of the view's model
+//!   ([`dimension`]).
 //!
 //! The rules, which every later kind of record (views, annotations, tables) keeps too:
 //! - Every object has an id of [`crate::ids`]: random, so objects added side by side never take
@@ -34,7 +36,8 @@
 //!
 //! [`Drawing::from_json`] reads a drawing in this order: at most [`MAX_DRAWING_BYTES`] of text,
 //! the family's format check, every number in range, the upgrade, the typed record with its views
-//! by id, then [`Drawing::validate`]; [`Drawing::from_value`] the same from the format check on.
+//! and dimensions by id, then [`Drawing::validate`]; [`Drawing::from_value`] the same from the
+//! format check on.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -49,8 +52,10 @@ use crate::format::DRAWING;
 use crate::ids::{self, IdSource};
 use crate::{DocError, Metadata, Result, expr};
 
+pub mod dimension;
 pub mod view;
 
+use dimension::Dimension;
 use view::View;
 
 /// The most drawings a design may hold.
@@ -104,6 +109,9 @@ pub struct Drawing {
     /// By id ([`Drawing::add_views`]), each behind its own `Arc`, as the sheets are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<Arc<View>>,
+    /// By id ([`Drawing::add_dimensions`]), each behind its own `Arc`, as the views are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dimensions: Vec<Arc<Dimension>>,
 }
 
 /// A design the drawing draws: the design the drawing is in. Views and sheets name it by its id,
@@ -212,6 +220,7 @@ impl Drawing {
             language: language.into(),
             sheets: vec![Arc::new(first)],
             views: Vec::new(),
+            dimensions: Vec::new(),
         };
         drawing.validate()?;
         Ok(drawing)
@@ -234,8 +243,9 @@ impl Drawing {
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
         let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
-        let views = std::mem::take(&mut d.views);
+        let (views, dimensions) = (std::mem::take(&mut d.views), std::mem::take(&mut d.dimensions));
         d.add_views(views);
+        d.add_dimensions(dimensions);
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
@@ -276,6 +286,7 @@ impl Drawing {
             .chain(self.sources.iter().map(|s| s.id))
             .chain(self.sheets.iter().map(|s| s.id))
             .chain(self.views.iter().map(|v| v.id))
+            .chain(self.dimensions.iter().map(|d| d.id))
     }
 
     /// The record's rules (the module's notes): what reading a drawing checks, and what every edit
@@ -300,7 +311,8 @@ impl Drawing {
         for sheet in &self.sheets {
             self.check_sheet(sheet).map_err(|e| DocError::Invalid(format!("sheet {}: {e}", ids::encode(sheet.id))))?;
         }
-        self.check_views()
+        self.check_views()?;
+        self.check_dimensions()
     }
 
     /// A sheet's own rules, and that the source it documents is one of the drawing's.
@@ -353,6 +365,18 @@ pub fn check_count(count: usize) -> Result<()> {
 /// Whether the drawing has no properties, so its file leaves them out.
 fn no_properties(properties: &Arc<Metadata>) -> bool {
     properties.is_empty()
+}
+
+/// Adds `more` to `records`, each where its id puts it: the order every list of records after the
+/// sheets keeps (the module's rule), whatever order they come in.
+fn add_by_id<T>(records: &mut Vec<Arc<T>>, more: impl IntoIterator<Item = Arc<T>>, id: impl Fn(&T) -> u64) {
+    records.extend(more);
+    records.sort_by_key(|r| id(r));
+}
+
+/// Whether `records` are in the order [`add_by_id`] keeps.
+fn in_id_order<T>(records: &[Arc<T>], id: impl Fn(&T) -> u64) -> bool {
+    records.is_sorted_by_key(|r| id(r))
 }
 
 /// `Ok` when `ok`, else the rule `broken` names.
