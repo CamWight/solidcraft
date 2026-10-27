@@ -55,9 +55,21 @@ fn each_named_view_looks_from_where_its_name_says() {
             assert!(b.x.z.abs() < EPS, "{view:?}: paper x is horizontal");
         }
     }
-    // The principal views' axes are exact: no rounding from a camera.
-    assert_eq!((NamedView::Front.basis().x, NamedView::Front.basis().y), (Vec3::X, Vec3::Z));
-    assert_eq!((NamedView::Top.basis().x, NamedView::Top.basis().y), (Vec3::X, Vec3::Y));
+    // The principal views' axes are exact, no rounding from a camera, and each lies on its paper
+    // as the front view folded about the edge they share: the top and bottom views keep x along
+    // +X, the back and side views keep y along +Z.
+    let minus = |v: Vec3| Vec3::ZERO - v;
+    let principal = [
+        (NamedView::Front, Vec3::X, Vec3::Z),
+        (NamedView::Back, minus(Vec3::X), Vec3::Z),
+        (NamedView::Top, Vec3::X, Vec3::Y),
+        (NamedView::Bottom, Vec3::X, minus(Vec3::Y)),
+        (NamedView::Left, minus(Vec3::Y), Vec3::Z),
+        (NamedView::Right, Vec3::Y, Vec3::Z),
+    ];
+    for (view, x, y) in principal {
+        assert_eq!((view.basis().x, view.basis().y), (x, y), "{view:?}");
+    }
     // The sketch plane XZ is not the front view: its y is -Z, a front view's is +Z.
     assert_eq!(Plane::XZ.y, Vec3::new(0.0, 0.0, -1.0));
     assert_eq!(NamedView::Front.basis().y, Vec3::Z);
@@ -72,7 +84,12 @@ fn each_named_view_looks_from_where_its_name_says() {
 fn a_view_from_a_direction_and_up_matches_the_named_views() {
     for view in NamedView::ALL {
         let named = view.basis();
-        let up = if matches!(view, NamedView::Top | NamedView::Bottom) { named.y } else { Vec3::Z };
+        // Looking down, up is +Y (the back at the top); looking up, -Y (the front at the top).
+        let up = match view {
+            NamedView::Top => Vec3::Y,
+            NamedView::Bottom => Vec3::new(0.0, -1.0, 0.0),
+            _ => Vec3::Z,
+        };
         let built = basis_looking(-named.normal(), up, Vec3::ZERO).unwrap();
         assert!(close(built.x, named.x) && close(built.y, named.y), "{view:?}: {built:?}");
     }
@@ -98,6 +115,19 @@ fn a_view_from_a_direction_and_up_matches_the_named_views() {
     }
     assert_eq!(serde_json::from_value::<NamedView>(serde_json::json!("iso")).unwrap(), NamedView::IsoFrontRight);
     assert_eq!(serde_json::to_value(NamedView::IsoFrontRight).unwrap(), serde_json::json!("iso_front_right"));
+}
+
+/// An up just off the view direction still gives a square basis: its normal is the direction back
+/// at the viewer to rounding, where the cross product alone would tilt it by up to 9e-9 rad.
+#[test]
+fn an_up_just_off_the_direction_still_looks_along_it() {
+    for (direction, off) in [(Vec3::new(0.3, -0.7, 0.2), 1.0001e-9), (Vec3::new(1.0, 2.0, 3.0), 1.2e-9), (Vec3::Y, 1.0001e-9)] {
+        let d = direction.normalized().unwrap();
+        let aside = d.cross(Vec3::Z).normalized().unwrap();
+        let basis = basis_looking(direction, d + aside * off, Vec3::ZERO).unwrap();
+        let tilt = (basis.normal() + d).len();
+        assert!(tilt < 1e-14 && basis.x.dot(d).abs() < 1e-15, "{direction:?}: tilted {tilt:e}");
+    }
 }
 
 /// A 50 mm cube is a 50 mm square in every principal view at 1:1, and half that at 1:2. In an
@@ -128,8 +158,22 @@ fn the_views_centre_lands_on_its_position() {
     assert!((frame.to_paper(Vec3::new(0.0, 7.0, 0.0)) - Vec2::new(110.0, 128.5)).len() < EPS, "depth doesn't move a point");
     // W07's example: a 100 x 20 front view on A3 at 2:1, centred: boundary 110..310 x 128.5..168.5.
     assert!((frame.to_paper(Vec3::new(100.0, 0.0, 20.0)) - Vec2::new(310.0, 168.5)).len() < EPS);
-    let boundary = frame.boundary(&Aabb2 { min: Vec2::ZERO, max: Vec2::new(100.0, 20.0) });
+    let boundary = frame.boundary(&Aabb2 { min: Vec2::ZERO, max: Vec2::new(100.0, 20.0) }).unwrap();
     assert!(boundary.min.dist(Vec2::new(110.0, 128.5)) < EPS && boundary.max.dist(Vec2::new(310.0, 168.5)) < EPS, "{boundary:?}");
+    // A box that is inside out, or not finite on paper, has no boundary: never one that drops a
+    // corner. 1e308 is finite in the plane, but not at 2:1.
+    let box_of = |x0: f64, y0: f64, x1: f64, y1: f64| Aabb2 { min: Vec2::new(x0, y0), max: Vec2::new(x1, y1) };
+    let refused = [
+        Aabb2::EMPTY,
+        box_of(10.0, 0.0, 0.0, 10.0),
+        box_of(f64::NAN, 0.0, 10.0, 10.0),
+        box_of(0.0, 0.0, f64::INFINITY, 10.0),
+        box_of(0.0, 0.0, 1e308, 10.0),
+    ];
+    for model in refused {
+        assert_eq!(frame.boundary(&model), Err(Invalid("a view's box is not inside out and is finite on paper")), "{model:?}");
+    }
+    assert!(frame.boundary(&box_of(5.0, 5.0, 5.0, 5.0)).is_ok_and(|b| b.min == b.max), "a point's box is a point");
     let line = Seg2::Line { a: Vec2::ZERO, b: Vec2::new(100.0, 20.0) };
     assert_eq!(frame.seg_to_paper(&line), Seg2::Line { a: Vec2::new(110.0, 128.5), b: Vec2::new(310.0, 168.5) });
     let bounded = CurveAccuracy::Bounded { max_deviation_mm: 0.01 };
@@ -157,6 +201,17 @@ fn a_scale_reads_and_writes_as_paper_to_model() {
     for (paper, model) in [(0.0, 1.0), (1.0, 0.0), (f64::NAN, 1.0), (1.0, f64::INFINITY), (1.0, 1e300), (1e-300, 1.0)] {
         assert!(Scale::new(paper, model).is_err(), "{paper}:{model}");
     }
+    // Each side is capped too, or 1e300:1e300 (1:1) would write 603 characters.
+    for (paper, model) in [(1e300, 1e300), (1e-300, 1e-300), (1.000001e6, 1.000001e6), (0.9e-6, 0.9e-6)] {
+        assert!(Scale::new(paper, model).is_err(), "{paper}:{model}");
+    }
+    assert!("1000001:1000001".parse::<Scale>().is_err() && "0.0000009:0.0000009".parse::<Scale>().is_err());
+    // The longest a scale writes: its widest sides, about 50 characters.
+    for (paper, model) in [(1e6, 1e6), (MIN_PART, MIN_PART), (1.2345678901234567e-6, 1.2345678901234567e-6), (999999.9999999999, 999999.9999999999)] {
+        let text = Scale::new(paper, model).unwrap().to_string();
+        assert!(text.len() <= 50, "{text}");
+        assert_eq!(text.parse::<Scale>().unwrap(), Scale::new(paper, model).unwrap(), "{text}");
+    }
 }
 
 /// The fitted scale is the largest ISO 5455 preset at which the view fits: W07's 100 x 20 front
@@ -176,6 +231,21 @@ fn the_fitted_scale_is_the_largest_preset_that_fits() {
     assert_eq!(Scale::fit(Vec2::new(1675.75, 1.0), room).map(|s| s.to_string()), Some("1:5".into()));
     // The presets run largest first, each a 1, 2 or 5 step.
     assert!(PRESETS.windows(2).all(|w| w[0].factor() > w[1].factor()));
+    // A size of 0 sets no limit that way: a line fits by its length, a point at the largest preset.
+    assert_eq!(Scale::fit(Vec2::new(0.0, 20.0), a3).map(|s| s.to_string()), Some("10:1".into()));
+    assert_eq!(Scale::fit(Vec2::ZERO, a3).map(|s| s.to_string()), Some("50:1".into()));
+    // A size or room that is negative or not finite fits nothing.
+    for (size, room) in [
+        (Vec2::new(-1.0, 1.0), a3),
+        (Vec2::new(1.0, -0.0001), a3),
+        (Vec2::new(f64::NAN, 1.0), a3),
+        (Vec2::new(1.0, f64::INFINITY), a3),
+        (Vec2::new(1.0, 1.0), Vec2::new(-400.0, 277.0)),
+        (Vec2::new(1.0, 1.0), Vec2::new(f64::INFINITY, 277.0)),
+        (Vec2::new(1.0, 1.0), Vec2::new(400.0, f64::NAN)),
+    ] {
+        assert_eq!(Scale::fit(size, room), None, "{size:?} in {room:?}");
+    }
 }
 
 /// What a frame refuses: a basis that isn't orthonormal or finite, a centre that isn't finite, and

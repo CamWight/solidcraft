@@ -6,9 +6,9 @@
 //!   `x × y` toward the viewer. [`NamedView`] gives the principal views and the four upper
 //!   isometric corners exactly, never from a camera, which tilts a top view by its pitch clamp;
 //!   [`basis_looking`] gives any other view from its direction and up.
-//! - A **[`Scale`]** is a ratio of two positive numbers, written `"1:2"` (paper : model), from
-//!   1:100000 to 1000:1. [`Scale::fit`] picks the largest of ISO 5455's preset scales at which a
-//!   view fits a space.
+//! - A **[`Scale`]** is a ratio of two numbers from 0.000001 to 1000000, written `"1:2"` (paper :
+//!   model), from 1:100000 to 1000:1. [`Scale::fit`] picks the largest of ISO 5455's preset
+//!   scales at which a view fits a space.
 //! - A **[`ViewFrame`]** places a view on paper: the point of the view's plane at `centre` lands at
 //!   `position_mm`, everything scaled by the scale. Its [`ViewFrame::paper_map`] moves the view's
 //!   curves ([`Seg2::similar`]) and their accuracy ([`CurveAccuracy::scaled`]) onto paper.
@@ -26,6 +26,10 @@ use crate::{Aabb2, Plane, Seg2, Similarity2, Vec2, Vec3};
 pub const MIN_SCALE: f64 = 1e-5;
 /// The largest scale: 1000 paper millimetres for one of model.
 pub const MAX_SCALE: f64 = 1000.0;
+/// The smallest and largest number either side of a scale may be: `"1:100000"` and `"1000:1"`
+/// with room to spare, and never more than about 50 characters written out.
+pub const MIN_PART: f64 = 1e-6;
+pub const MAX_PART: f64 = 1e6;
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("drawing view: {0}")]
@@ -73,8 +77,10 @@ impl NamedView {
     ];
 
     /// The view's basis, through the world origin. The principal views' axes are exact unit
-    /// vectors, with no -0 to write out. An isometric view looks from its corner, `(±1, ±1, 1)`, toward the origin, with
-    /// paper x horizontal (along the view direction × Z) and paper y up.
+    /// vectors, with no -0 to write out, each the front view folded about the edge it shares with
+    /// it: the top and bottom views keep paper x along +X (the bottom's y is -Y), and the back and
+    /// side views keep paper y along +Z. An isometric view looks from its corner, `(±1, ±1, 1)`,
+    /// toward the origin, with paper x horizontal (along the view direction × Z) and paper y up.
     pub fn basis(self) -> Plane {
         let (x, y) = match self {
             NamedView::Front => (Vec3::X, Vec3::Z),
@@ -104,6 +110,9 @@ pub fn basis_looking(direction: Vec3, up: Vec3, origin: Vec3) -> Result<Plane> {
         origin.is_finite() && [origin.x, origin.y, origin.z].iter().all(|v| v.abs() <= MAX_NUMBER),
         "a view's origin is finite and within 1e12 mm of the world's",
     )?;
+    // Square to the direction again: near the threshold the cross product's rounding is a large
+    // share of its length, which would tilt the normal by up to 1e-8 rad.
+    let across = across - d * across.dot(d);
     let x = across * (1.0 / across.len());
     let basis = Plane { origin, x, y: x.cross(d) };
     validate_plane(&basis).map_err(|_| Invalid("a view's basis is finite and orthonormal"))?;
@@ -149,10 +158,12 @@ pub const PRESETS: [Scale; 18] = [
 ];
 
 impl Scale {
-    /// `paper : model`, each finite and above 0, their ratio from [`MIN_SCALE`] to [`MAX_SCALE`].
+    /// `paper : model`, each from [`MIN_PART`] to [`MAX_PART`] (so the text stays short), their
+    /// ratio from [`MIN_SCALE`] to [`MAX_SCALE`].
     pub fn new(paper: f64, model: f64) -> Result<Scale> {
-        let parts = [paper, model].into_iter().all(|v| v.is_finite() && v > 0.0);
-        require(parts && (MIN_SCALE..=MAX_SCALE).contains(&(paper / model)), "a scale is two numbers above 0, from 1:100000 to 1000:1")?;
+        let parts = [paper, model].into_iter().all(|v| (MIN_PART..=MAX_PART).contains(&v));
+        let message = "a scale is two numbers from 0.000001 to 1000000, from 1:100000 to 1000:1";
+        require(parts && (MIN_SCALE..=MAX_SCALE).contains(&(paper / model)), message)?;
         Ok(Scale { paper, model })
     }
 
@@ -163,8 +174,13 @@ impl Scale {
 
     /// The largest preset at which a view `size_mm` wide and high (in model millimetres) fits
     /// within `room_mm` on paper, if any does. Compared as `size * paper <= room * model`, so an
-    /// exact fit at 1:5 isn't lost to 0.2's rounding.
+    /// exact fit at 1:5 isn't lost to 0.2's rounding. A size of 0 sets no limit that way (a view of
+    /// a line along the other), so a view of a point fits at the largest preset; a size or room
+    /// that is negative or not finite fits none.
     pub fn fit(size_mm: Vec2, room_mm: Vec2) -> Option<Scale> {
+        if ![size_mm, room_mm].into_iter().all(|v| v.is_finite() && v.x >= 0.0 && v.y >= 0.0) {
+            return None;
+        }
         PRESETS.into_iter().find(|s| size_mm.x * s.paper <= room_mm.x * s.model && size_mm.y * s.paper <= room_mm.y * s.model)
     }
 }
@@ -237,7 +253,11 @@ impl ViewFrame {
         self.scale
     }
 
-    /// The map from the view's plane coordinates to paper millimetres, for its curves.
+    /// The map from the view's plane coordinates to paper millimetres, for its curves. Plane
+    /// coordinates are the plane's own ([`Plane::to_local`]: from the basis's origin along its x
+    /// and y), as section curves are. Points measured along x and y from the world origin (as the
+    /// hidden-line output is planned to be) first lose the origin's own `(origin · x, origin · y)`;
+    /// a named view's origin is the world origin, so for it the two are the same.
     pub fn paper_map(&self) -> Similarity2 {
         self.map
     }
@@ -247,13 +267,15 @@ impl ViewFrame {
         self.map.apply(self.basis.to_local(p))
     }
 
-    /// A box of the view's plane on paper: the box around its four corners, mapped.
-    pub fn boundary(&self, model: &Aabb2) -> Aabb2 {
-        let corners = [model.min, Vec2::new(model.max.x, model.min.y), model.max, Vec2::new(model.min.x, model.max.y)];
-        corners.into_iter().map(|c| self.map.apply(c)).collect()
+    /// A box of the view's plane (in plane coordinates, as [`Self::paper_map`]'s) on paper: the box
+    /// around its four corners, mapped. A box that is inside out, or not finite on paper, has none.
+    pub fn boundary(&self, model: &Aabb2) -> Result<Aabb2> {
+        let corners = [model.min, Vec2::new(model.max.x, model.min.y), model.max, Vec2::new(model.min.x, model.max.y)].map(|c| self.map.apply(c));
+        require(!model.is_empty() && corners.iter().all(|c| c.is_finite()), "a view's box is not inside out and is finite on paper")?;
+        Ok(corners.into_iter().collect())
     }
 
-    /// A curve of the view's plane, on paper.
+    /// A curve of the view's plane (in plane coordinates, as [`Self::paper_map`]'s), on paper.
     pub fn seg_to_paper(&self, seg: &Seg2) -> Seg2 {
         seg.similar(&self.map)
     }
