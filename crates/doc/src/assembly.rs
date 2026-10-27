@@ -44,6 +44,11 @@ pub fn apply_vector(m: &Mat, v: Vec3) -> Vec3 {
     )
 }
 
+/// `p` carried by `m`: `None` when `m` flattens it.
+pub fn map_plane(m: &Mat, p: &Plane) -> Option<Plane> {
+    Plane::new(apply_point(m, p.origin), apply_vector(m, p.x), apply_vector(m, p.y))
+}
+
 pub fn is_identity(m: &Mat) -> bool {
     m.iter().flatten().zip(IDENTITY.iter().flatten()).all(|(a, b)| (a - b).abs() < 1e-12)
 }
@@ -170,21 +175,16 @@ impl BomType {
 pub const MAX_PLACEMENT_DEPTH: usize = 64;
 pub const MAX_PLACEMENTS: usize = 100_000;
 
-fn map_plane(m: &Mat, p: &Plane) -> Plane {
-    let (o, x, y) = (apply_point(m, p.origin), apply_vector(m, p.x), apply_vector(m, p.y));
-    Plane::new(o, x, y).unwrap_or(*p)
-}
-
 fn map_plane_ref(m: &Mat, p: &mut PlaneRef) {
     match p {
-        PlaneRef::Custom { plane } => *plane = map_plane(m, plane),
+        PlaneRef::Custom { plane } => *plane = map_plane(m, plane).unwrap_or(*plane),
         PlaneRef::Placed { origin, x_dir, y_dir } => {
             map_point_expr(m, origin);
             *x_dir = apply_vector(m, *x_dir);
             *y_dir = apply_vector(m, *y_dir);
         }
         PlaneRef::Face { plane, at, .. } => {
-            *plane = map_plane(m, plane);
+            *plane = map_plane(m, plane).unwrap_or(*plane);
             *at = apply_point(m, *at);
         }
         PlaneRef::Offset { base, .. } | PlaneRef::Flipped { base, .. } => map_plane_ref(m, base),
