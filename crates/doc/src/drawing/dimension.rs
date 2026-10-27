@@ -148,7 +148,12 @@ impl Drawing {
 
     /// Dimension `id`, found by halves in the dimensions' id order.
     pub fn dimension(&self, id: u64) -> Option<&Dimension> {
-        self.dimensions.binary_search_by_key(&id, |d| d.id).ok().and_then(|i| self.dimensions.get(i)).map(|d| &**d)
+        self.dimension_index(id).and_then(|i| self.dimensions.get(i)).map(|d| &**d)
+    }
+
+    /// Where dimension `id` is in [`Drawing::dimensions`].
+    pub fn dimension_index(&self, id: u64) -> Option<usize> {
+        self.dimensions.binary_search_by_key(&id, |d| d.id).ok()
     }
 
     /// The dimensions' rules (the module's notes). The views are checked first, so they are in id

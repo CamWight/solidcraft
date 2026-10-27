@@ -45,6 +45,10 @@ fn edge_index(s: &Session, a: [f64; 3], b: [f64; 3]) -> usize {
     mesh.edges.iter().position(|line| joins(ends(line))).unwrap()
 }
 
+fn edit(s: &mut Session, dimension: &Value, set: Value) -> Value {
+    s.execute(EDIT, &json!({"dimension": dimension, "set": set})).unwrap_or_else(|e| panic!("{EDIT}: {e}"))
+}
+
 fn add(s: &mut Session, view: u64, kind: Value) -> Value {
     run(s, ADD, json!({"view": ids::encode(view), "kind": kind}))
 }
@@ -100,6 +104,56 @@ fn an_added_dimension_is_one_undo_step() {
     assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), before);
     run(&mut s, "edit.redo", json!({}));
     assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), after);
+}
+
+/// An edit changes only what it is given and names only what changed; the same values again
+/// change nothing and add no undo step, and `null` shows the number again.
+#[test]
+fn an_edit_names_what_it_changed_and_the_same_again_changes_nothing() {
+    let (mut s, view) = front_view();
+    let added = add(&mut s, view, json!({"length": {"edge": [40, 0, 30]}}));
+    let id = added["dimension"].clone();
+    let steps = s.undo.len();
+    let set = json!({"offset_mm": -15, "text": {"at": [5, 30]}, "decimals": 1, "override_text": "SEE NOTE", "reading": "true"});
+    assert_eq!(edit(&mut s, &id, set.clone())["changed"], json!(["offset_mm", "text", "decimals", "override_text", "reading"]));
+    assert_eq!(s.undo.len(), steps + 1, "one undo step");
+    let read = run(&mut s, INSPECT, json!({"dimension": id}));
+    assert_eq!((read["status"].as_str(), read["text"].as_str()), (Some("overridden"), Some("SEE NOTE")), "{read}");
+    assert_eq!(read["record"]["kind"]["length"]["edge"], added["record"]["kind"]["length"]["edge"], "what it measures stays");
+    let bytes = s.drawing("test").unwrap().to_json().unwrap();
+    assert_eq!(edit(&mut s, &id, set)["changed"], json!([]));
+    assert_eq!((s.undo.len(), s.drawing("test").unwrap().to_json().unwrap()), (steps + 1, bytes), "nothing changed: no undo step");
+    assert_eq!(edit(&mut s, &id, json!({"override_text": null}))["changed"], json!(["override_text"]));
+    reads(&run(&mut s, INSPECT, json!({"dimension": id})), 80.0, "80.0");
+}
+
+/// A setting its kind hasn't got, and a value the record would refuse, are refused with the
+/// drawing unchanged; an angle takes its other side.
+#[test]
+fn an_edit_refuses_what_the_dimension_cant_take() {
+    let (mut s, view) = front_view();
+    let length = add(&mut s, view, json!({"length": {"edge": [40, 0, 30]}}))["dimension"].clone();
+    let angle = add(&mut s, view, json!({"angle": {"a": [40, 0, 30], "b": [0, 0, 15]}}))["dimension"].clone();
+    let before = s.drawing("test").unwrap().to_json().unwrap();
+    let nothing = json!(ids::encode(99));
+    let cases = [
+        (&length, json!({"other_side": true}), "`other_side` is an angle's"),
+        (&angle, json!({"direction": "horizontal"}), "an angle has no `direction`"),
+        (&length, json!({"decimals": 7}), "at most 6 decimals"),
+        (&length, json!({"offset_mm": 1e9}), "on paper"),
+        (&length, json!({"override_text": ""}), "instead of its number is 1 to"),
+        (&length, json!({"offset_mm": null}), ""),
+        (&length, json!({"edge": [0, 0, 0]}), "edge"),
+        (&nothing, json!({"decimals": 1}), "the drawing has no dimension"),
+    ];
+    for (id, set, why) in cases {
+        let p = json!({"dimension": id, "set": set});
+        let e = s.execute(EDIT, &p).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("accepted: {p}"));
+        assert!(e.contains(why), "{p}: {e}");
+    }
+    assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), before);
+    assert_eq!(edit(&mut s, &angle, json!({"other_side": true}))["changed"], json!(["other_side"]));
+    assert_eq!(run(&mut s, INSPECT, json!({"dimension": angle}))["record"]["kind"]["angle"]["other_side"], json!(true));
 }
 
 /// A pick that doesn't name one thing, and a dimension the record would refuse, are refused

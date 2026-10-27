@@ -567,6 +567,7 @@
   "cmd.drawing_create": "创建绘图",
   "cmd.drawing_delete": "删除绘图",
   "cmd.drawing_dimension_add": "添加绘图尺寸",
+  "cmd.drawing_dimension_edit": "编辑绘图尺寸",
   "cmd.drawing_dimension_inspect": "检查绘图尺寸",
   "cmd.drawing_inspect": "检查绘图",
   "cmd.drawing_list": "列出绘图",

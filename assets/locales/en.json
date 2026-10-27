@@ -567,6 +567,7 @@
   "cmd.drawing_create": "Create Drawing",
   "cmd.drawing_delete": "Delete Drawing",
   "cmd.drawing_dimension_add": "Add Drawing Dimension",
+  "cmd.drawing_dimension_edit": "Edit Drawing Dimension",
   "cmd.drawing_dimension_inspect": "Inspect Drawing Dimension",
   "cmd.drawing_inspect": "Inspect Drawing",
   "cmd.drawing_list": "List Drawings",

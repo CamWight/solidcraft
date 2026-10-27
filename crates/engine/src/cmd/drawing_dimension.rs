@@ -1,25 +1,30 @@
-//! `drawing.dimension.add` and `drawing.dimension.inspect` (W19d, #4896): a dimension on a saved
-//! view of the open drawing, and what it reads now. What a dimension measures is picked (a point,
-//! or an edge's index) and saved by name, never by the point picked
+//! `drawing.dimension.add`, `.edit` and `.inspect` (W19d, #4896): a dimension on a saved view of
+//! the open drawing, its settings, and what it reads now. What a dimension measures is picked (a
+//! point, or an edge's index) and saved by name, never by the point picked
 //! ([`solidcraft_doc::Document::edge_reference`]); its value comes from the model each time it is
-//! read ([`solidcraft_doc::Document::resolve_dimensions`]). Adding is one undo step of the drawing,
-//! and neither command evaluates the model.
+//! read ([`solidcraft_doc::Document::resolve_dimensions`]). Adding and editing are one undo step
+//! of the drawing each, and none of the commands evaluates the model.
 
 use std::sync::Arc;
 
 use serde_json::Value;
+use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::dimension::{Candidate, Dimension, DimensionKind, Status, TextPlace};
 use solidcraft_doc::ids;
 use solidcraft_geom::drawing_measure::{LinearDirection, Reading};
 
 use super::CommandSpec;
 use crate::params::bad;
-use crate::schema::drawing_dimension::{AddParams, CandidateResult, CornerParam, DimensionResult, EdgeParam, InspectParams, KindParam};
+use crate::schema::drawing_dimension::{
+    AddParams, CandidateResult, CornerParam, DimensionResult, DimensionSet, EdgeParam, EditParams, EditResult, InspectParams, KindParam,
+};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
 const ADD: &str = "drawing.dimension.add";
 const ADD_CONTRACT: TypedContract<AddParams> = TypedContract::new();
+const EDIT: &str = "drawing.dimension.edit";
+const EDIT_CONTRACT: TypedContract<EditParams> = TypedContract::new();
 const INSPECT: &str = "drawing.dimension.inspect";
 const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 
@@ -44,6 +49,18 @@ pub static COMMANDS: &[CommandSpec] = &[
              the dimension line's distance on paper (default 10); text?: centred (default) or {at: [x, y]} from the view's centre; \
              decimals?: 0..6 (default 2); override_text? → what drawing.dimension.inspect answers for it. Saved by the edges' names, \
              never the points picked. One undo step; no model is evaluated.",
+        ),
+    CommandSpec::new(EDIT, "Edit Drawing Dimension", crate::checked!("drawing.dimension.edit", EDIT_CONTRACT, edit))
+        .icon("dimension")
+        .in_drawing()
+        .doc_only()
+        .contract(&EDIT_CONTRACT)
+        .output(output_schema_for::<EditResult>)
+        .params(
+            "dimension: its id; set: {offset_mm?, text?: centred or {at: [x, y]}, decimals?: 0..6, override_text?: text, or null to show \
+             the number again; direction?, reading?: a linear or length dimension's, reading? and other_side?: an angle's} → \
+             {dimension, changed: [fields]}. What it measures stays: to measure something else, add a new one. One undo step, none \
+             when nothing changes; no model is evaluated.",
         ),
     CommandSpec::new(INSPECT, "Inspect Drawing Dimension", crate::checked!("drawing.dimension.inspect", INSPECT_CONTRACT, inspect))
         .icon("inspect")
@@ -98,6 +115,73 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     answer(s, ADD, id)
+}
+
+fn edit(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: EditParams = crate::schema::read(EDIT, p)?;
+    let id = request.dimension.0;
+    let changed = s.edit_drawing(EDIT, |d| change(d, id, &request.set))?;
+    let reply = EditResult { dimension: ids::encode(id), changed, param_warnings: Vec::new() };
+    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+/// `set` made on dimension `id` of `d`: the fields it changes, by name.
+fn change(d: &mut Drawing, id: u64, set: &DimensionSet) -> Result<Vec<String>> {
+    let at = d.dimension_index(id).ok_or_else(|| bad(EDIT, format!("the drawing has no dimension {}", ids::encode(id))))?;
+    let Some(dimension) = d.dimensions.get_mut(at).map(Arc::make_mut) else { return Ok(Vec::new()) };
+    let before = dimension.clone();
+    if let Some(offset) = set.offset_mm {
+        dimension.offset_mm = offset;
+    }
+    if let Some(text) = set.text {
+        dimension.text = text;
+    }
+    if let Some(decimals) = set.decimals {
+        dimension.decimals = decimals;
+    }
+    if let Some(text) = &set.override_text {
+        dimension.override_text = text.clone();
+    }
+    match &mut dimension.kind {
+        DimensionKind::Linear { direction, reading, .. } | DimensionKind::Length { direction, reading, .. } => {
+            if set.other_side.is_some() {
+                return Err(bad(EDIT, "`other_side` is an angle's"));
+            }
+            *direction = set.direction.unwrap_or(*direction);
+            *reading = set.reading.unwrap_or(*reading);
+        }
+        DimensionKind::Angle { reading, other_side, .. } => {
+            if set.direction.is_some() {
+                return Err(bad(EDIT, "an angle has no `direction`: it measures between its edges' lines"));
+            }
+            *reading = set.reading.unwrap_or(*reading);
+            *other_side = set.other_side.unwrap_or(*other_side);
+        }
+    }
+    Ok(changed_fields(&before, dimension))
+}
+
+/// The direction, reading and side of a dimension's kind, where it has them.
+fn kind_settings(kind: &DimensionKind) -> (Option<LinearDirection>, Reading, bool) {
+    match kind {
+        DimensionKind::Linear { direction, reading, .. } | DimensionKind::Length { direction, reading, .. } => (Some(*direction), *reading, false),
+        DimensionKind::Angle { reading, other_side, .. } => (None, *reading, *other_side),
+    }
+}
+
+/// The names of the fields that differ between `a` and `b`, two states of one dimension.
+fn changed_fields(a: &Dimension, b: &Dimension) -> Vec<String> {
+    let (x, y) = (kind_settings(&a.kind), kind_settings(&b.kind));
+    let fields = [
+        ("offset_mm", a.offset_mm != b.offset_mm),
+        ("text", a.text != b.text),
+        ("decimals", a.decimals != b.decimals),
+        ("override_text", a.override_text != b.override_text),
+        ("direction", x.0 != y.0),
+        ("reading", x.1 != y.1),
+        ("other_side", x.2 != y.2),
+    ];
+    fields.into_iter().filter(|(_, changed)| *changed).map(|(name, _)| name.to_string()).collect()
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {

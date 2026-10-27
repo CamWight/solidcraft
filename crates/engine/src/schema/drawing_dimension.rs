@@ -230,6 +230,56 @@ pub struct InspectParams {
     pub dimension: DimensionIdParam,
 }
 
+/// What `drawing.dimension.edit` takes: the dimension, and what to change.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct EditParams {
+    pub dimension: DimensionIdParam,
+    pub set: DimensionSet,
+}
+
+/// What `drawing.dimension.edit` changes, each only when given. What a dimension measures isn't
+/// one of them: to measure something else, add a new one.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct DimensionSet {
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "f64")]
+    pub offset_mm: Option<f64>,
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Value")]
+    pub text: Option<TextPlace>,
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "u8")]
+    pub decimals: Option<u8>,
+    /// Text shown instead of the number, or `null` to show the number again.
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    pub override_text: Option<Option<String>>,
+    /// A linear or length dimension's.
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Value")]
+    pub direction: Option<LinearDirection>,
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub reading: Option<Reading>,
+    /// An angle's: π minus the smaller angle.
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub other_side: Option<bool>,
+}
+
+/// What `drawing.dimension.edit` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct EditResult {
+    pub dimension: String,
+    /// The fields the edit changed.
+    pub changed: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
 /// One of the things an ambiguous dimension's name finds.
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
