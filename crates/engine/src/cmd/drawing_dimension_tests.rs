@@ -156,6 +156,27 @@ fn an_edit_names_what_it_changed_and_the_same_again_changes_nothing() {
     reads(&run(&mut s, INSPECT, json!({"dimension": id})), 80.0, "80.0");
 }
 
+/// A dimension whose edge is filleted away has no value, and gives the one it last read this
+/// session as its last good value.
+#[test]
+fn a_dimension_that_cant_be_measured_gives_its_last_good_value() {
+    let (mut s, view) = front_view();
+    let drawing = s.drawing("test").unwrap().id;
+    let added = add(&mut s, view, json!({"length": {"edge": [40, 0, 30]}}));
+    reads(&added, 80.0, "80.00");
+    assert!(added.get("last_good").is_none(), "measured now: {added}");
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.fillet", json!({"body": "Box", "radius": 5, "edges": [[40, 0, 30]]}));
+    run(&mut s, "drawing.open", json!({"drawing": ids::encode(drawing)}));
+    let read = run(&mut s, INSPECT, json!({"dimension": added["dimension"]}));
+    assert!(read.get("value").is_none() && read["status"] != json!("ok"), "{read}");
+    assert_eq!(read["last_good"], json!(80.0), "{read}");
+    // A session that never read it has none.
+    let mut fresh = Session::new((*s.doc).clone());
+    run(&mut fresh, "drawing.open", json!({"drawing": ids::encode(drawing)}));
+    assert!(run(&mut fresh, INSPECT, json!({"dimension": added["dimension"]})).get("last_good").is_none());
+}
+
 /// A setting its kind hasn't got, and a value the record would refuse, are refused with the
 /// drawing unchanged; an angle takes its other side.
 #[test]

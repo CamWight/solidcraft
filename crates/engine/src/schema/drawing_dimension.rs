@@ -311,6 +311,9 @@ pub struct DimensionResult {
     /// What it shows: the text given, else the number in the drawing's units.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// When it has no value now: the last one it read this session, as `value` gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_good: Option<f64>,
     /// Every name it measures was found by exact history.
     pub exact: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]

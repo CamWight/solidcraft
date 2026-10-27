@@ -71,8 +71,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(output_schema_for::<DimensionResult>)
         .params(
             "dimension: its id → {dimension, view, record: as saved, status: ok, overridden, ambiguous, suppressed, lost or unmeasurable, \
-             why?, value? (model mm, or degrees for an angle), foreshortened?, text?, exact, candidates?: [{edge: {body, index}} or \
-             {corner: [x, y, z]}]}. Read-only; no model is evaluated.",
+             why?, value? (model mm, or degrees for an angle), foreshortened?, text?, last_good? (the value it last read this session, \
+             when it has none now), exact, candidates?: [{edge: {body, index}} or {corner: [x, y, z]}]}. Read-only; no model is \
+             evaluated.",
         ),
 ];
 
@@ -189,12 +190,20 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     answer(s, INSPECT, request.dimension.0)
 }
 
-/// Dimension `id` of the open drawing as the model has it now.
-fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
-    let d = s.drawing(cmd)?;
+/// Dimension `id` of the open drawing as the model has it now. A value read is kept as its last
+/// good one ([`Session::dimension_values`]).
+fn answer(s: &mut Session, cmd: &str, id: u64) -> Result<Value> {
+    let d = s.drawing(cmd)?.clone();
     let dimension = d.dimension(id).ok_or_else(|| bad(cmd, format!("the drawing has no dimension {}", ids::encode(id))))?;
-    let resolved = s.doc.resolve_dimensions(&s.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
+    let resolved = s.doc.resolve_dimensions(&s.model, &d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
     let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("dimension {} wasn't read", ids::encode(id))))?;
+    let last_good = match r.measured {
+        Some(m) => {
+            s.dimension_values.insert((d.id, id), m.value);
+            None
+        }
+        None => s.dimension_values.get(&(d.id, id)).copied(),
+    };
     let (status, why, candidates) = match r.status {
         Status::Ok => ("ok", None, Vec::new()),
         Status::Overridden => ("overridden", None, Vec::new()),
@@ -204,15 +213,17 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
         Status::Unmeasurable(why) => ("unmeasurable", Some(why), Vec::new()),
     };
     let angle = matches!(dimension.kind, DimensionKind::Angle { .. });
+    let shown = |value: f64| if angle { value.to_degrees() } else { value };
     let reply = DimensionResult {
         dimension: ids::encode(id),
         view: ids::encode(dimension.view),
         record: serde_json::to_value(dimension).map_err(|e| EngineError::Other(e.to_string()))?,
         status: status.to_string(),
         why,
-        value: r.measured.map(|m| if angle { m.value.to_degrees() } else { m.value }),
+        value: r.measured.map(|m| shown(m.value)),
         foreshortened: r.measured.map(|m| m.foreshortened),
         text: r.text,
+        last_good: last_good.map(shown),
         exact: r.exact,
         candidates,
         param_warnings: Vec::new(),

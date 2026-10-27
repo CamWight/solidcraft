@@ -325,6 +325,10 @@ pub struct Session {
     /// Record this session's top-level commands in the crash journal (the app's own design;
     /// never previews or other scratch sessions). See [`crash`].
     pub crash_journal: bool,
+    /// The last value each drawing dimension read this session, by drawing and dimension: what a
+    /// dimension that can't be measured now last measured. Never saved, so a design's drawings
+    /// don't change with every model edit.
+    pub(crate) dimension_values: std::collections::BTreeMap<(u64, u64), f64>,
     /// Full model evaluations (`refresh`), for tests.
     #[cfg(test)]
     pub(crate) evaluations: usize,
@@ -465,6 +469,7 @@ impl Session {
             camera: None,
             render_viewport: None,
             render_jobs: Default::default(),
+            dimension_values: Default::default(),
             #[cfg(test)]
             evaluations: 0,
             crash_journal: false,
@@ -1038,6 +1043,7 @@ impl Session {
             render_viewport: self.render_viewport.clone(),
             render_jobs: self.render_jobs.scratch(),
             saved_visibility: self.saved_visibility.clone(),
+            dimension_values: self.dimension_values.clone(),
             #[cfg(test)]
             evaluations: 0,
             crash_journal: false,
