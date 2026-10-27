@@ -510,4 +510,4 @@ fn snake_name(value: impl Serialize) -> String {
 
 #[cfg(test)]
 #[path = "drawing_view_tests.rs"]
-mod tests;
+pub(super) mod tests;

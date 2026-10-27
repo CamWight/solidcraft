@@ -1,6 +1,7 @@
 use serde_json::json;
 
 use super::*;
+use crate::cmd::drawing_view::tests::three_views;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"))
@@ -175,4 +176,39 @@ fn sheets_reorder_and_delete_but_one_always_stays() {
     run(&mut s, "drawing.sheet.delete", json!({"sheet": ids[1]}));
     assert!(refused(&mut s, "drawing.sheet.delete", json!({"sheet": ids[2]})).contains("at least one sheet"));
     assert_eq!(sheets(&s).len(), 1);
+}
+
+/// A sheet with views on it is refused, naming them, unless `contents` is `delete`: then it goes
+/// with them in one undo step, which an undo brings back whole. Nothing on another sheet goes with
+/// it, so a view there projected from one of its views is refused by name.
+#[test]
+fn a_sheet_with_views_on_it_goes_only_with_them() {
+    let (mut s, views) = three_views();
+    let [_, _, top] = views;
+    let first = ids::encode(sheets(&s)[0].id);
+    let second = run(&mut s, "drawing.sheet.add", json!({}))["sheet"].clone();
+    let e = refused(&mut s, "drawing.sheet.delete", json!({"sheet": first}));
+    assert!(e.contains("has 3 views (") && views.iter().all(|v| e.contains(&ids::encode(*v))) && e.contains(r#""contents": "delete""#), "{e}");
+    for contents in [json!("keep"), json!(true), json!(null)] {
+        let e = refused(&mut s, "drawing.sheet.delete", json!({"sheet": first, "contents": contents}));
+        assert!(e.contains("`contents` is delete"), "{contents}: {e}");
+    }
+    // The top view, placed apart, on the second sheet: its parent is on the first.
+    run(&mut s, "drawing.view.move_to_sheet", json!({"view": ids::encode(top), "sheet": second}));
+    let e = refused(&mut s, "drawing.sheet.delete", json!({"sheet": first, "contents": "delete"}));
+    assert!(e.contains(&ids::encode(top)) && e.contains("projected"), "{e}");
+    run(&mut s, "edit.undo", json!({}));
+    let steps = s.undo.len();
+    run(&mut s, "drawing.sheet.delete", json!({"sheet": first, "contents": "delete"}));
+    assert_eq!(s.undo.len(), steps + 1);
+    let d = s.drawing("test").unwrap();
+    assert_eq!((d.sheets.len(), d.views.len()), (1, 0));
+    run(&mut s, "edit.undo", json!({}));
+    let mut every = views.to_vec();
+    every.sort_unstable();
+    let d = s.drawing("test").unwrap();
+    assert_eq!(ids::encode(d.sheets[0].id), first, "back in its place");
+    assert_eq!(d.views.iter().map(|v| v.id).collect::<Vec<_>>(), every, "with its views");
+    // An empty sheet goes without being asked twice.
+    run(&mut s, "drawing.sheet.delete", json!({"sheet": second}));
 }

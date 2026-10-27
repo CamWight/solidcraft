@@ -187,6 +187,21 @@ impl Sheet {
     }
 }
 
+/// What is on one of a drawing's sheets ([`Drawing::on_sheet`]), each kind by id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OnSheet {
+    pub views: Vec<u64>,
+    /// The dimensions in its views.
+    pub dimensions: Vec<u64>,
+}
+
+impl OnSheet {
+    /// Nothing is on the sheet.
+    pub fn is_empty(&self) -> bool {
+        self.views.is_empty() && self.dimensions.is_empty()
+    }
+}
+
 fn default_dpi() -> f64 {
     DEFAULT_DPI
 }
@@ -277,6 +292,26 @@ impl Drawing {
             (Some(_), Some(_)) => Err(DocError::Invalid(format!("more than one sheet is called `{named}`: give its id"))),
             (None, _) => Err(DocError::Invalid(format!("no sheet `{named}`"))),
         }
+    }
+
+    /// What is on sheet `id`: its views and the dimensions in them. Each later kind of record on a
+    /// sheet adds its own here, and goes with the sheet ([`Drawing::remove_sheet`]).
+    pub fn on_sheet(&self, id: u64) -> OnSheet {
+        let views: Vec<u64> = self.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect();
+        // The views are listed by id, so the sheet's are too.
+        let dimensions = self.dimensions.iter().filter(|d| views.binary_search(&d.view).is_ok()).map(|d| d.id).collect();
+        OnSheet { views, dimensions }
+    }
+
+    /// Takes sheet `id` out with everything on it ([`Drawing::on_sheet`]), and answers what that
+    /// was. A view on another sheet projected from one of its views is left without its parent,
+    /// which [`Drawing::validate`] refuses: what becomes of it is the caller's to decide first.
+    pub fn remove_sheet(&mut self, id: u64) -> OnSheet {
+        let on = self.on_sheet(id);
+        self.sheets.retain(|s| s.id != id);
+        self.views.retain(|v| v.sheet != id);
+        self.dimensions.retain(|d| on.dimensions.binary_search(&d.id).is_err());
+        on
     }
 
     /// Every object's id, of every kind: what a new id must differ from. Each later kind adds its

@@ -438,6 +438,36 @@ fn damaged_files_are_refused_and_never_patched() {
 
 /// A run never gives an id twice: not one in use, and not a removed object's. Only another run from
 /// the same seed, which tests and replays start from the same file, can give a removed id again.
+/// What is on a sheet is its views and the dimensions in them, and taking the sheet out takes
+/// them too. A view elsewhere projected from one of them is left without its parent, which the
+/// rules refuse.
+#[test]
+fn a_sheet_goes_with_everything_on_it() {
+    let d = plate();
+    let (assembly, bolt) = (d.sheets[0].id, d.sheets[1].id);
+    let on = d.on_sheet(assembly);
+    assert_eq!((on.views.len(), on.dimensions.len()), (3, 3), "{on:?}");
+    assert_eq!(on.dimensions, d.dimensions.iter().map(|x| x.id).collect::<Vec<_>>());
+    let bolt_on = d.on_sheet(bolt);
+    assert_eq!((bolt_on.views.len(), bolt_on.dimensions.len()), (1, 0), "{bolt_on:?}");
+    assert!(d.on_sheet(d.id).is_empty() && !on.is_empty(), "not a sheet: nothing on it");
+    let mut without = d.clone();
+    assert_eq!(without.remove_sheet(bolt), bolt_on);
+    without.validate().unwrap();
+    assert_eq!((without.sheets.len(), without.views.len(), without.dimensions.len()), (1, 3, 3));
+    let mut without = d.clone();
+    assert_eq!(without.remove_sheet(assembly), on);
+    without.validate().unwrap();
+    assert_eq!((without.sheets.len(), without.views.len(), without.dimensions.len()), (1, 1, 0));
+    // The top view, placed apart, moved to the bolt's sheet: its parent is on the assembly's.
+    let mut moved = d.clone();
+    let top = moved.views.iter().position(|v| v.sheet == assembly && matches!((v.kind, v.place), (ViewKind::Projected { .. }, ViewPlace::At(_))));
+    Arc::make_mut(&mut moved.views[top.unwrap()]).sheet = bolt;
+    moved.validate().unwrap();
+    moved.remove_sheet(assembly);
+    assert!(moved.validate().unwrap_err().to_string().contains("parent"), "{:?}", moved.validate());
+}
+
 #[test]
 fn a_run_never_gives_an_id_twice() {
     let mut id_source = IdSource::seeded(SEED);

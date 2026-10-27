@@ -15,7 +15,7 @@ fn schemas_and_the_key_check_agree() {
     assert_keys(input_schema_for::<SheetAddParams>(), &with("after"));
     assert_keys(input_schema_for::<SheetSetParams>(), &with("sheet"));
     assert_keys(input_schema_for::<SheetReorderParams>(), &["sheets"]);
-    assert_keys(input_schema_for::<SheetDeleteParams>(), &["sheet"]);
+    assert_keys(input_schema_for::<SheetDeleteParams>(), &["contents", "sheet"]);
 }
 
 /// A call that already fails gets the same error in strict as with the check off.
@@ -36,6 +36,7 @@ fn strict_keeps_todays_errors() {
         ("drawing.sheet.reorder", json!({"sheets": "all"})),
         ("drawing.sheet.reorder", json!({"sheets": [5]})),
         ("drawing.sheet.delete", json!({"sheet": null})),
+        ("drawing.sheet.delete", json!({"sheet": "Sheet 1", "contents": "keep"})),
     ];
     for (command, p) in cases {
         let error = |level| drawing_session(level).0.execute(command, &p).err().map(|e| e.to_string());
@@ -62,10 +63,11 @@ fn replies_match_the_output_schema() {
     });
     let added = check("drawing.sheet.add", full);
     let id = added["sheet"].clone();
-    check("drawing.sheet.add", json!({"after": "Sheet 1"}));
+    let other = check("drawing.sheet.add", json!({"after": "Sheet 1"}))["sheet"].clone();
     check("drawing.sheet.set", json!({"sheet": id, "size": {"standard": "a2"}, "documents": null}));
     let order: Vec<Value> =
         check("drawing.sheet.set", json!({"sheet": "Sheet 1"}))["sheets"].as_array().unwrap().iter().rev().map(|sheet| sheet["id"].clone()).collect();
     check("drawing.sheet.reorder", json!({"sheets": order}));
     check("drawing.sheet.delete", json!({"sheet": id}));
+    check("drawing.sheet.delete", json!({"sheet": other, "contents": "delete"}));
 }

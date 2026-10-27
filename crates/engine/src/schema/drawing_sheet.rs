@@ -157,13 +157,26 @@ pub struct SheetReorderParams {
     pub sheets: Vec<String>,
 }
 
-/// Delete a sheet; a drawing keeps at least one. One undo step.
+/// What becomes of what is on a deleted sheet: `delete`.
+fn contents<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    match Value::deserialize(d)? {
+        Value::String(s) if s == "delete" => Ok(Some(s)),
+        _ => Err(serde::de::Error::custom(whole("`contents` is delete: the sheet goes with everything on it"))),
+    }
+}
+
+/// Delete a sheet; a drawing keeps at least one. A sheet with anything on it is refused, naming
+/// what, unless `contents` is `delete`. One undo step.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct SheetDeleteParams {
     /// The sheet, by id or name.
     #[serde(deserialize_with = "sheet_ref")]
     pub sheet: String,
+    /// `delete`: the views on it and their dimensions go with it, in the same undo step.
+    #[serde(default, deserialize_with = "contents", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "String")]
+    pub contents: Option<String>,
 }
 
 /// One of the drawing's sheets.

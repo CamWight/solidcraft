@@ -5,12 +5,14 @@
 //! A new sheet takes the paper, border and resolution of the sheet it follows, so a drawing's
 //! sheets match unless told otherwise. Changing a sheet's paper regrows its border and zones,
 //! which nothing on it is saved against, and moves nothing (S5): the answer lists the sheet's views
-//! whose boundary the new paper leaves outside its drawing space.
+//! whose boundary the new paper leaves outside its drawing space. A sheet with anything on it is
+//! deleted only with what is on it, when asked, in the same undo step.
 
 use std::sync::Arc;
 
 use serde_json::Value;
-use solidcraft_doc::drawing::{Drawing, Excluded, Sheet, SheetComponent};
+use solidcraft_doc::drawing::view::ViewKind;
+use solidcraft_doc::drawing::{Drawing, Excluded, OnSheet, Sheet, SheetComponent};
 use solidcraft_doc::ids;
 use solidcraft_geom::drawing_sheet::{Orientation, SheetSize};
 
@@ -63,7 +65,10 @@ pub static COMMANDS: &[CommandSpec] = &[
         .doc_only()
         .contract(&DELETE)
         .output(output_schema_for::<SheetsResult>)
-        .params("sheet: id or name (a drawing keeps at least one) → the drawing's sheets. One undo step."),
+        .params(
+            "sheet: id or name (a drawing keeps at least one); contents?: delete, to delete the views on it and their dimensions \
+             with it (without it a sheet with anything on it is refused, naming what) → the drawing's sheets. One undo step.",
+        ),
 ];
 
 /// The drawing's sheets, as each command answers (`sheet`: the one `drawing.sheet.add` made;
@@ -72,6 +77,27 @@ fn answer(s: &Session, cmd: &str, sheet: Option<u64>, outside: Vec<OutsideResult
     let sheets = s.drawing(cmd)?.sheets.iter().map(|sheet| SheetName { id: ids::encode(sheet.id), name: sheet.name.clone() }).collect();
     let reply = SheetsResult { sheet: sheet.map(ids::encode), sheets, outside, param_warnings: Vec::new() };
     serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+/// At most this many ids of a kind in a message.
+const NAMED: usize = 8;
+
+/// Ids for a message: the first [`NAMED`], then how many more.
+fn named(list: &[u64]) -> String {
+    let mut named: Vec<String> = list.iter().take(NAMED).map(|id| format!("`{}`", ids::encode(*id))).collect();
+    if list.len() > NAMED {
+        named.push(format!("{} more", list.len() - NAMED));
+    }
+    named.join(", ")
+}
+
+/// What is on a sheet, for a message: `2 views (…) and 1 dimension (…)`.
+fn listed(on: &OnSheet) -> String {
+    let kind = |what: &str, list: &[u64]| {
+        let s = if list.len() == 1 { "" } else { "s" };
+        (!list.is_empty()).then(|| format!("{} {what}{s} ({})", list.len(), named(list)))
+    };
+    [kind("view", &on.views), kind("dimension", &on.dimensions)].into_iter().flatten().collect::<Vec<_>>().join(" and ")
 }
 
 /// The position of the sheet `p[key]` names ([`Drawing::sheet_index`]).
@@ -147,7 +173,7 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
     })?;
     // Only a change of paper moves the drawing space; each view measured once.
     let d = s.drawing(cmd)?;
-    let on: Vec<u64> = if paper { d.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect() } else { Vec::new() };
+    let on: Vec<u64> = if paper { d.on_sheet(id).views } else { Vec::new() };
     let outside = super::drawing_view::outside_results(crate::drawing_view::outside(s, d, &on, cmd)?);
     answer(s, cmd, None, outside)
 }
@@ -180,12 +206,38 @@ fn reorder(s: &mut Session, p: &Value) -> Result<Value> {
 
 fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "drawing.sheet.delete";
+    let with_contents = match p.get("contents") {
+        None => false,
+        Some(v) if v.as_str() == Some("delete") => true,
+        Some(_) => return Err(bad(cmd, "`contents` is delete: the sheet goes with everything on it")),
+    };
     s.edit_drawing(cmd, |d| {
         let at = sheet_at(cmd, d, p, "sheet")?;
         if d.sheets.len() <= 1 {
             return Err(bad(cmd, "a drawing keeps at least one sheet"));
         }
-        d.sheets.remove(at);
+        let Some(sheet) = d.sheets.get(at).cloned() else { return Ok(()) };
+        let on = d.on_sheet(sheet.id);
+        if !on.is_empty() && !with_contents {
+            let what = listed(&on);
+            return Err(bad(cmd, format!("sheet `{}` has {what} on it: give `\"contents\": \"delete\"` to delete them with it", sheet.name)));
+        }
+        // Nothing on another sheet goes with it: a view there projected from one of its views would
+        // be left without its parent.
+        let elsewhere: Vec<u64> = d
+            .views
+            .iter()
+            .filter(|v| v.sheet != sheet.id && matches!(v.kind, ViewKind::Projected { parent, .. } if on.views.binary_search(&parent).is_ok()))
+            .map(|v| v.id)
+            .collect();
+        if !elsewhere.is_empty() {
+            let views = named(&elsewhere);
+            return Err(bad(
+                cmd,
+                format!("sheet `{}`'s views have views projected from them on other sheets ({views}): move or delete those first", sheet.name),
+            ));
+        }
+        d.remove_sheet(sheet.id);
         Ok(())
     })?;
     answer(s, cmd, None, Vec::new())

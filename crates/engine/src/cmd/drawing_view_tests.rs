@@ -47,7 +47,7 @@ fn assert_box(v: &Value, min: [f64; 2], max: [f64; 2]) {
 
 /// A drawing of the block: its front view at 1:2 drawing hidden lines too, the right view lined up
 /// with it, and the right view's top view placed apart. The session and the three views' ids.
-fn three_views() -> (Session, [u64; 3]) {
+pub(crate) fn three_views() -> (Session, [u64; 3]) {
     three_views_of(block())
 }
 
