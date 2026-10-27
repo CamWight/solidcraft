@@ -18,7 +18,8 @@
 //!   baseline when there is a label ([`value_box`]);
 //! - one line of a value that doesn't wrap is centred top to bottom in the value box; otherwise the
 //!   lines run down from the box's top at the font's line pitch, the first baseline a cap height
-//!   below it ([`place_lines`]);
+//!   below it ([`place_lines`]). Each baseline stays in the box, and its descenders
+//!   ([`DESCENDER_OF_CAP`]) may reach into the padding under it but never past it to a line;
 //! - a line's anchor is on its baseline, at the box's left side, middle or right side: a writer
 //!   aligns the line on it.
 //!
@@ -36,6 +37,10 @@ pub const MAX_PARTS: usize = 64;
 pub const MAX_TEXT_BYTES: usize = 4096;
 /// The space between the inner edge of a cell's lines and its text, in millimetres.
 pub const PADDING_MM: f64 = 1.0;
+/// How far a line's descenders reach below its baseline, as a share of its cap height: ISO 3098's
+/// lettering B, whose lower-case tails are 3/10 of the capitals' height. They may reach into the
+/// padding under a value box, never past it.
+pub const DESCENDER_OF_CAP: f64 = 0.3;
 
 /// Where a field's value comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -223,8 +228,9 @@ pub fn value_box(cell: Aabb2, label_cap_mm: Option<f64>) -> Aabb2 {
 
 /// Where `lines` lines `cap_mm` high go in `value_box`, `pitch_mm` apart, by the module's rule:
 /// the first line's anchor, each next line `pitch_mm` below the one before, and
-/// [`Warning::Height`] when the last baseline is below the box. The box lies within the paper's
-/// coordinates ([`MAX_COORDINATE_MM`]), so the anchor is always finite.
+/// [`Warning::Height`] when the last baseline is below the box or its descenders below the padding
+/// under it. The box lies within the paper's coordinates ([`MAX_COORDINATE_MM`]), so the anchor is
+/// always finite.
 pub fn place_lines(value_box: Aabb2, lines: usize, cap_mm: f64, pitch_mm: f64, align: HAlign, wrap: bool) -> Result<(Vec2, Option<Warning>)> {
     let Aabb2 { min, max } = value_box;
     let on_paper = [min.x, min.y, max.x, max.y].into_iter().all(|v| v.abs() <= MAX_COORDINATE_MM);
@@ -237,7 +243,9 @@ pub fn place_lines(value_box: Aabb2, lines: usize, cap_mm: f64, pitch_mm: f64, a
     };
     let y = if lines == 1 && !wrap { value_box.center().y - cap_mm / 2.0 } else { max.y - cap_mm };
     let last = y - lines.saturating_sub(1) as f64 * pitch_mm;
-    let overflows = lines > 0 && last < min.y - EPS;
+    // How far above the box's bottom the last baseline must be for its descenders to stay in the padding.
+    let reach = (cap_mm * DESCENDER_OF_CAP - PADDING_MM).max(0.0);
+    let overflows = lines > 0 && last - reach < min.y - EPS;
     Ok((Vec2::new(x, y), overflows.then_some(Warning::Height)))
 }
 

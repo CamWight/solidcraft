@@ -11,8 +11,10 @@
 //! has text; nothing here is saved or drawn yet.
 //!
 //! The outline is drawn `outline_line_mm` wide and the lines between cells `cell_line_mm`, each
-//! centred on its edge. A cell's text is padded from the inner edge of its lines
-//! ([`TitleBlock::inside_lines`]), so a wide outline never covers it.
+//! centred on its edge. The block's right and bottom edges lie on the drawing border, whose line is
+//! centred there too. A cell's text is padded from the inner edge of its lines and of the border's
+//! line, wherever that reaches, and its descenders never reach a line (the cell text rule), so no
+//! line covers it.
 
 use serde::{Deserialize, Serialize};
 
@@ -150,8 +152,30 @@ impl TitleBlock {
         Aabb2 { min: rect.min + lower, max: rect.max - upper }
     }
 
-    /// Checks a definition on its own, counting its cells first: call it when one is read.
-    /// [`Self::layout`] calls it too.
+    /// Each cell with the block's lower-right corner at `corner`, inside its lines and inside
+    /// `clear` too when given (the drawing border's line's inner edge), checked by the cell text
+    /// rule: room for a value below its label, and for one line of a text value.
+    fn place_cells(&self, corner: Vec2, clear: Option<Aabb2>) -> Result<Vec<CellLayout>> {
+        let place = |cell: &Cell| {
+            let rect = cell.rect(corner);
+            let inside = self.inside_lines(cell, rect);
+            let inside = clear.map_or(inside, |clear| inside.intersection(&clear));
+            let value_box = cell.value_box(inside);
+            let room = value_box.size();
+            require(room.x > 0.0 && room.y > 0.0, "a cell has room for its value below its label")?;
+            if let CellKind::Text(text) = &cell.kind {
+                let one_line = cell::place_lines(value_box, 1, text.cap_mm, text.cap_mm, text.align, false);
+                require(matches!(one_line, Ok((_, None))), "a value's cap height is above 0 and one line of it fits its value box")?;
+            }
+            let label_at = cell.label.as_ref().map(|label| cell::label_at(inside, label.cap_mm));
+            Ok(CellLayout { rect, label_at, value_box })
+        };
+        self.cells.iter().map(place).collect()
+    }
+
+    /// Checks a definition on its own, counting its cells first: call it when one is read. Its
+    /// cells' room is checked with the corner at the origin and only the outline on its edges;
+    /// [`Self::layout`] calls it too, and checks their room again where the block sits.
     pub fn validate(&self) -> Result<()> {
         require(self.cells.len() <= MAX_CELLS, "a title block has at most 64 cells")?;
         let Vec2 { x: width, y: height } = self.size_mm;
@@ -171,17 +195,16 @@ impl TitleBlock {
                 require(label.cap_mm.is_finite() && label.cap_mm > 0.0, "a label's cap height is finite and above 0")?;
                 cell::check_label(&label.text).map_err(|cell::Invalid(message)| Invalid(message))?;
             }
-            let room = cell.value_box(self.inside_lines(cell, rect)).size();
-            require(room.x > 0.0 && room.y > 0.0, "a cell has room for its value below its label")?;
             if let CellKind::Text(text) = &cell.kind {
                 text.content.validate().map_err(|cell::Invalid(message)| Invalid(message))?;
-                require(text.cap_mm > 0.0 && text.cap_mm <= room.y, "a value's cap height is above 0 and fits its value box")?;
             }
         }
+        self.place_cells(Vec2::ZERO, None)?;
         Ok(())
     }
 
-    /// The block on the lower-right corner of `sheet`'s drawing border, which must hold it.
+    /// The block on the lower-right corner of `sheet`'s drawing border, which must hold it, each
+    /// cell with room inside the border's line too.
     pub fn layout(&self, sheet: &SheetLayout) -> Result<TitleBlockLayout> {
         self.validate()?;
         let border = sheet.drawing_border;
@@ -189,16 +212,10 @@ impl TitleBlock {
         let fits = border.min.is_finite() && border.max.is_finite() && size.x <= room.x && size.y <= room.y;
         require(fits, "a title block fits inside the drawing border")?;
         let corner = Vec2::new(border.max.x, border.min.y);
-        let cells = self
-            .cells
-            .iter()
-            .map(|cell| {
-                let rect = cell.rect(corner);
-                let inside = self.inside_lines(cell, rect);
-                let label_at = cell.label.as_ref().map(|label| cell::label_at(inside, label.cap_mm));
-                CellLayout { rect, label_at, value_box: cell.value_box(inside) }
-            })
-            .collect();
+        // Checked again here: the border's line, centred on it, runs along the block's right and
+        // bottom edges (and any other it reaches), and rounding at the real corner may take the
+        // last of a cell's room.
+        let cells = self.place_cells(corner, Some(border.inflated(-sheet.drawing_border_line_mm / 2.0)))?;
         Ok(TitleBlockLayout {
             outline: Aabb2 { min: corner - Vec2::new(size.x, 0.0), max: corner + Vec2::new(0.0, size.y) },
             outline_line_mm: self.outline_line_mm,

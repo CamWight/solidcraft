@@ -49,7 +49,7 @@ fn wrapped_lines_and_several_lines_run_down_from_the_top_at_the_pitch() {
 }
 
 #[test]
-fn lines_whose_last_baseline_is_below_the_box_warn_height() {
+fn lines_below_the_box_or_with_descenders_past_its_padding_warn_height() {
     // 14.5 mm high: four lines at 2.5 and a pitch of 4 end exactly on the bottom; a fifth doesn't fit.
     let tall = rect(311.0, 45.0, 379.0, 59.5);
     for wrap in [false, true] {
@@ -60,10 +60,19 @@ fn lines_whose_last_baseline_is_below_the_box_warn_height() {
     let raised = |by: f64| Aabb2 { min: Vec2::new(311.0, 45.0 + by), ..tall };
     assert_eq!(place_lines(raised(0.5e-9), 4, 2.5, 4.0, HAlign::Left, true).unwrap().1, None);
     assert_eq!(place_lines(raised(2e-9), 4, 2.5, 4.0, HAlign::Left, true).unwrap().1, Some(Warning::Height));
-    // One centred line fits while its cap height does: 5 mm in a 5 mm box, not 5.1.
-    let low = rect(0.0, 0.0, 10.0, 5.0);
-    assert_eq!(place_lines(low, 1, 5.0, 8.0, HAlign::Left, false), Ok((Vec2::new(0.0, 0.0), None)));
-    assert_eq!(place_lines(low, 1, 5.1, 8.0, HAlign::Left, false).unwrap().1, Some(Warning::Height));
+    // One centred line fits while its cap height does and its descenders stay in the 1 mm padding:
+    // a 2.5 mm line's 0.75 mm do, so it fits a 2.5 mm box (not 2.6 mm of line). A 5 mm line's
+    // 1.5 mm reach 0.5 mm past the padding from a baseline on the box's bottom, so it needs 6 mm.
+    let low = |height: f64| rect(0.0, 0.0, 10.0, height);
+    assert_eq!(place_lines(low(2.5), 1, 2.5, 4.0, HAlign::Left, false), Ok((Vec2::new(0.0, 0.0), None)));
+    assert_eq!(place_lines(low(2.5), 1, 2.6, 4.0, HAlign::Left, false).unwrap().1, Some(Warning::Height));
+    assert_eq!(place_lines(low(6.0), 1, 5.0, 8.0, HAlign::Left, false), Ok((Vec2::new(0.0, 0.5), None)));
+    for height in [5.0, 5.9] {
+        assert_eq!(place_lines(low(height), 1, 5.0, 8.0, HAlign::Left, false).unwrap().1, Some(Warning::Height), "{height}");
+    }
+    // The same for the last of several: two 5 mm lines 8 mm apart need 13.5 mm, not 13.4.
+    assert_eq!(place_lines(low(13.5), 2, 5.0, 8.0, HAlign::Left, true), Ok((Vec2::new(0.0, 8.5), None)));
+    assert_eq!(place_lines(low(13.4), 2, 5.0, 8.0, HAlign::Left, true).unwrap().1, Some(Warning::Height));
     // A flat box holds no line; no lines never overflow; a vast count still answers.
     assert_eq!(place_lines(rect(0.0, 1.0, 10.0, 1.0), 1, 1.0, 1.6, HAlign::Left, false).unwrap().1, Some(Warning::Height));
     assert_eq!(place_lines(rect(0.0, 1.0, 10.0, 1.0), 0, 1.0, 1.6, HAlign::Left, false).unwrap().1, None);
@@ -326,7 +335,8 @@ fn fuzzed_content_texts_and_boxes_never_panic_and_follow_the_rules() {
         if let Ok((at, warning)) = placed {
             assert!(at.is_finite() && at.x >= x0 && at.x <= x1 && at.y <= y1, "{at:?} in {value_box:?}");
             if lines == 1 && warning.is_none() {
-                assert!(at.y >= y0 - EPS, "{at:?} in {value_box:?}");
+                // Its baseline in the box, and its descenders above the line's inner edge, the padding below it.
+                assert!(at.y >= y0 - EPS && at.y - cap * DESCENDER_OF_CAP >= y0 - PADDING_MM - EPS, "{at:?} {cap} in {value_box:?}");
             }
         }
     }

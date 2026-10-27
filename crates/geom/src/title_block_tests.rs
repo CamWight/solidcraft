@@ -2,7 +2,7 @@ use serde_json::json;
 
 use super::*;
 use crate::bspline::tests::Lcg;
-use crate::cell::{Format, Part, Source, Warning, place_lines};
+use crate::cell::{DESCENDER_OF_CAP, Format, PADDING_MM, Part, Source, Warning, place_lines};
 use crate::drawing_sheet::{DrawingBorderProfile, Orientation, PaperSize, Sheet, SheetSize};
 
 fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Aabb2 {
@@ -98,11 +98,13 @@ fn the_default_geometry_validates_and_its_cells_tile_the_block() {
     assert_eq!(block.cells.len(), 12);
     let area: f64 = block.cells.iter().map(|c| c.rect(Vec2::ZERO).size()).map(|s| s.x * s.y).sum();
     assert_eq!((area, 180.0 * 54.0), (9720.0, 9720.0));
-    // Each text cell's value box holds one line of its cap height.
+    // Each text cell's value box holds one line of its cap height, centred, its descenders above the
+    // lines' inner edge.
     for cell in &block.cells {
         let room = cell.value_box(block.inside_lines(cell, cell.rect(Vec2::ZERO))).size();
         if let CellKind::Text(text) = &cell.kind {
-            assert!(text.cap_mm <= room.y, "{}: {} in {room:?}", cell.name, text.cap_mm);
+            let below = (room.y - text.cap_mm) / 2.0 + PADDING_MM;
+            assert!(text.cap_mm <= room.y && text.cap_mm * DESCENDER_OF_CAP <= below, "{}: {} in {room:?}", cell.name, text.cap_mm);
         }
     }
 }
@@ -137,16 +139,74 @@ fn on_a3_landscape_the_block_sits_on_the_drawing_borders_lower_right_corner() {
 }
 
 /// Padding is measured from a line's inner edge: a 3 mm outline moves the title's text 1.5 mm in
-/// from where a hairline puts it, so the line never covers it.
+/// from where a hairline puts it, so the line never covers it. The drawing border's line is a
+/// hairline too, so only the outline moves the text.
 #[test]
 fn the_padding_starts_at_the_lines_inner_edge() {
-    let sheet = iso(PaperSize::A3, Orientation::Landscape);
+    let sheet = SheetLayout { drawing_border_line_mm: 1e-9, ..iso(PaperSize::A3, Orientation::Landscape) };
     let hairline = TitleBlock { outline_line_mm: 1e-9, cell_line_mm: 1e-9, ..block() }.layout(&sheet).unwrap();
     let wide = TitleBlock { outline_line_mm: 3.0, ..block() }.layout(&sheet).unwrap();
     let (thin, thick) = (hairline.cells[0].value_box, wide.cells[0].value_box);
     assert!((thick.min.x - thin.min.x - 1.5).abs() < 1e-6 && (thick.min.y - thin.min.y - 1.5).abs() < 1e-6, "{thin:?} {thick:?}");
     // The outline's inner edge is 1.5 mm inside the cell's left side; the text starts 1 mm past it.
     assert!((thick.min.x - (230.0 + 1.5 + 1.0)).abs() < 1e-9, "{thick:?}");
+}
+
+/// The block's right and bottom edges lie on the drawing border, its line centred on them too: where
+/// that line is wider than the outline, the cells there are padded from its inner edge instead.
+#[test]
+fn a_drawing_border_line_wider_than_the_outline_pads_the_right_and_bottom_cells() {
+    let a3 = |line_mm: f64| SheetLayout { drawing_border_line_mm: line_mm, ..iso(PaperSize::A3, Orientation::Landscape) };
+    let block = block();
+    let boxes = |block: &TitleBlock, line_mm: f64| {
+        let layout = block.layout(&a3(line_mm)).unwrap();
+        ["title", "identification_number", "projection"].map(|name| cell_named(block, &layout, name).value_box)
+    };
+    // ISO's 0.7 mm, the outline's width, and a narrower line leave the outline's inner edge.
+    assert_eq!(boxes(&block, 0.35), boxes(&block, 0.7));
+    // A 2 mm line's inner edge is at y = 11 and x = 409: the value boxes start 1 mm above it and end
+    // 1 mm left of it; the block's left and top edges keep the outline's.
+    let [title, number, projection] = boxes(&block, 2.0);
+    assert!(near(title, rect(231.35, 12.0, 340.825, 19.325)), "{title:?}");
+    assert!(near(number, rect(343.175, 12.0, 408.0, 19.325)), "{number:?}");
+    assert!(near(projection, rect(381.175, 45.175, 408.0, 59.15)), "{projection:?}");
+    // A 5 mm line's inner edge is at y = 12.5 and x = 407.5: the title's 5 mm line no longer fits
+    // above it, so the block that validates on its own is refused on this sheet. With 3.5 mm values,
+    // the boxes keep 1 mm from it.
+    block.validate().unwrap();
+    assert_eq!(block.layout(&a3(5.0)), Err(Invalid("a value's cap height is above 0 and one line of it fits its value box")));
+    let mut smaller = block.clone();
+    for cell in &mut smaller.cells[..2] {
+        if let CellKind::Text(text) = &mut cell.kind {
+            text.cap_mm = 3.5;
+        }
+    }
+    let [title, number, _] = boxes(&smaller, 5.0);
+    assert!(near(title, rect(231.35, 13.5, 340.825, 19.325)) && near(number, rect(343.175, 13.5, 406.5, 19.325)), "{title:?} {number:?}");
+    // A block that fills the drawing border has its left and top edges on the border's line too:
+    // on a 200 x 74 sheet the border is (10, 10)-(190, 64), and a 2 mm line's inner edge is at x = 11
+    // and y = 63.
+    let sheet = |sides_mm| Sheet { size: SheetSize::Custom { sides_mm }, orientation: Orientation::Landscape };
+    let filled = SheetLayout { drawing_border_line_mm: 2.0, ..DrawingBorderProfile::iso().layout(&sheet([200.0, 74.0])).unwrap() };
+    let layout = block.layout(&filled).unwrap();
+    let (title, projection) = (cell_named(&block, &layout, "title"), cell_named(&block, &layout, "projection"));
+    assert!(near(title.value_box, rect(12.0, 12.0, 120.825, 19.325)), "{:?}", title.value_box);
+    assert!(projection.label_at.is_some_and(|at| at.dist(Vec2::new(161.175, 59.5)) < 1e-9), "{:?}", projection.label_at);
+    assert!(near(projection.value_box, rect(161.175, 45.175, 188.0, 58.5)), "{:?}", projection.value_box);
+}
+
+/// A cell with a few ulps of room at the origin, where a definition is checked on its own, has none
+/// where A3's corner (x = 410) rounds it: the block is refused there, not laid out inside out, and
+/// placed where rounding leaves the room (A2's corner, x = 584).
+#[test]
+fn a_cells_room_is_checked_again_where_the_block_sits() {
+    let sliver = Cell { rect_mm: [-70.34999999999971, 0.0, -67.9999999999997, 14.0], ..block().cells[0].clone() };
+    let block = TitleBlock { cells: vec![sliver], ..block() };
+    block.validate().unwrap();
+    const NO_ROOM: Invalid = Invalid("a cell has room for its value below its label");
+    assert_eq!(block.layout(&iso(PaperSize::A3, Orientation::Landscape)), Err(NO_ROOM));
+    let value_box = block.layout(&iso(PaperSize::A2, Orientation::Landscape)).unwrap().cells[0].value_box;
+    assert!(value_box.min.x < value_box.max.x, "{value_box:?}");
 }
 
 #[test]
@@ -304,9 +364,12 @@ fn hostile_definitions_are_refused() {
         with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 17.0 })),
         "a cell has room for its value below its label",
     ));
-    // The title's value box is 7.975 mm high inside its lines.
-    for cap in [0.0, -5.0, 7.975 + 1e-9, f64::NAN, f64::INFINITY] {
-        cases.push((with(&value_cap(cap)), "a value's cap height is above 0 and fits its value box"));
+    // The title's value box is 7.975 mm high inside its lines. A line filling it has its descenders
+    // 2.39 mm below the box, past the 1 mm padding; the most it holds centred is 9.975 / 1.6 mm, its
+    // descenders (3/10 of it) then on the outline's inner edge.
+    let title_most = 9.975 / 1.6;
+    for cap in [0.0, -5.0, 7.975, title_most + 1e-6, f64::NAN, f64::INFINITY] {
+        cases.push((with(&value_cap(cap)), "a value's cap height is above 0 and one line of it fits its value box"));
     }
     // The cell content's own rule, under this module's name.
     cases.push((
@@ -343,7 +406,7 @@ fn hostile_definitions_are_refused() {
         with(&named("a")),
         with(&named("title_2")),
         with(&named(longest)),
-        with(&value_cap(7.975 - 1e-9)),
+        with(&value_cap(title_most - 1e-6)),
         with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 16.475 - 1e-9 })),
         with(&label_text("a".repeat(4096))),
         with(&|b| b.cells[0].label = None),
@@ -421,8 +484,9 @@ fn a_drawing_border_that_isnt_finite_holds_no_block() {
 
 /// Random changes to the default's numbers, hostile ones among them: a definition is accepted or
 /// refused without panicking, and an accepted one placed on a sheet it fits (any standard size,
-/// either way, with or without the filing margin) keeps every cell inside the outline, apart from
-/// the others, with its label and value box inside it.
+/// either way, with or without the filing margin, any drawing border line) keeps every cell inside
+/// the outline, apart from the others, with its label and value box inside it, and every value box
+/// padded from the drawing border's line.
 #[test]
 fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outline() {
     const NUMBERS: [f64; 9] = [0.0, -0.0, 1e-9, 1e5, -1e5, 1000.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
@@ -454,14 +518,19 @@ fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outlin
         let size = PaperSize::ALL[(rng.unit() * PaperSize::ALL.len() as f64) as usize % PaperSize::ALL.len()];
         let orientation = if rng.unit() < 0.5 { Orientation::Landscape } else { Orientation::Portrait };
         let sheet = if rng.unit() < 0.5 { iso(size, orientation) } else { filing(size, orientation) };
+        let line_mm = [0.25, 0.7, 2.0, 5.0, 10.0][(rng.unit() * 5.0) as usize % 5];
+        let sheet = SheetLayout { drawing_border_line_mm: line_mm, ..sheet };
         let Ok(layout) = block.layout(&sheet) else { continue };
         laid_out += 1;
         let outline = layout.outline.inflated(1e-9);
+        let clear = sheet.drawing_border.inflated(-line_mm / 2.0 - PADDING_MM + 1e-9);
         for (i, (cell, placed)) in block.cells.iter().zip(&layout.cells).enumerate() {
             assert!(outline.contains(placed.rect.min) && outline.contains(placed.rect.max), "{} {:?}", cell.name, placed.rect);
             assert!(layout.cells.iter().take(i).all(|other| !overlap(other.rect, placed.rect)), "{}", cell.name);
             let inside = placed.rect.inflated(1e-9);
             assert!(inside.contains(placed.value_box.min) && inside.contains(placed.value_box.max), "{}", cell.name);
+            let room = placed.value_box.size();
+            assert!(room.x > 0.0 && room.y > 0.0 && clear.contains(placed.value_box.min) && clear.contains(placed.value_box.max), "{}", cell.name);
             if let Some(at) = placed.label_at {
                 assert!(inside.contains(at), "{}", cell.name);
             }
@@ -471,5 +540,6 @@ fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outlin
             }
         }
     }
-    assert!(accepted > 400 && laid_out > 300, "{accepted} accepted, {laid_out} laid out");
+    // Fewer lay out than accepted: about two in five meet a 5 or 10 mm border line, which leaves most blocks no room.
+    assert!(accepted > 400 && laid_out > 200, "{accepted} accepted, {laid_out} laid out");
 }
