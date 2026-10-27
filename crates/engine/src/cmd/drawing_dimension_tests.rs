@@ -89,6 +89,12 @@ fn a_dimension_is_added_by_points_or_edges_and_saved_by_name() {
     // Inspect reads each one back as add answered it.
     let id = by_points["dimension"].clone();
     assert_eq!(run(&mut s, INSPECT, json!({"dimension": id})), by_points);
+    // The view lists them, in id order.
+    let mut added: Vec<u64> =
+        [&by_points, &by_edges, &at, &indexed, &square].iter().filter_map(|r| r["dimension"].as_str().and_then(ids::decode)).collect();
+    added.sort_unstable();
+    let listed = run(&mut s, "drawing.view.inspect", json!({"view": ids::encode(view)}))["dimensions"].clone();
+    assert_eq!(listed, json!(added.into_iter().map(ids::encode).collect::<Vec<_>>()));
 }
 
 /// An undone add takes the dimension out, and a redo puts it back.

@@ -65,7 +65,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&INSPECT_CONTRACT)
         .output(output_schema_for::<InspectResult>)
-        .params("view: a saved view's id → {view, sheet, kind: base|projected, source, parent?, side?, direction, place: {at: [x, y]} or {aligned: n}, settings: {scale, display_style, reference_style, reference_hides_model, tangent_edges: {value, from: this|parent|default, parent?, set}}, reference_margin_mm, boundary_mm: {min, max} on the sheet (a 20 x 20 mm placeholder round the view's centre when there's nothing to measure), extents: {min, max, error_mm, status: approximate|placeholder, provenance} in model mm on the view's plane, linked? (a projected view's display settings: true, false or \"partly\"), choices: {display_style, scale}}. Read-only; no model is evaluated."),
+        .params("view: a saved view's id → {view, sheet, kind: base|projected, source, parent?, side?, direction, place: {at: [x, y]} or {aligned: n}, settings: {scale, display_style, reference_style, reference_hides_model, tangent_edges: {value, from: this|parent|default, parent?, set}}, reference_margin_mm, boundary_mm: {min, max} on the sheet (a 20 x 20 mm placeholder round the view's centre when there's nothing to measure), extents: {min, max, error_mm, status: approximate|placeholder, provenance} in model mm on the view's plane, linked? (a projected view's display settings: true, false or \"partly\"), dimensions: [its dimensions' ids, in id order], choices: {display_style, scale}}. Read-only; no model is evaluated."),
     CommandSpec::new(EDIT, "Edit Drawing View", crate::checked!("drawing.view.edit", EDIT_CONTRACT, edit))
         .icon("edit")
         .in_drawing()
@@ -180,6 +180,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
             DISPLAY_GROUP => Value::Bool(false),
             _ => Value::String("partly".into()),
         }),
+        dimensions: d.dimensions.iter().filter(|dimension| dimension.view == view.id).map(|dimension| ids::encode(dimension.id)).collect(),
         choices: ChoicesResult {
             display_style: VisualStyle::ALL.iter().map(|s| snake_name(*s)).collect(),
             scale: PRESETS.iter().map(ToString::to_string).collect(),

@@ -329,6 +329,8 @@ pub struct InspectResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Value")]
     pub linked: Option<Value>,
+    /// Its dimensions' ids, in id order.
+    pub dimensions: Vec<String>,
     pub choices: ChoicesResult,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
