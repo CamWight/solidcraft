@@ -566,6 +566,8 @@
   "cmd.drawing_close": "図面を閉じる",
   "cmd.drawing_create": "図面を作成",
   "cmd.drawing_delete": "図面を削除",
+  "cmd.drawing_dimension_add": "図面寸法を追加",
+  "cmd.drawing_dimension_inspect": "図面寸法を確認",
   "cmd.drawing_inspect": "図面を確認",
   "cmd.drawing_list": "図面を一覧表示",
   "cmd.drawing_open": "図面を開く",

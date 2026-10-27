@@ -197,10 +197,16 @@ fn named_vertex(st: &ModelState, at: Vec3, names: &[String]) -> Option<Vec3> {
     shared_ends(&ends).into_iter().min_by(|p, q| p.dist(at).total_cmp(&q.dist(at)))
 }
 
-/// Where edges meet: the ends in `ends[0]` that every other list in `ends` has too (to a millionth
-/// of their distance from the origin), each once. Empty when they share none.
+/// How near two points of a body are the same point: a millionth of their distance from the
+/// origin, and at least a millionth of a millimetre.
+pub(crate) fn point_tolerance(p: Vec3) -> f64 {
+    1e-6 * (1.0 + p.len())
+}
+
+/// Where edges meet: the ends in `ends[0]` that every other list in `ends` has too (to
+/// [`point_tolerance`]), each once. Empty when they share none.
 pub(crate) fn shared_ends<E: AsRef<[Vec3]>>(ends: &[E]) -> Vec<Vec3> {
-    let tol = |p: Vec3| 1e-6 * (1.0 + p.len());
+    let tol = point_tolerance;
     let Some((first, rest)) = ends.split_first() else { return Vec::new() };
     let mut shared: Vec<Vec3> = Vec::new();
     for p in first.as_ref().iter().copied() {

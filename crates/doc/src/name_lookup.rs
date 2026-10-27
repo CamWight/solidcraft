@@ -70,6 +70,11 @@ impl BodyEdges {
 
     /// Whether edge `i`'s name follows exact history: the faces it separates do, and it isn't one
     /// of several edges between them, numbered by where they lie.
+    /// Edge `i`'s persistent name.
+    pub(crate) fn name(&self, i: usize) -> Option<&str> {
+        self.names.get(i).map(String::as_str)
+    }
+
     pub(crate) fn verified(&self, i: usize) -> bool {
         self.mesh.edge_faces.get(i).is_some_and(|fs| fs.iter().all(|f| self.faces.verified(*f as usize)))
             && self.names.get(i).is_some_and(|n| strip_edge_number(n).len() == n.len())

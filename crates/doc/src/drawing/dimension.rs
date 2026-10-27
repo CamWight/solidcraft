@@ -28,7 +28,9 @@
 //! [`Document::resolve_dimensions`] finds what a dimension measures again, strictly: an edge by
 //! its name, or the one edge between the faces it names, never the piece nearest an old pick; a
 //! corner where all its named edges meet, never the nearer of two. What it can't decide it says
-//! ([`Status`]), and it never chooses.
+//! ([`Status`]), and it never chooses. [`Document::edge_reference`] and
+//! [`Document::corner_reference`] turn what a command picks (a point, or an edge's index) into
+//! those names, and refuse a pick that doesn't name one thing.
 
 use std::collections::BTreeMap;
 use std::f64::consts::PI;
@@ -42,7 +44,7 @@ use solidcraft_geom::{Plane, Vec3};
 
 use super::{Drawing, Units, add_by_id, in_id_order, require};
 use crate::config::MAX_REFERENCE_NAME_BYTES;
-use crate::construct::{MAX_VERTEX_EDGES, as_line, shared_ends};
+use crate::construct::{MAX_VERTEX_EDGES, as_line, point_tolerance, shared_ends};
 use crate::display_units::length_number;
 use crate::format::MAX_REAL;
 use crate::name_lookup::{BodyEdges, EdgeMatch};
@@ -142,6 +144,11 @@ impl Drawing {
     /// Adds `dimensions`, each where its id puts it, as [`Drawing::add_views`] adds views.
     pub fn add_dimensions(&mut self, dimensions: impl IntoIterator<Item = Arc<Dimension>>) {
         add_by_id(&mut self.dimensions, dimensions, |d| d.id);
+    }
+
+    /// Dimension `id`, found by halves in the dimensions' id order.
+    pub fn dimension(&self, id: u64) -> Option<&Dimension> {
+        self.dimensions.binary_search_by_key(&id, |d| d.id).ok().and_then(|i| self.dimensions.get(i)).map(|d| &**d)
     }
 
     /// The dimensions' rules (the module's notes). The views are checked first, so they are in id
@@ -275,7 +282,57 @@ pub enum Candidate {
     Corner(Vec3),
 }
 
+/// How a command names an edge to measure, before it is saved by name
+/// ([`Document::edge_reference`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum EdgePick {
+    /// A point on it, in the design's frame.
+    Point(Vec3),
+    /// Its index among its body's edges as the model lists them: a [`Candidate::Edge`]'s.
+    Index { body: String, index: usize },
+}
+
+/// How a command names a corner to measure ([`Document::corner_reference`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CornerPick {
+    /// The corner, in the design's frame.
+    Point(Vec3),
+    /// Edges that meet there.
+    Edges(Vec<EdgePick>),
+}
+
 impl Document {
+    /// The edge `pick` names on `model` (this design's), on a body placed through the occurrences
+    /// `path`, as a dimension saves it: its body, the feature that made the body, and its
+    /// persistent name. A point must be on exactly one edge.
+    pub fn edge_reference(&self, model: &Model, pick: &EdgePick, path: &[u64]) -> Result<ModelEdge> {
+        let mut picker = Picker::new(self, model, path);
+        let (body, edge) = picker.edge(pick)?;
+        let (body, origin_feature, mut names) = picker.names(body, &[edge])?;
+        Ok(ModelEdge { body, origin_feature, name: names.remove(0), path: path.to_vec() })
+    }
+
+    /// The corner `pick` names, as [`Document::edge_reference`] names an edge: by the edges that
+    /// meet there. A point must be the end of 2 to [`MAX_VERTEX_EDGES`] edges of one body, and
+    /// edges given must meet at one point.
+    pub fn corner_reference(&self, model: &Model, pick: &CornerPick, path: &[u64]) -> Result<ModelPoint> {
+        let mut picker = Picker::new(self, model, path);
+        let (body, edges) = match pick {
+            CornerPick::Point(p) => picker.corner_at(*p)?,
+            CornerPick::Edges(picks) => {
+                // One past the most a corner names, so the record's rule refuses the rest.
+                let picked = picks.iter().take(MAX_VERTEX_EDGES + 1).map(|e| picker.edge(e)).collect::<Result<Vec<_>>>()?;
+                let body = picked.first().map_or(0, |(b, _)| *b);
+                require(picked.iter().all(|(b, _)| *b == body), || "a corner's edges are on one body".into())?;
+                let edges: Vec<usize> = picked.iter().map(|(_, e)| *e).collect();
+                picker.meeting(body, &edges)?;
+                (body, edges)
+            }
+        };
+        let (body, origin_feature, edges) = picker.names(body, &edges)?;
+        Ok(ModelPoint { body, origin_feature, edges, path: path.to_vec() })
+    }
+
     /// The dimensions `wanted` of `drawing` (one of this design's drawings) as `model` (this
     /// design's) has them now: what each measures found again by name, measured on its view, and
     /// the text it shows. A body is looked up and its edge names worked out once for the call,
@@ -290,8 +347,7 @@ impl Document {
         wanted
             .iter()
             .map(|id| {
-                let found = drawing.dimensions.binary_search_by_key(id, |d| d.id).ok().and_then(|i| drawing.dimensions.get(i));
-                let d = found.ok_or_else(|| DocError::Unknown(format!("dimension {}", ids::encode(*id))))?;
+                let d = drawing.dimension(*id).ok_or_else(|| DocError::Unknown(format!("dimension {}", ids::encode(*id))))?;
                 let basis = drawing.resolve_view(d.view)?.basis;
                 Ok(lookup.resolve(d, &basis, units))
             })
@@ -450,6 +506,120 @@ impl Lookup<'_> {
             [p] => Ok((apply_point(&frame, *p), exact)),
             several => Err(Status::Ambiguous(several.iter().take(MAX_CANDIDATES).map(|p| Candidate::Corner(apply_point(&frame, *p))).collect())),
         }
+    }
+}
+
+/// One command's picks on the bodies placed through one occurrence path. Each body's edges are
+/// placed in the design's frame once, and only the body picked has its edge names worked out.
+struct Picker<'a> {
+    doc: &'a Document,
+    state: Arc<ModelState>,
+    path: &'a [u64],
+    /// Each body's edges in the design's frame, by its index in `state`; `None` for a mesh body or
+    /// one the path doesn't place.
+    placed: BTreeMap<usize, Option<Vec<Vec<Vec3>>>>,
+}
+
+impl<'a> Picker<'a> {
+    fn new(doc: &'a Document, model: &Model, path: &'a [u64]) -> Picker<'a> {
+        Picker { doc, state: model.state(), path, placed: BTreeMap::new() }
+    }
+
+    /// Body `i`'s edges in the design's frame, worked out on first use.
+    fn placed(&mut self, i: usize) -> Option<&Vec<Vec<Vec3>>> {
+        if !self.placed.contains_key(&i) {
+            let b = self.state.bodies.get(i).filter(|b| !b.body.is_mesh());
+            let frame = b.and_then(|b| self.doc.body_frame_at(b, self.path).ok());
+            let lines =
+                b.zip(frame).map(|(b, frame)| b.mesh().edges.iter().map(|line| line.iter().map(|p| apply_point(&frame, *p)).collect()).collect());
+            self.placed.insert(i, lines);
+        }
+        self.placed.get(&i).and_then(Option::as_ref)
+    }
+
+    /// The edge `pick` names: its body's index and its own.
+    fn edge(&mut self, pick: &EdgePick) -> Result<(usize, usize)> {
+        let on: Vec<(usize, usize)> = match pick {
+            EdgePick::Index { body, index } => {
+                let named: Vec<usize> = (0..self.state.bodies.len()).filter(|i| self.state.bodies.get(*i).is_some_and(|b| b.name == *body)).collect();
+                let placed: Vec<usize> = named.into_iter().filter(|i| self.placed(*i).is_some()).collect();
+                let b = match placed.as_slice() {
+                    [b] => *b,
+                    [] => return Err(DocError::Invalid(format!("no body `{body}` with edges is placed here"))),
+                    _ => return Err(DocError::Invalid(format!("more than one body is called `{body}`: give a point on the edge"))),
+                };
+                let count = self.placed(b).map_or(0, Vec::len);
+                require(*index < count, || format!("body `{body}` has no edge {index}"))?;
+                vec![(b, *index)]
+            }
+            EdgePick::Point(p) => {
+                let mut on = Vec::new();
+                for i in 0..self.state.bodies.len() {
+                    let Some(lines) = self.placed(i) else { continue };
+                    let near = |line: &Vec<Vec3>| line.windows(2).any(|w| matches!(w, [a, b] if p.dist_to_segment(*a, *b) <= point_tolerance(*p)));
+                    on.extend(lines.iter().enumerate().filter(|(_, line)| near(line)).map(|(e, _)| (i, e)));
+                }
+                on
+            }
+        };
+        match on.as_slice() {
+            [one] => Ok(*one),
+            [] => Err(DocError::Invalid(format!("no edge at {}", at(pick)))),
+            several => {
+                Err(DocError::Invalid(format!("{} is on {} edges: give a point inside one edge, or its body and index", at(pick), several.len())))
+            }
+        }
+    }
+
+    /// The corner at `p`: the body whose edges end there, and those edges.
+    fn corner_at(&mut self, p: Vec3) -> Result<(usize, Vec<usize>)> {
+        let mut found: Vec<(usize, Vec<usize>)> = Vec::new();
+        for i in 0..self.state.bodies.len() {
+            let Some(lines) = self.placed(i) else { continue };
+            let ends_here = |line: &Vec<Vec3>| [line.first(), line.last()].into_iter().flatten().any(|q| q.dist(p) <= point_tolerance(p));
+            let edges: Vec<usize> = lines.iter().enumerate().filter(|(_, line)| ends_here(line)).map(|(e, _)| e).collect();
+            if !edges.is_empty() {
+                found.push((i, edges));
+            }
+        }
+        let corner = at(&EdgePick::Point(p));
+        match found.pop() {
+            Some(_) if !found.is_empty() => Err(DocError::Invalid(format!("{corner} is a corner of more than one body: give its edges"))),
+            Some((body, edges)) if (2..=MAX_VERTEX_EDGES).contains(&edges.len()) => Ok((body, edges)),
+            Some((_, edges)) => {
+                Err(DocError::Invalid(format!("{corner} is the end of {} edges: a corner is where 2 to {MAX_VERTEX_EDGES} edges meet", edges.len())))
+            }
+            None => Err(DocError::Invalid(format!("no corner at {corner}"))),
+        }
+    }
+
+    /// Body `body`'s `edges` meet at one point.
+    fn meeting(&mut self, body: usize, edges: &[usize]) -> Result<()> {
+        let lines = self.placed(body).map(Vec::as_slice).unwrap_or_default();
+        let ends: Vec<Vec<Vec3>> =
+            edges.iter().filter_map(|e| lines.get(*e)).map(|line| [line.first(), line.last()].into_iter().flatten().copied().collect()).collect();
+        match shared_ends(&ends).len() {
+            1 => Ok(()),
+            0 => Err(DocError::Invalid("the corner's edges don't meet".into())),
+            n => Err(DocError::Invalid(format!("the corner's edges meet at {n} points: give the corner as a point"))),
+        }
+    }
+
+    /// Body `body`'s `edges` as a reference names them: the body's name, the feature that made
+    /// it, and each edge's persistent name.
+    fn names(&self, body: usize, edges: &[usize]) -> Result<(String, u64, Vec<String>)> {
+        let b = self.state.bodies.get(body).ok_or_else(|| DocError::Invalid("the body picked no longer exists".into()))?;
+        let named = BodyEdges::new(b);
+        let names = edges.iter().map(|e| named.name(*e).map(str::to_string).ok_or_else(|| DocError::Invalid(format!("edge {e} has no name"))));
+        Ok((b.name.clone(), b.feature, names.collect::<Result<_>>()?))
+    }
+}
+
+/// A pick, for a message.
+fn at(pick: &EdgePick) -> String {
+    match pick {
+        EdgePick::Point(p) => format!("[{}, {}, {}]", p.x, p.y, p.z),
+        EdgePick::Index { body, index } => format!("edge {index} of `{body}`"),
     }
 }
 
