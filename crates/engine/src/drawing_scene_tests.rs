@@ -56,6 +56,13 @@ fn built(s: &Session, sheet: u64) -> SheetScene {
     build(s, &d, sheet).unwrap()
 }
 
+/// The provider's scene of `sheet` once nothing is waiting.
+fn settled(s: &mut Session, sheet: u64) -> SheetView {
+    extract(s, sheet).unwrap();
+    while step(s) {}
+    extract(s, sheet).unwrap()
+}
+
 /// The scene as its JSON text: what byte for byte compares.
 fn bytes(scene: &Scene) -> String {
     serde_json::to_string(scene).unwrap()
@@ -208,12 +215,13 @@ fn a_view_that_cant_be_drawn_leaves_out_only_itself() {
     assert_eq!(built(&s, sheet).scene.groups.len(), 3);
 }
 
-/// The command evaluates no model.
+/// Neither the command nor the provider evaluates the model.
 #[test]
 fn drawing_a_sheet_evaluates_no_model() {
     let (mut s, sheet, _) = front_and_top();
     let before = s.evaluations;
     run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}));
+    settled(&mut s, sheet);
     assert_eq!(s.evaluations, before);
 }
 
@@ -226,8 +234,115 @@ fn unknown_and_other_drawings_sheets_are_refused() {
     run(&mut s, "drawing.create", json!({"name": "Second"}));
     let first = ids::encode(sheet);
     assert!(refused(&mut s, &first).contains(&format!("no sheet `{first}`")));
+    assert!(extract(&mut s, sheet).unwrap_err().to_string().contains("the drawing has no sheet"));
     run(&mut s, "drawing.close", json!({}));
     assert!(refused(&mut s, &first).contains("open a drawing first"));
+    assert!(extract(&mut s, sheet).is_err() && !step(&mut s));
+}
+
+/// A new cache gives the border with both views out of date and draws nothing; each step draws one
+/// view, in id order; once nothing is waiting the scene is the built one, byte for byte. The
+/// generation goes up each time the scene changes, and only then.
+#[test]
+fn the_provider_draws_a_view_a_step_until_it_is_the_built_scene() {
+    let (mut s, sheet, [front, top]) = front_and_top();
+    let order = if front < top { [front, top] } else { [top, front] };
+    let whole = built(&s, sheet).scene;
+    let first = extract(&mut s, sheet).unwrap();
+    assert_eq!(
+        (bytes(&first.scene), first.stale.as_slice(), first.views.len()),
+        (bytes(&Scene { size_mm: whole.size_mm, groups: whole.groups[..3].to_vec() }), &order[..], 0)
+    );
+    let again = extract(&mut s, sheet).unwrap();
+    assert!(Arc::ptr_eq(&again.scene, &first.scene) && again.generation == first.generation);
+    assert_eq!(s.drawing_scenes.projections, 0);
+
+    assert!(step(&mut s));
+    let one = extract(&mut s, sheet).unwrap();
+    let objects: Vec<u64> = one.scene.groups.iter().map(|g| g.object).collect();
+    assert_eq!((objects, one.stale.as_slice()), (vec![sheet, sheet, sheet, order[0]], &order[1..]));
+    assert!(one.generation > first.generation);
+    assert!(!step(&mut s));
+    let both = extract(&mut s, sheet).unwrap();
+    assert_eq!((bytes(&both.scene), both.stale.len()), (bytes(&whole), 0));
+    assert!(both.generation > one.generation);
+    assert!(both.views.iter().all(|v| v.status == Status::Drawn) && both.views.len() == 2);
+    assert!(!step(&mut s));
+    assert_eq!((s.drawing_scenes.projections, extract(&mut s, sheet).unwrap().generation), (2, both.generation));
+}
+
+/// Moving a view moves its lines and projects nothing: the top view is lined up with the front
+/// one, so both move 50 mm right, and the scene is the built one. Undoing the move projects nothing
+/// either and gives back the scene before it, byte for byte.
+#[test]
+fn a_move_and_its_undo_project_nothing() {
+    let (mut s, sheet, [front, _]) = front_and_top();
+    let before = settled(&mut s, sheet);
+    let projections = s.drawing_scenes.projections;
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"place": {"at": [200.0, 150.0]}}}));
+    let after = extract(&mut s, sheet).unwrap();
+    assert_eq!((after.stale.len(), s.drawing_scenes.projections), (0, projections));
+    assert!(after.generation > before.generation);
+    assert_eq!(bytes(&after.scene), bytes(&built(&s, sheet).scene));
+    for (was, now) in before.scene.groups.iter().zip(&after.scene.groups).skip(3) {
+        assert!(same_within(now, &moved(was, Vec2::new(50.0, 0.0)), 1e-9), "{now:?}");
+    }
+    run(&mut s, "edit.undo", json!({}));
+    let undone = extract(&mut s, sheet).unwrap();
+    assert_eq!((undone.stale.len(), s.drawing_scenes.projections), (0, projections));
+    assert_eq!(bytes(&undone.scene), bytes(&before.scene));
+}
+
+/// After a model change (going back to a checkpoint taken before a tower was added) both views are
+/// out of date and the last scene still shows. Each step draws one view from the model as it is
+/// now, and a view listed as up to date always draws as the built scene does.
+#[test]
+fn after_a_model_change_the_last_scene_shows_until_its_views_are_drawn_again() {
+    let (mut s, sheet, _) = front_and_top();
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    let checkpoint = run(&mut s, "edit.checkpoint", json!({}))["checkpoint"].clone();
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 40, "corner": [40, 60, 0], "body_name": "Tower", "operation": "new"}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let with_tower = settled(&mut s, sheet);
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint": checkpoint}));
+    let projections = s.drawing_scenes.projections;
+    let old = extract(&mut s, sheet).unwrap();
+    assert_eq!((old.stale.len(), bytes(&old.scene), old.generation), (2, bytes(&with_tower.scene), with_tower.generation));
+    let now = built(&s, sheet).scene;
+    let group = |scene: &Scene, id: u64| {
+        scene.groups.iter().find(|g| g.object == id && g.kind == ObjectKind::View).map(|g| serde_json::to_string(g).unwrap())
+    };
+    loop {
+        let more = step(&mut s);
+        let mid = extract(&mut s, sheet).unwrap();
+        for v in mid.views.iter().filter(|v| !mid.stale.contains(&v.view)) {
+            assert_eq!(group(&mid.scene, v.view), group(&now, v.view), "{}", v.view);
+        }
+        if !more {
+            break;
+        }
+    }
+    let last = extract(&mut s, sheet).unwrap();
+    assert_eq!((last.stale.len(), s.drawing_scenes.projections, bytes(&last.scene)), (0, projections + 2, bytes(&now)));
+}
+
+/// Closing the drawing drops its scenes and the world states they hold; opened again, every view
+/// is out of date.
+#[test]
+fn closing_the_drawing_drops_its_scenes() {
+    let (mut s, sheet, _) = front_and_top();
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    let before = settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.views.len(), 2);
+    run(&mut s, "drawing.close", json!({}));
+    let cache = &s.drawing_scenes;
+    assert!(cache.views.is_empty() && cache.last.is_none() && cache.shown.is_none() && cache.drawing.is_none());
+    assert!(!step(&mut s));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let reopened = extract(&mut s, sheet).unwrap();
+    // A new scene, so a new number: the page can't take it for the one it showed before.
+    assert!(reopened.stale.len() == 2 && reopened.generation > before.generation);
 }
 
 /// A view whose lines would take the sheet past a paper scene's records fails and is left out;
@@ -263,4 +378,38 @@ fn a_view_past_100_to_1_is_drawn_with_a_coarser_chord() {
     let scene = built(&s, sheet);
     let front = scene.views.iter().find(|v| v.view == front).unwrap();
     assert_eq!(front.status, Status::Drawn, "{front:?}");
+}
+
+/// Seeded mixes of moves, setting changes, undos, redos, extracts and steps: once nothing is
+/// waiting, the provider's scene is always the built one, byte for byte.
+#[test]
+fn seeded_edits_and_steps_always_end_at_the_built_scene() {
+    let pick = |seed: u64, salt: u64, n: u64| ((seed ^ salt).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) % n;
+    for seed in 1..=24u64 {
+        let (mut s, sheet, [front, top]) = front_and_top();
+        let edit =
+            |s: &mut Session, view: u64, set: Value| s.execute("drawing.view.edit", &json!({"view": ids::encode(view), "set": set})).map(|_| ());
+        for i in 0..12u64 {
+            let along = 100.0 + 10.0 * pick(seed, 100 + i, 10) as f64;
+            let scale = ["1:1", "1:2", "1:5"][pick(seed, 200 + i, 3) as usize];
+            let tangent_edges = ["hide", "show"][pick(seed, 300 + i, 2) as usize];
+            // Refused edits (nothing to undo, say) change nothing, which the end still checks.
+            let _ = match pick(seed, i, 8) {
+                0 => edit(&mut s, front, json!({"place": {"at": [along, 150.0]}})),
+                1 => edit(&mut s, top, json!({"place": {"aligned": along + 100.0}})),
+                2 => edit(&mut s, front, json!({"scale": scale})),
+                3 => edit(&mut s, top, json!({"tangent_edges": tangent_edges})),
+                4 => s.execute("edit.undo", &json!({})).map(|_| ()),
+                5 => s.execute("edit.redo", &json!({})).map(|_| ()),
+                6 => {
+                    step(&mut s);
+                    Ok(())
+                }
+                _ => extract(&mut s, sheet).map(drop),
+            };
+        }
+        let end = settled(&mut s, sheet);
+        assert!(end.stale.is_empty(), "seed {seed}");
+        assert_eq!(bytes(&end.scene), bytes(&built(&s, sheet).scene), "seed {seed}");
+    }
 }

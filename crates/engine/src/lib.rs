@@ -318,6 +318,9 @@ pub struct Session {
     /// Host-owned viewport metadata, never saved or included in history.
     render_viewport: Option<Arc<render::ExecutorDescriptor>>,
     render_jobs: render_jobs::Jobs,
+    /// The sheet scenes of the drawing open, for the sheet page ([`drawing_scene::extract`]): view
+    /// state, never saved or an undo step, dropped when the drawing closes.
+    pub(crate) drawing_scenes: drawing_scene::Cache,
     /// The visibility the design file holds (what `is_dirty` compares with).
     saved_visibility: Visibility,
     /// States to go back to (`edit.checkpoint`, `edit.restore_checkpoint`): how batches of
@@ -472,6 +475,7 @@ impl Session {
             render_viewport: None,
             render_jobs: Default::default(),
             dimension_values: Default::default(),
+            drawing_scenes: Default::default(),
             #[cfg(test)]
             evaluations: 0,
             crash_journal: false,
@@ -884,6 +888,8 @@ impl Session {
         if self.render_jobs.host.is_none() && host_jobs.is_some() {
             self.set_render_job_host(host_jobs)?;
         }
+        // A command that closed the drawing, or opened another, ends its sheet scenes.
+        drawing_scene::forget_closed(self);
         if outermost && crash::enabled() {
             // A failed command leaves the design as it was (restored below).
             let failed = r.as_ref().err().map(ToString::to_string);
@@ -1044,6 +1050,7 @@ impl Session {
             camera: self.camera,
             render_viewport: self.render_viewport.clone(),
             render_jobs: self.render_jobs.scratch(),
+            drawing_scenes: Default::default(),
             saved_visibility: self.saved_visibility.clone(),
             dimension_values: self.dimension_values.clone(),
             #[cfg(test)]
