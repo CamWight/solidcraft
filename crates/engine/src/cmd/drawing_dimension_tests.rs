@@ -69,7 +69,9 @@ fn a_dimension_is_added_by_points_or_edges_and_saved_by_name() {
     reads(&by_points, 80.0, "80.00");
     assert_eq!((by_points["exact"].clone(), by_points["foreshortened"].clone()), (json!(true), json!(false)));
     assert_eq!(s.undo.len(), steps + 1, "one undo step");
-    let corner = &by_points["record"]["kind"]["linear"]["a"];
+    let record = &by_points["record"];
+    assert_eq!((&record["offset_mm"], &record["text"], &record["decimals"]), (&json!(10.0), &json!("centred"), &json!(2)), "the defaults");
+    let corner = &record["kind"]["linear"]["a"];
     assert_eq!((corner["body"].as_str(), corner["edges"].as_array().map(Vec::len)), (Some("Box"), Some(3)), "a box corner: three edges");
     assert!(corner.get("point").is_none() && corner.to_string().contains('|'), "names, not the point: {corner}");
     // The same corners by two of their edges each.
