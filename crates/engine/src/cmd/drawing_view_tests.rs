@@ -309,6 +309,22 @@ fn a_copy_takes_its_linked_views_only_when_asked() {
     assert_eq!(saved(&s, listed(&beside)[0]).sheet, first);
 }
 
+/// A copy's ids come from the session's id source, as every drawing object's do: sessions seeded
+/// alike copy a view and the view lined up with it to the same new ids (where a crash replay
+/// starts), another seed to others.
+#[test]
+fn a_copys_ids_come_from_the_sessions_seed() {
+    let copied = |seed: u64| {
+        let (mut s, [front, ..]) = three_views();
+        s.seed_ids(seed);
+        let second = second_sheet(&mut s);
+        let p = json!({"view": ids::encode(front), "sheet": ids::encode(second), "with_linked": true});
+        listed(&to_sheet(&mut s, COPY, p))
+    };
+    assert_eq!(copied(7), copied(7));
+    assert_ne!(copied(7), copied(8));
+}
+
 /// A projected view copied alone is a base view of its own: looking the way it did (by name when it
 /// is exactly a named view, else by its line of sight and up), with the settings it resolved to as
 /// its own, whatever its old parents do after.
@@ -558,7 +574,8 @@ fn sheet_set(s: &mut Session, sheet: u64, mut p: Value) -> Value {
 /// A change of paper moves no view and lists those it leaves outside the drawing space (S5, #3875).
 /// On A3 the three views fit; on A4, either way up, the right and top views leave it (the right
 /// view reaches x 312.5, past A4's 287), and stay where they were. A border through the right
-/// view's edge leaves it inside; a tenth of a millimetre less paper puts it outside. A change of name
+/// view's edge leaves it inside, and so does one short of it by less than a rounding; a tenth of a
+/// millimetre less paper puts it outside. A change of name
 /// checks nothing, undo brings the paper back, a view moved or copied to a smaller sheet is listed
 /// when it leaves the drawing space there, and a view with nothing to measure is listed by its
 /// placeholder, saying why.
@@ -582,6 +599,9 @@ fn a_change_of_paper_lists_the_views_it_leaves_outside_and_moves_none() {
     run(&mut s, "edit.undo", json!({}));
     let paper = s.drawing("test").unwrap().sheets[0].sheet;
     assert_eq!(paper.size, solidcraft_geom::drawing_sheet::SheetSize::Custom { sides_mm: [322.5, 297.0] });
+    let rounding = sheet_set(&mut s, sheet, json!({"size": {"custom": {"sides_mm": [322.5 - solidcraft_geom::EPS / 2.0, 297.0]}}}));
+    assert!(rounding.get("outside").is_none(), "within a rounding of the border is inside: {rounding}");
+    run(&mut s, "edit.undo", json!({}));
     let added = run(&mut s, "drawing.sheet.add", json!({"size": {"standard": "a4"}, "orientation": "portrait"}));
     let a4 = ids::decode(added["sheet"].as_str().unwrap()).unwrap();
     let moved = to_sheet(&mut s, MOVE, json!({"view": ids::encode(top), "sheet": ids::encode(a4), "position_mm": [150.0, 280.0]}));

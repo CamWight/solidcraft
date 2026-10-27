@@ -63,18 +63,25 @@ fn a_drawing_of_the_design_is_kept_in_it_and_opened() {
 }
 
 /// A drawing's ids come from the session's id source: two sessions seeded alike make a drawing
-/// with the same ids (where a crash replay starts), another seed other ids.
+/// with the same ids (where a crash replay starts), another seed other ids. A file change keeps
+/// the source, so the same holds for a drawing made after `file.new`.
 #[test]
 fn drawing_ids_come_from_the_sessions_seed() {
-    let ids = |seed: u64| {
+    let ids = |seed: u64, new_file: bool| {
         let mut s = design();
         s.seed_ids(seed);
+        if new_file {
+            run(&mut s, "file.new", json!({}));
+            run(&mut s, "solid.box", json!({"length": 40, "width": 30, "height": 10, "body_name": "Plate"}));
+        }
         run(&mut s, "drawing.create", json!({}));
         let d = open_one(&s);
         (d.id, d.sheets[0].id, d.sources[0].id)
     };
-    assert_eq!(ids(7), ids(7));
-    assert_ne!(ids(7), ids(8));
+    assert_eq!(ids(7, false), ids(7, false));
+    assert_ne!(ids(7, false), ids(8, false));
+    assert_eq!(ids(7, true), ids(7, true), "the source kept across the file change");
+    assert_ne!(ids(7, true), ids(8, true));
 }
 
 /// What making a drawing refuses, the design unchanged: an empty design, units, a language and a

@@ -40,6 +40,8 @@ fn child() {
     }
     set_environment("Renderer: test");
     let mut s = Session { crash_journal: true, ..Default::default() };
+    // Where the session's ids stand at the journal's base, its first command.
+    println!("BASE_IDS {}", s.ids.seed());
     s.execute("solid.box", &json!({"length": 10, "width": 20, "height": 30})).unwrap();
     // Commands that only read are not kept.
     for _ in 0..50 {
@@ -55,6 +57,7 @@ fn child() {
             let _ = s.execute("diagnostics.crash_test", &json!({"mode":"abort"}));
         }
         "command" => {
+            println!("IDS {}", s.ids.seed());
             for _ in 0..3 {
                 let r = s.execute("diagnostics.crash_test", &json!({"mode": "panic"}));
                 assert!(matches!(r, Err(crate::EngineError::Internal(..))), "{r:?}");
@@ -93,6 +96,11 @@ fn run_child(dir: &Path, mode: &str) -> (String, bool) {
     (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.success())
 }
 
+/// The id seed a child printed after `label`.
+fn printed_seed(out: &str, label: &str) -> u64 {
+    out.lines().find_map(|l| l.strip_prefix(label)).and_then(|x| x.trim().parse().ok()).unwrap()
+}
+
 fn only_report(dir: &Path) -> (Summary, Value) {
     let all = list(dir);
     assert_eq!(all.len(), 1, "{all:?}");
@@ -104,7 +112,7 @@ fn only_report(dir: &Path) -> (Summary, Value) {
 #[test]
 fn a_command_panic_is_reported_once_with_the_design_and_the_command() {
     let d = fresh_dir("command");
-    let (_, ok) = run_child(&d, "command");
+    let (out, ok) = run_child(&d, "command");
     assert!(ok, "the panics were caught");
     let (s, v) = only_report(&d);
     assert_eq!(s.kind, "command_panic");
@@ -126,6 +134,7 @@ fn a_command_panic_is_reported_once_with_the_design_and_the_command() {
     assert_eq!(design.features.len(), 1);
     let replay: Value = serde_json::from_slice(&fs::read(v["replay_path"].as_str().unwrap()).unwrap()).unwrap();
     assert_eq!(replay["commands"], json!([{"command": "diagnostics.crash_test", "params": {"mode": "panic"}}]));
+    assert_eq!(replay["ids"], json!(printed_seed(&out, "IDS ")), "the session's id seed when the command started");
     assert!(fs::read_dir(d.join("sessions")).unwrap().next().is_none(), "a clean exit leaves no journal");
     let _ = fs::remove_dir_all(&d);
 }
@@ -160,7 +169,7 @@ fn a_panic_outside_commands_is_reported() {
 #[test]
 fn an_abort_is_reported_at_the_next_start_with_a_replay() {
     let d = fresh_dir("abort");
-    let (_, ok) = run_child(&d, "abort");
+    let (started, ok) = run_child(&d, "abort");
     assert!(!ok, "the child aborted");
     assert!(list(&d).is_empty(), "no hook sees an abort");
     // The next start finds the journal nobody holds and tells about it.
@@ -176,6 +185,7 @@ fn an_abort_is_reported_at_the_next_start_with_a_replay() {
     let replay: Value = serde_json::from_slice(&fs::read(v["replay_path"].as_str().unwrap()).unwrap()).unwrap();
     let ids: Vec<&str> = replay["commands"].as_array().unwrap().iter().map(|c| c["command"].as_str().unwrap()).collect();
     assert_eq!(ids, ["solid.box", "diagnostics.crash_test"], "read-only commands are not journaled");
+    assert_eq!(replay["ids"], json!(printed_seed(&started, "BASE_IDS ")), "the id seed kept at the journal's base");
     assert!(v.get("design_path").is_none());
     // Told once: the start after that has nothing new.
     let (out, _) = run_child(&d, "none");
