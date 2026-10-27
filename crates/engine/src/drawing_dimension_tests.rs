@@ -95,6 +95,15 @@ impl Fixture {
         ModelEdge { body: "Box".into(), origin_feature: self.feature, name, path: Vec::new() }
     }
 
+    /// The box's edge whose every point is `radius` from `centre`: one of a circle's or an arc's.
+    fn round(&self, centre: [f64; 3], radius: f64) -> ModelEdge {
+        let b = self.body();
+        let c = Vec3::new(centre[0], centre[1], centre[2]);
+        let lines = b.mesh().edges.clone();
+        let (_, name) = lines.iter().zip(edge_names(&b)).find(|(line, _)| line.iter().all(|p| (p.dist(c) - radius).abs() < 1e-6)).unwrap();
+        ModelEdge { body: "Box".into(), origin_feature: self.feature, name, path: Vec::new() }
+    }
+
     /// The box's corner at `p`, by the names of the edges that meet there.
     fn corner(&self, p: [f64; 3]) -> ModelPoint {
         let edges = self.edges_at(p).into_iter().map(|(name, ..)| name).collect();
@@ -223,6 +232,78 @@ fn an_angle_between_two_edges() {
     let r = f.resolve(end_on);
     assert!(matches!(&r.status, Status::Unmeasurable(why) if why.contains("end-on")), "{r:?}");
     assert_eq!((r.measured, r.text), (None, None));
+}
+
+/// A hole 12 across along Y through the box at (40, 15), and a 5 mm fillet on its top right edge
+/// (along Y): the front view sees both face on, so the hole's front edge reads 6 as a radius and 12
+/// as a diameter, centred on the hole's axis, and the fillet's front arc R5 from the right face to
+/// the top. The right view sees the hole's edge end-on, and a straight edge isn't round: neither
+/// can be measured. The hole's back edge reads where it is, 40 behind. The hole made 16 across
+/// reads Ø16, and undone Ø12 again; deleted, it is lost, and undone found again.
+#[test]
+fn a_circle_and_an_arc_read_their_radius_and_diameter() {
+    let mut f = boxed();
+    run(
+        &mut f.s,
+        "solid.cylinder",
+        json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"], "name": "Hole"}),
+    );
+    run(&mut f.s, "solid.fillet", json!({"edges": [[80, 20, 30]], "radius": 5, "body": "Box"}));
+    let (front, right) = (f.front, f.right);
+    let radial = |edge: &ModelEdge, diameter| DimensionKind::Radial { edge: edge.clone(), diameter };
+    let (hole, arc) = (f.round([40.0, 0.0, 15.0], 6.0), f.round([75.0, 0.0, 25.0], 5.0));
+    let across = f.add(front, radial(&hole, true), None);
+    let half = f.add(front, radial(&hole, false), None);
+    let fillet = f.add(front, radial(&arc, false), None);
+    let r = f.resolve(across);
+    assert_reads(&r, 12.0, false);
+    assert_eq!(r.text.as_deref(), Some("Ø12.00"));
+    assert!(r.exact, "{r:?}");
+    let centre = Vec3::new(40.0, 0.0, 15.0);
+    assert!(r.points[0].dist(centre) < EPS, "the centre: {r:?}");
+    assert!(r.points[1..].iter().all(|p| (p.dist(centre) - 6.0).abs() < EPS && p.y.abs() < EPS), "on the edge: {r:?}");
+    let back_rim = f.round([40.0, 40.0, 15.0], 6.0);
+    let back = f.add(front, radial(&back_rim, true), None);
+    let r = f.resolve(back);
+    assert_reads(&r, 12.0, false);
+    assert!(r.points.iter().all(|p| (p.y - 40.0).abs() < EPS), "on the back face: {r:?}");
+    let r = f.resolve(half);
+    assert_reads(&r, 6.0, false);
+    assert_eq!(r.text.as_deref(), Some("R6.00"));
+    let r = f.resolve(fillet);
+    assert_reads(&r, 5.0, false);
+    assert_eq!(r.text.as_deref(), Some("R5.00"));
+    let ends = [r.points[1], r.points[3]];
+    let at = |p: Vec3| ends.iter().any(|q| q.dist(p) < EPS);
+    assert!(at(Vec3::new(80.0, 0.0, 25.0)) && at(Vec3::new(75.0, 0.0, 30.0)), "from the right face to the top: {r:?}");
+    let diagonal = 5.0 * std::f64::consts::FRAC_1_SQRT_2;
+    assert!(r.points[2].dist(Vec3::new(75.0 + diagonal, 0.0, 25.0 + diagonal)) < EPS, "its middle: {r:?}");
+    // End-on, and straight.
+    let end_on = f.add(right, radial(&hole, true), None);
+    let r = f.resolve(end_on);
+    assert!(matches!(&r.status, Status::Unmeasurable(why) if why.ends_with("(it isn't parallel to it)")), "{r:?}");
+    assert_eq!((r.measured, r.text, r.points.is_empty()), (None, None, true));
+    let left = f.edge([0.0, 0.0, 0.0], [0.0, 0.0, 30.0]);
+    let straight = f.add(front, radial(&left, false), None);
+    let r = f.resolve(straight);
+    assert!(matches!(&r.status, Status::Unmeasurable(why) if why.ends_with("isn't a circle or an arc")), "{r:?}");
+    // The hole made 16 across, and undone.
+    let list = run(&mut f.s, "parameters.list", json!({"filter": "feature"}));
+    let size = list["parameters"].as_array().unwrap().iter().find(|p| p["value"].as_f64() == Some(6.0)).unwrap()["name"].clone();
+    run(&mut f.s, "parameters.change", json!({"name": size, "expression": "8 mm"}));
+    assert_reads(&f.resolve(across), 16.0, false);
+    run(&mut f.s, "edit.undo", json!({}));
+    assert_reads(&f.resolve(across), 12.0, false);
+    run(&mut f.s, "timeline.delete", json!({"feature": "Hole"}));
+    let r = f.resolve(across);
+    assert!(matches!(&r.status, Status::Lost(why) if why.contains("no longer exists")), "{r:?}");
+    run(&mut f.s, "edit.undo", json!({}));
+    assert_reads(&f.resolve(across), 12.0, false);
+    // A slot across the rim splits it: which piece to measure isn't one answer, and none is chosen.
+    run(&mut f.s, "solid.box", json!({"length": 2, "width": 5, "height": 20, "corner": [39, -1, 5], "operation": "cut", "targets": ["Box"]}));
+    let r = f.resolve(across);
+    assert!(matches!(&r.status, Status::Ambiguous(pieces) if pieces.len() >= 2), "{r:?}");
+    assert_eq!(r.measured, None);
 }
 
 /// What a dimension measures is gone when its edge is filleted away, and found again on undo; a

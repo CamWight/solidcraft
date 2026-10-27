@@ -45,6 +45,15 @@ fn edge_index(s: &Session, a: [f64; 3], b: [f64; 3]) -> usize {
     mesh.edges.iter().position(|line| joins(ends(line))).unwrap()
 }
 
+/// The index of the box's edge whose every point is `radius` from `centre`, as `{body, index}`
+/// names it: one of a circle's or an arc's.
+fn round_index(s: &Session, centre: [f64; 3], radius: f64) -> usize {
+    let centre = Vec3::from(centre);
+    let state = s.model.state();
+    let mesh = state.body("Box").unwrap().mesh();
+    mesh.edges.iter().position(|line| line.iter().all(|p| (p.dist(centre) - radius).abs() < 1e-6)).unwrap()
+}
+
 fn edit(s: &mut Session, dimension: &Value, set: Value) -> Value {
     s.execute(EDIT, &json!({"dimension": dimension, "set": set})).unwrap_or_else(|e| panic!("{EDIT}: {e}"))
 }
@@ -158,6 +167,42 @@ fn an_edit_names_what_it_changed_and_the_same_again_changes_nothing() {
     reads(&run(&mut s, INSPECT, json!({"dimension": id})), 80.0, "80.0");
 }
 
+/// A radial dimension on a hole through the box is a diameter by default (its rim is two halves,
+/// each half a turn), and on a fillet's quarter arc a radius; as asked, the hole reads its radius,
+/// and an edit turns one into the other and back. It takes no direction, reading or side.
+#[test]
+fn a_radial_dimension_reads_a_hole_and_an_edit_makes_it_a_diameter() {
+    let (mut s, view) = front_view();
+    let drawing = s.drawing("test").unwrap().id;
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.cylinder", json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"]}));
+    run(&mut s, "solid.fillet", json!({"edges": [[80, 20, 30]], "radius": 5, "body": "Box"}));
+    run(&mut s, "drawing.open", json!({"drawing": ids::encode(drawing)}));
+    let hole = json!({"body": "Box", "index": round_index(&s, [40.0, 0.0, 15.0], 6.0)});
+    let across = add(&mut s, view, json!({"radial": {"edge": hole}}));
+    reads(&across, 12.0, "Ø12.00");
+    assert_eq!(across["record"]["kind"]["radial"]["diameter"], json!(true), "{across}");
+    let fillet = json!({"body": "Box", "index": round_index(&s, [75.0, 0.0, 25.0], 5.0)});
+    let arc = add(&mut s, view, json!({"radial": {"edge": fillet}}));
+    reads(&arc, 5.0, "R5.00");
+    assert_eq!(arc["record"]["kind"]["radial"].get("diameter"), None, "{arc}");
+    reads(&add(&mut s, view, json!({"radial": {"edge": fillet, "diameter": true}})), 10.0, "Ø10.00");
+    let radius = add(&mut s, view, json!({"radial": {"edge": hole, "diameter": false}}));
+    reads(&radius, 6.0, "R6.00");
+    let id = radius["dimension"].clone();
+    assert_eq!(edit(&mut s, &id, json!({"diameter": true}))["changed"], json!(["diameter"]));
+    reads(&run(&mut s, INSPECT, json!({"dimension": id})), 12.0, "Ø12.00");
+    assert_eq!(edit(&mut s, &id, json!({"diameter": false}))["changed"], json!(["diameter"]));
+    reads(&run(&mut s, INSPECT, json!({"dimension": id})), 6.0, "R6.00");
+    let before = s.drawing("test").unwrap().to_json().unwrap();
+    for set in [json!({"direction": "horizontal"}), json!({"reading": "true"}), json!({"other_side": true})] {
+        let p = json!({"dimension": id, "set": set});
+        let e = s.execute(EDIT, &p).err().map(|e| e.to_string()).unwrap_or_else(|| panic!("accepted: {p}"));
+        assert!(e.contains("a radial dimension has only `diameter`"), "{p}: {e}");
+    }
+    assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), before);
+}
+
 /// A dimension whose edge is filleted away has no value, and gives the one it last read this
 /// session as its last good value.
 #[test]
@@ -191,6 +236,7 @@ fn an_edit_refuses_what_the_dimension_cant_take() {
     let cases = [
         (&length, json!({"other_side": true}), "`other_side` is an angle's"),
         (&angle, json!({"direction": "horizontal"}), "an angle has no `direction`"),
+        (&length, json!({"diameter": true}), "`diameter` is a radial dimension's"),
         (&length, json!({"decimals": 7}), "at most 6 decimals"),
         (&length, json!({"offset_mm": 1e9}), "on paper"),
         (&length, json!({"override_text": ""}), "instead of its number is 1 to"),
@@ -230,6 +276,9 @@ fn a_pick_that_names_nothing_or_several_things_is_refused() {
         (json!({"view": v, "kind": {"length": {"edge": [40, 0, 30]}}, "offset_mm": 1e9}), "on paper"),
         (json!({"view": ids::encode(99), "kind": {"length": {"edge": [40, 0, 30]}}}), "the drawing has no view"),
         (json!({"view": v, "kind": {"radius": {"edge": [40, 0, 30]}}}), "radius"),
+        (json!({"view": v, "kind": {"radial": {"edge": [40, 0, 30]}}}), "isn't a circle or an arc"),
+        (json!({"view": v, "kind": {"radial": {"edge": [0, 20, 0]}}}), "isn't a circle in this view (it isn't parallel to it)"),
+        (json!({"view": v, "kind": {"radial": {"edge": [40, 0, 30], "diameter": 1}}}), "must be true or false"),
     ];
     for (p, why) in cases {
         let e = refused(&mut s, p.clone());
@@ -265,6 +314,7 @@ fn hostile_dimension_params_never_panic() {
             "offset_mm": 5, "text": {"at": [1, 2]}, "decimals": 1, "override_text": "x"}),
         ),
         (ADD, json!({"view": v, "kind": {"angle": {"a": {"point": [40, 0, 30], "path": [1]}, "b": [0, 0, 15], "other_side": true}}})),
+        (ADD, json!({"view": v, "kind": {"radial": {"edge": {"body": "Box", "index": 0, "path": [1]}, "diameter": true}}})),
         (
             EDIT,
             json!({"dimension": id, "set": {"offset_mm": 5, "text": "centred", "decimals": 1, "override_text": null, "direction": "vertical",

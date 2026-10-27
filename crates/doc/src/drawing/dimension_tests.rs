@@ -206,7 +206,7 @@ fn the_dimensions_rules_are_kept_on_reading() {
         |v, id| dim(v, id)["kind"]["linear"]["tolerance"] = json!(0.1),
         |v, id| dim(v, id)["kind"]["linear"]["a"]["point"] = json!([0.0, 0.0, 0.0]),
         |v, id| dim(v, id)["text"] = json!({"at": [1.0, 2.0], "angle": 3.0}),
-        |v, id| dim(v, id)["kind"] = json!({"radial": {}}),
+        |v, id| dim(v, id)["kind"] = json!({"chain": {}}),
     ];
     for (i, edit) in unknown.into_iter().enumerate() {
         assert!(refused(&d, |v| edit(v, &linear_id)).starts_with("damaged drawing: "), "{i}");
@@ -236,6 +236,30 @@ fn an_angle_between_lines_reads_the_same_whichever_way_they_run() {
         assert!((between_lines(between, false) - acute).abs() < 1e-12, "{between}");
         assert!((between_lines(between, true) - obtuse).abs() < 1e-12, "{between}");
     }
+}
+
+/// A radial dimension saves its edge, and `diameter` only when it is one; its edge keeps an edge's
+/// rules, and it has no reading.
+#[test]
+fn a_radial_dimension_saves_its_edge_and_whether_it_is_a_diameter() {
+    let (mut d, _) = measured();
+    let (view, id) = (d.views[0].id, d.allocate_id(&mut IdSource::seeded(SEED + 1)).unwrap());
+    let radial = |diameter| DimensionKind::Radial { edge: edge("F3:hole|F1:front"), diameter };
+    let kind = radial(true);
+    d.add_dimensions([Arc::new(Dimension { id, view, kind, offset_mm: 5.0, text: TextPlace::Centred, decimals: 1, override_text: None })]);
+    d.validate().unwrap();
+    let radial_id = ids::encode(id);
+    let mut v = file(&d);
+    let hole = json!({"body": "Box", "origin_feature": 7, "name": "F3:hole|F1:front"});
+    assert_eq!(dim(&mut v, &radial_id)["kind"], json!({"radial": {"edge": hole, "diameter": true}}));
+    assert_eq!(Drawing::from_json(&v.to_string()).unwrap(), d);
+    dim(&mut v, &radial_id)["kind"]["radial"].as_object_mut().unwrap().remove("diameter");
+    let radius = Drawing::from_json(&v.to_string()).unwrap();
+    assert_eq!(radius.dimension(id).map(|r| &r.kind), Some(&radial(false)));
+    assert_eq!(dim(&mut file(&radius), &radial_id)["kind"]["radial"].get("diameter"), None, "a radius, not written");
+    let names = format!("damaged drawing: dimension {radial_id}: a name in a reference is 1 to 512 bytes, without control characters");
+    assert_eq!(refused(&d, |v| dim(v, &radial_id)["kind"]["radial"]["edge"]["name"] = json!("")), names);
+    assert!(refused(&d, |v| dim(v, &radial_id)["kind"]["radial"]["reading"] = json!("true")).starts_with("damaged drawing: "));
 }
 
 /// A direction along a picked line saves as its plane coordinates and reads back as the same

@@ -9,6 +9,8 @@
 //! - **Length**: a straight edge's ends ([`ModelEdge`]).
 //! - **Angle**: between two straight edges, the smaller angle between their lines, or on its other
 //!   side π minus it, whichever way the kernel runs the edges.
+//! - **Radial** (W20a): a circle's or an arc's radius, or its diameter, on a view that sees it face
+//!   on, read exactly from the body.
 //!
 //! A reference names its body, the feature that made the body (so a suppressed feature can be told
 //! from a deleted one) and its occurrence path (so a part placed twice has a dimension on each copy).
@@ -40,7 +42,7 @@ use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_measure::{self, AngleFrom, LinearDirection, Measured, Reading};
 use solidcraft_geom::drawing_view::{Invalid, is_paper_coordinate};
 use solidcraft_geom::paper::MAX_SIDE_MM;
-use solidcraft_geom::{Plane, Vec3};
+use solidcraft_geom::{Plane, Seg2, Vec2, Vec3};
 
 use super::{Drawing, Units, add_by_id, in_id_order, require};
 use crate::config::MAX_REFERENCE_NAME_BYTES;
@@ -48,7 +50,7 @@ use crate::construct::{MAX_VERTEX_EDGES, as_line, point_tolerance, shared_ends};
 use crate::display_units::length_number;
 use crate::format::MAX_REAL;
 use crate::name_lookup::{BodyEdges, EdgeMatch};
-use crate::{DocError, Document, MAX_PLACEMENT_DEPTH, Mat, Model, ModelState, Result, apply_point, ids};
+use crate::{DocError, Document, MAX_PLACEMENT_DEPTH, Mat, Model, ModelState, Result, apply_point, ids, map_plane, mat_inverse};
 
 /// The most dimensions a drawing may have.
 pub const MAX_DIMENSIONS: usize = 10_000;
@@ -58,6 +60,9 @@ pub const MAX_DECIMALS: u8 = 6;
 pub const MAX_CANDIDATES: usize = 16;
 /// The longest text shown instead of a dimension's number, in bytes.
 pub const MAX_TEXT_BYTES: usize = 1024;
+/// What a diameter's number follows: Ø (U+00D8), as tolerance texts write it. The diameter sign
+/// U+2300 isn't in the bundled fonts, so it would print as a missing glyph.
+const DIAMETER_SIGN: &str = "Ø";
 
 /// One dimension of a drawing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -95,6 +100,13 @@ pub enum DimensionKind {
         reading: Reading,
         #[serde(default, skip_serializing_if = "is_false")]
         other_side: bool,
+    },
+    /// A circle's or an arc's radius, or with `diameter` its diameter, on a view that sees it face
+    /// on.
+    Radial {
+        edge: ModelEdge,
+        #[serde(default, skip_serializing_if = "is_false")]
+        diameter: bool,
     },
 }
 
@@ -184,6 +196,7 @@ impl Drawing {
                 check_edge(a)?;
                 check_edge(b)?;
             }
+            DimensionKind::Radial { edge, .. } => check_edge(edge)?,
         }
         let off_paper = || format!("its offset and its text's place are at most {MAX_SIDE_MM} mm on paper");
         let text = match d.text {
@@ -250,12 +263,14 @@ pub struct Resolved {
     /// overridden dimension has it too.
     pub measured: Option<Measured>,
     /// What it shows: the text given instead of its number, else the number in the drawing's
-    /// units with its decimals (degrees for an angle). `None` with neither.
+    /// units with its decimals (degrees for an angle, after R or Ø for a radius or a diameter).
+    /// `None` with neither.
     pub text: Option<String>,
     /// Every name it measures was found by exact history, each as one edge.
     pub exact: bool,
-    /// What it measures, in the design's frame: a linear dimension's two points, or an angle's
-    /// two lines (four points, each line from its first to its second). Empty unless measured.
+    /// What it measures, in the design's frame: a linear dimension's two points, an angle's two
+    /// lines (four points, each line from its first to its second), or a radial dimension's
+    /// centre and its arc's start, middle and end. Empty unless measured.
     pub points: Vec<Vec3>,
 }
 
@@ -377,11 +392,14 @@ struct Found {
 }
 
 /// The edges a name finds on a body: their indices and polylines in the design's frame, whether
-/// they are the one edge it names, and whether exact history found it.
+/// they are the one edge it names, whether exact history found it, and the body's index and the
+/// frame it is placed in.
 struct Edges {
     pieces: Vec<(usize, Vec<Vec3>)>,
     whole: bool,
     exact: bool,
+    body: usize,
+    frame: Mat,
 }
 
 impl Lookup<'_> {
@@ -393,6 +411,10 @@ impl Lookup<'_> {
         let measured = found.as_ref().map(|f| f.measured);
         let number = |m: Measured| match d.kind {
             DimensionKind::Angle { .. } => format!("{:.*}°", usize::from(d.decimals), m.value.to_degrees()),
+            DimensionKind::Radial { diameter, .. } => {
+                let symbol = if diameter { DIAMETER_SIGN } else { "R" };
+                format!("{symbol}{}", length_number(m.value, units, d.decimals))
+            }
             _ => length_number(m.value, units, d.decimals),
         };
         Resolved {
@@ -431,6 +453,16 @@ impl Lookup<'_> {
                 let between = drawing_measure::angle(basis, (a[0], a[1]), AngleFrom::Edge(b[0], b[1]), *reading).map_err(unmeasurable)?;
                 let value = between_lines(between.value, *other_side);
                 Ok(Found { measured: Measured { value, ..between }, points: vec![a[0], a[1], b[0], b[1]], exact: exact_a && exact_b })
+            }
+            DimensionKind::Radial { edge, diameter } => {
+                let found = self.edges(edge)?;
+                // A split edge is several arcs, each drawn in its own place.
+                if !found.whole {
+                    return Err(Status::Ambiguous(edge_candidates(&edge.body, &found)));
+                }
+                let (radius, points) = self.arc(edge, &found, basis)?;
+                let value = if *diameter { 2.0 * radius } else { radius };
+                Ok(Found { measured: Measured { value, foreshortened: false }, points: points.to_vec(), exact: found.exact })
             }
         }
     }
@@ -471,7 +503,22 @@ impl Lookup<'_> {
         };
         let exact = whole && indices.iter().all(|e| names.verified(*e));
         let placed = |e: &usize| names.mesh.edges.get(*e).map(|line| (*e, line.iter().map(|p| apply_point(&frame, *p)).collect()));
-        Ok(Edges { pieces: indices.iter().filter_map(placed).collect(), whole, exact })
+        Ok(Edges { pieces: indices.iter().filter_map(placed).collect(), whole, exact, body: i, frame })
+    }
+
+    /// The circle or arc that `found` (one whole edge) is, as the view through `basis` sees it face
+    /// on: its radius, and its centre and its start, middle and end in the design's frame. Read
+    /// exactly from the body, in the view's plane through the edge, so the points are the edge's.
+    fn arc(&self, edge: &ModelEdge, found: &Edges, basis: &Plane) -> std::result::Result<(f64, [Vec3; 4]), Status> {
+        let face_on = || Status::Unmeasurable(format!("edge `{}` isn't a circle in this view (it isn't parallel to it)", edge.name));
+        let (index, line) = found.pieces.first().ok_or_else(face_on)?;
+        let through = Plane { origin: *line.first().ok_or_else(face_on)?, ..*basis };
+        let local = mat_inverse(&found.frame).and_then(|back| map_plane(&back, &through)).ok_or_else(face_on)?;
+        let body = self.state.bodies.get(found.body).ok_or_else(|| Status::Lost("its body no longer exists".into()))?;
+        let segs = body.body.planar_edges(&local, &[*index]).pop().flatten().ok_or_else(face_on)?;
+        let not_round = || Status::Unmeasurable(format!("edge `{}` isn't a circle or an arc", edge.name));
+        let (radius, points) = one_arc(&segs).ok_or_else(not_round)?;
+        Ok((radius, points.map(|p| apply_point(&found.frame, local.to_world(p)))))
     }
 
     /// The straight line `edge` names, from end to end, in the design's frame. The pieces of a
@@ -638,6 +685,22 @@ fn edge_candidates(body: &str, found: &Edges) -> Vec<Candidate> {
 fn between_lines(between: f64, other_side: bool) -> f64 {
     let smaller = between.min(PI - between);
     if other_side { PI - smaller } else { smaller }
+}
+
+/// One edge's arcs as one arc: its radius, and its centre, start, middle and end. The kernel gives a
+/// whole circle as two halves. `None` unless every piece is an arc of one circle.
+fn one_arc(segs: &[Seg2]) -> Option<(f64, [Vec2; 4])> {
+    let &Seg2::Arc { center, radius, start, .. } = segs.first()? else { return None };
+    let mut sweep = 0.0;
+    for seg in segs {
+        let &Seg2::Arc { center: c, radius: r, sweep: s, .. } = seg else { return None };
+        if c.dist(center) > radius * 1e-9 || (r - radius).abs() > radius * 1e-9 {
+            return None;
+        }
+        sweep += s;
+    }
+    let arc = Seg2::Arc { center, radius, start, sweep };
+    Some((radius, [center, arc.start(), arc.mid(), arc.end()]))
 }
 
 /// A straight polyline's ends.

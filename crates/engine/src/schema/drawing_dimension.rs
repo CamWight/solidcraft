@@ -193,6 +193,14 @@ pub enum KindParam {
         #[serde(default)]
         other_side: bool,
     },
+    /// A circle's or an arc's radius, on a view that sees it face on.
+    Radial {
+        edge: EdgeParam,
+        /// Its diameter instead. By default, for a whole circle or an arc of half a turn or more.
+        #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+        #[schemars(with = "bool")]
+        diameter: Option<bool>,
+    },
 }
 
 /// What `drawing.dimension.add` takes.
@@ -268,6 +276,10 @@ pub struct DimensionSet {
     #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "bool")]
     pub other_side: Option<bool>,
+    /// A radial dimension's: its diameter, or its radius.
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "bool")]
+    pub diameter: Option<bool>,
 }
 
 /// What `drawing.dimension.edit` returns.
