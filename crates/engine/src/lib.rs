@@ -1229,6 +1229,8 @@ mod derived_units_tests;
 #[cfg(test)]
 mod display_mesh_tests;
 #[cfg(test)]
+mod drawing_dimension_tests;
+#[cfg(test)]
 mod exact_tool_tests;
 #[cfg(test)]
 mod extent_tests;
