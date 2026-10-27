@@ -194,13 +194,22 @@ fn named_vertex(st: &ModelState, at: Vec3, names: &[String]) -> Option<Vec3> {
             Some([*pts.first()?, *pts.last()?])
         })
         .collect::<Option<_>>()?;
-    let (first, rest) = ends.split_first()?;
+    shared_ends(&ends).into_iter().min_by(|p, q| p.dist(at).total_cmp(&q.dist(at)))
+}
+
+/// Where edges meet: the ends in `ends[0]` that every other list in `ends` has too (to a millionth
+/// of their distance from the origin), each once. Empty when they share none.
+pub(crate) fn shared_ends<E: AsRef<[Vec3]>>(ends: &[E]) -> Vec<Vec3> {
     let tol = |p: Vec3| 1e-6 * (1.0 + p.len());
-    first
-        .iter()
-        .copied()
-        .filter(|p| p.is_finite() && rest.iter().all(|e| e.iter().any(|q| q.dist(*p) <= tol(*p))))
-        .min_by(|p, q| p.dist(at).total_cmp(&q.dist(at)))
+    let Some((first, rest)) = ends.split_first() else { return Vec::new() };
+    let mut shared: Vec<Vec3> = Vec::new();
+    for p in first.as_ref().iter().copied() {
+        let everywhere = rest.iter().all(|e| e.as_ref().iter().any(|q| q.dist(p) <= tol(p)));
+        if p.is_finite() && everywhere && !shared.iter().any(|q| q.dist(p) <= tol(p)) {
+            shared.push(p);
+        }
+    }
+    shared
 }
 
 /// A polyline that is straight: its line.
