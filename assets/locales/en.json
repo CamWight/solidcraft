@@ -581,6 +581,7 @@
   "cmd.drawing_revision_add": "Add Revision",
   "cmd.drawing_revision_delete": "Delete Revision",
   "cmd.drawing_revision_edit": "Edit Revision",
+  "cmd.drawing_scene": "Draw Sheet",
   "cmd.drawing_set": "Drawing Settings",
   "cmd.drawing_sheet_add": "Add Sheet",
   "cmd.drawing_sheet_delete": "Delete Sheet",

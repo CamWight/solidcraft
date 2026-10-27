@@ -49,6 +49,7 @@ pub(crate) mod tests;
 pub mod drawing_balloon;
 pub mod drawing_dimension;
 pub mod drawing_revision;
+pub mod drawing_scene;
 pub mod drawing_sheet;
 pub mod drawing_view;
 pub mod features;

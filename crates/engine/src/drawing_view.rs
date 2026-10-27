@@ -13,6 +13,7 @@ use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::{MAX_PLACEMENT_DEPTH, MAX_PLACEMENTS, ModelBody, ModelState, ids};
 use solidcraft_geom::drawing_view::{Scale, ViewFrame};
 use solidcraft_geom::{Aabb2, EPS, Plane, Vec2};
+use solidcraft_render::VisualStyle;
 
 use crate::params::bad;
 use crate::{Result, Session};
@@ -20,7 +21,7 @@ use crate::{Result, Session};
 #[path = "drawing_view_lines.rs"]
 mod lines;
 
-pub use lines::{CHORD_MM, CHORD_RANGE, Lines, Piece, VISIBLE_MM, ViewLine, lines, paper_group};
+pub use lines::{CHORD_MM, CHORD_RANGE, Lines, MIN_MODEL_CHORD_MM, Piece, Stats, VISIBLE_MM, ViewLine, lines, paper_group};
 
 /// The paper millimetres each way of a view's boundary when there's nothing to measure, round its
 /// centre, so it can still be picked, moved and deleted.
@@ -147,6 +148,19 @@ pub struct OnSheet {
     pub extents: Extents,
     /// Why there's nothing to measure, when there isn't.
     pub unmeasured: Option<Unmeasured>,
+}
+
+/// Why a view drawing in `display` and `reference` styles can't be drawn yet, if it can't: shaded
+/// views need pictures, and a paper scene (`scene`) has no dashed lines for hidden ones. The
+/// snapshot and the sheet scene refuse alike.
+pub fn not_drawable(display: VisualStyle, reference: VisualStyle, scene: bool) -> Option<&'static str> {
+    if display.is_shaded() || reference.is_shaded() {
+        Some("not supported yet: shaded views need the drawing renderer (#5624)")
+    } else if scene && display == VisualStyle::VisibleHidden {
+        Some("not supported yet: hidden lines in the paper scene need dashed lines (#4890 A5)")
+    } else {
+        None
+    }
 }
 
 /// The extents of the bodies `shown` holds, seen on `basis`, or that they have nothing to measure.

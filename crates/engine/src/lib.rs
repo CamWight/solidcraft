@@ -11,6 +11,7 @@ pub mod capture;
 pub mod cmd;
 pub mod control_auth;
 pub mod crash;
+pub mod drawing_scene;
 pub mod drawing_view;
 pub mod frames;
 pub mod fuzz;

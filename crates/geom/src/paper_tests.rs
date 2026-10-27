@@ -252,6 +252,7 @@ fn at_most_100_000_records_are_counted_before_any_geometry() {
     // One group and one stroke, then its pieces.
     let steps = |n: usize| -> Vec<Seg2> { (0..n).map(|i| line(p(i as f64 * 1e-3, 0.0), p((i + 1) as f64 * 1e-3, 0.0))).collect() };
     scene(vec![group(vec![stroke(steps(MAX_RECORDS - 2), false, 0.35)])]).validate().unwrap();
+    assert_eq!(group(vec![stroke(steps(MAX_RECORDS - 2), false, 0.35)]).records(), MAX_RECORDS);
     assert_eq!(scene(vec![group(vec![stroke(steps(MAX_RECORDS - 1), false, 0.35)])]).validate(), Err(REFUSED));
     // A fill counts each loop as well as its pieces: 2 + (1 + 5) + 49,996 × (1 + 1) = 100,000.
     let holes = vec![Loop2 { segs: vec![Seg2::Arc { center: p(200.0, 150.0), radius: 1.0, start: 0.0, sweep: TAU }] }; 49_996];
@@ -260,6 +261,7 @@ fn at_most_100_000_records_are_counted_before_any_geometry() {
         Loop2::polygon(&corners)
     };
     scene(vec![group(vec![fill(polygon(5), holes.clone())])]).validate().unwrap();
+    assert_eq!(group(vec![fill(polygon(5), holes.clone())]).records(), MAX_RECORDS);
     assert_eq!(scene(vec![group(vec![fill(polygon(6), holes)])]).validate(), Err(REFUSED));
     // Counted first: an over-budget scene with a non-finite piece reports the count.
     let mut bad = steps(MAX_RECORDS - 1);

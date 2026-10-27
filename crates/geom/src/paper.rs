@@ -67,6 +67,18 @@ pub struct Group {
     pub items: Vec<Item>,
 }
 
+impl Group {
+    /// The records the group counts toward [`MAX_RECORDS`]: itself, each item, each stroke's pieces,
+    /// and each loop of a fill with its pieces. Saturates rather than overflows.
+    pub fn records(&self) -> usize {
+        let item = |item: &Item| match item {
+            Item::Stroke { path, .. } => path.len(),
+            Item::Fill { region } => region.loops().fold(0usize, |n, l| n.saturating_add(1).saturating_add(l.segs.len())),
+        };
+        self.items.iter().fold(1usize, |n, i| n.saturating_add(1).saturating_add(item(i)))
+    }
+}
+
 /// What kind of object drew a group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -181,19 +193,8 @@ impl Scene {
     /// Checks the scene against the limits in the module's notes, counting its records first.
     pub fn validate(&self) -> Result<()> {
         let mut budget = Budget(0);
-        budget.add(self.groups.len())?;
         for group in &self.groups {
-            budget.add(group.items.len())?;
-            for item in &group.items {
-                match item {
-                    Item::Stroke { path, .. } => budget.add(path.len())?,
-                    Item::Fill { region } => {
-                        for l in region.loops() {
-                            budget.add(1 + l.segs.len())?;
-                        }
-                    }
-                }
-            }
+            budget.add(group.records())?;
         }
         let Vec2 { x, y } = self.size_mm;
         require([x, y].into_iter().all(|side| side > 0.0 && side <= MAX_SIDE_MM), "each side of the sheet is above 0 and at most 5000 mm")?;

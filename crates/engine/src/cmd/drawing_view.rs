@@ -39,8 +39,8 @@ use crate::drawing_view::{CHORD_RANGE, Extents, Lines, MAX_PATH_IDS, MAX_PATHS, 
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult,
-    LineResult, LineSourceResult, LinesStatsResult, LinesStatusResult, MoveParams, OutsideResult, PathSegResult, PieceResult, PlaceParam,
-    ScaleResult, SceneResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewResult, ViewSet,
+    LineResult, LineSourceResult, LinesStatusResult, MoveParams, OutsideResult, PathSegResult, PieceResult, PlaceParam, ScaleResult, SceneResult,
+    SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewResult, ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -97,11 +97,8 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     let request: SnapshotParams = crate::schema::read(CMD, p)?;
     let settings = request.settings();
     let basis = settings.validate().map_err(|e| bad(CMD, e.to_string()))?;
-    if settings.display_style.is_shaded() || settings.reference_style.is_shaded() {
-        return Err(bad(CMD, "not supported yet: shaded views need the drawing renderer (#5624)"));
-    }
-    if request.scene && settings.display_style == VisualStyle::VisibleHidden {
-        return Err(bad(CMD, "not supported yet: hidden lines in the paper scene need dashed lines (#4890 A5)"));
+    if let Some(why) = crate::drawing_view::not_drawable(settings.display_style, settings.reference_style, request.scene) {
+        return Err(bad(CMD, why));
     }
     if !(request.sheet.dpi.is_finite() && DPI_RANGE.contains(&request.sheet.dpi)) {
         return Err(bad(CMD, format!("sheet.dpi is a number from {} to {}", DPI_RANGE.start(), DPI_RANGE.end())));
@@ -178,15 +175,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
             uncertain_pieces: 0,
             covered_pieces: drawn.covered,
         },
-        stats: LinesStatsResult {
-            bodies: drawn.stats.bodies,
-            shared_meshes: drawn.stats.shared_meshes,
-            triangles: drawn.stats.triangles,
-            segments: drawn.stats.segments,
-            prepare_ms: drawn.stats.prepare_ms,
-            projection_ms: drawn.stats.projection_ms,
-            occlusion_ms: drawn.stats.occlusion_ms,
-        },
+        stats: drawn.stats.into(),
         scene,
         source: SourceResult { bodies: extents.bodies, timeline_at_end: s.doc.marker.is_none() },
         param_warnings: Vec::new(),

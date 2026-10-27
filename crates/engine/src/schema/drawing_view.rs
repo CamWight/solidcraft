@@ -15,10 +15,11 @@ use solidcraft_doc::drawing_view::{TangentEdges, ViewDirection, ViewSettings};
 use solidcraft_geom::Seg2;
 use solidcraft_geom::drawing_sheet::{Orientation, PaperSize, SheetSize};
 use solidcraft_geom::drawing_view::{NamedView, Scale};
+use solidcraft_geom::paper::ObjectKind;
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_render::VisualStyle;
 
-use crate::drawing_view::{CHORD_MM, CHORD_RANGE};
+use crate::drawing_view::{CHORD_MM, CHORD_RANGE, Stats};
 
 use super::Point2;
 
@@ -618,6 +619,20 @@ pub struct LinesStatsResult {
     pub occlusion_ms: f64,
 }
 
+impl From<Stats> for LinesStatsResult {
+    fn from(s: Stats) -> Self {
+        LinesStatsResult {
+            bodies: s.bodies,
+            shared_meshes: s.shared_meshes,
+            triangles: s.triangles,
+            segments: s.segments,
+            prepare_ms: s.prepare_ms,
+            projection_ms: s.projection_ms,
+            occlusion_ms: s.occlusion_ms,
+        }
+    }
+}
+
 /// A view's lines as a paper scene: the sheet's size and the view's one group of strokes (kind
 /// `view`, object 0), in paint order, in paper millimetres from the sheet's lower-left corner.
 #[derive(Debug, Serialize)]
@@ -629,27 +644,53 @@ impl JsonSchema for SceneResult {
         "ViewPaperScene".into()
     }
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
-        let segment = generator.subschema_for::<PathSegResult>();
-        let stroke = json!({
-            "type": "object",
-            "properties": {"kind": {"const": "stroke"}, "path": {"type": "array", "items": segment}, "closed": {"type": "boolean"}, "width_mm": {"type": "number", "exclusiveMinimum": 0}},
-            "required": ["kind", "path", "closed", "width_mm"],
-            "additionalProperties": false
-        });
-        let group = json!({
-            "type": "object",
-            "properties": {"object": {"type": "integer", "minimum": 0}, "kind": {"const": "view"}, "items": {"type": "array", "items": stroke}},
-            "required": ["object", "kind", "items"],
-            "additionalProperties": false
-        });
-        json_schema!({
-            "type": "object",
-            "properties": {"size_mm": point, "groups": {"type": "array", "items": group}},
-            "required": ["size_mm", "groups"],
-            "additionalProperties": false
-        })
+        paper_scene_schema(generator, &[ObjectKind::View], false)
     }
+}
+
+/// A paper scene's schema ([`solidcraft_geom::paper::Scene`]): its groups of `kinds`, each holding
+/// strokes, and fills too when `fills`.
+pub(super) fn paper_scene_schema(generator: &mut SchemaGenerator, kinds: &[ObjectKind], fills: bool) -> Schema {
+    let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
+    let segment = generator.subschema_for::<PathSegResult>();
+    let stroke = json!({
+        "type": "object",
+        "properties": {"kind": {"const": "stroke"}, "path": {"type": "array", "items": segment}, "closed": {"type": "boolean"}, "width_mm": {"type": "number", "exclusiveMinimum": 0}},
+        "required": ["kind", "path", "closed", "width_mm"],
+        "additionalProperties": false
+    });
+    let ring = json!({
+        "type": "object",
+        "properties": {"segs": {"type": "array", "items": segment}},
+        "required": ["segs"],
+        "additionalProperties": false
+    });
+    let region = json!({
+        "type": "object",
+        "properties": {"outer": ring, "holes": {"type": "array", "items": ring}},
+        "required": ["outer", "holes"],
+        "additionalProperties": false
+    });
+    let fill = json!({
+        "type": "object",
+        "properties": {"kind": {"const": "fill"}, "region": region},
+        "required": ["kind", "region"],
+        "additionalProperties": false
+    });
+    let items = if fills { json!({"anyOf": [stroke, fill]}) } else { stroke };
+    let kinds: Vec<Value> = kinds.iter().filter_map(|kind| serde_json::to_value(kind).ok()).collect();
+    let group = json!({
+        "type": "object",
+        "properties": {"object": {"type": "integer", "minimum": 0}, "kind": {"enum": kinds}, "items": {"type": "array", "items": items}},
+        "required": ["object", "kind", "items"],
+        "additionalProperties": false
+    });
+    json_schema!({
+        "type": "object",
+        "properties": {"size_mm": point, "groups": {"type": "array", "items": group}},
+        "required": ["size_mm", "groups"],
+        "additionalProperties": false
+    })
 }
 
 /// What `drawing.view.snapshot` returns.
