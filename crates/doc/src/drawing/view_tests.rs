@@ -166,6 +166,10 @@ fn the_views_rules_are_kept_on_reading() {
     };
     let missing = format!("its parent {nothing} isn't one of the drawing's views");
     assert_eq!(refused(&d, parent(1, &nothing)), rule(&top_id, &missing));
+    // Further up the chain, the view whose parent is missing is named. The top view is read
+    // before the right view, so its chain finds the right view's missing parent.
+    let further = format!("its chain of parents reaches view {right_id}, whose parent {nothing} isn't one of the drawing's views");
+    assert_eq!(refused(&d, parent(2, &nothing)), rule(&top_id, &further));
     assert_eq!(refused(&d, parent(1, &front_id)), "read");
     assert_eq!(refused(&d, parent(1, &top_id)), rule(&top_id, "its chain of parents loops"));
     assert_eq!(refused(&d, parent(0, &right_id)), rule(&front_id, "its chain of parents loops"), "two views");

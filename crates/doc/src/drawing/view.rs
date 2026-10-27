@@ -122,9 +122,15 @@ fn chain<'a>(id: u64, find: impl Fn(u64) -> Option<&'a View>) -> Result<Vec<&'a 
     let mut chain: Vec<&View> = Vec::new();
     let mut at = id;
     loop {
-        let view = find(at).ok_or_else(|| match chain.last() {
-            None => DocError::Invalid(format!("the drawing has no view {}", ids::encode(at))),
-            Some(_) => DocError::Invalid(format!("its parent {} isn't one of the drawing's views", ids::encode(at))),
+        let view = find(at).ok_or_else(|| match chain.as_slice() {
+            [] => DocError::Invalid(format!("the drawing has no view {}", ids::encode(at))),
+            [_] => DocError::Invalid(format!("its parent {} isn't one of the drawing's views", ids::encode(at))),
+            // Further up, the view whose parent is missing is named: it is that view's parent.
+            [.., child] => DocError::Invalid(format!(
+                "its chain of parents reaches view {}, whose parent {} isn't one of the drawing's views",
+                ids::encode(child.id),
+                ids::encode(at)
+            )),
         })?;
         require(chain.iter().all(|v| v.id != at), || "its chain of parents loops".into())?;
         chain.push(view);
