@@ -20,6 +20,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 use solidcraft_doc::drawing::Drawing;
+use solidcraft_doc::drawing::dimension::Dimension;
 use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{Looking, ViewDirection, ViewOverrides};
 use solidcraft_doc::ids;
@@ -86,7 +87,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&COPY_CONTRACT)
         .output(output_schema_for::<ToSheetResult>)
-        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for the copy's centre (default the sheet's centre); with_linked?: the views lined up with it copied too, lined up with the copy (true), or not (false); needed when it has any → {view: the copy, sheet, views: [the copies, its first], outside?: [those whose boundary leaves the sheet's drawing space]}. A copy follows none of the views it was copied from: a projected view copied alone becomes a base view, looking the way it did, with the settings it had. One undo step."),
+        .params("view: a saved view's id; sheet: id or name; position_mm?: [x, y] for the copy's centre (default the sheet's centre); with_linked?: the views lined up with it copied too, lined up with the copy (true), or not (false); needed when it has any → {view: the copy, sheet, views: [the copies, its first], outside?: [those whose boundary leaves the sheet's drawing space]}. A copy follows none of the views it was copied from: a projected view copied alone becomes a base view, looking the way it did, with the settings it had. Each view's dimensions are copied with it, with ids of their own. One undo step."),
 ];
 
 fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
@@ -411,11 +412,13 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let originals: Vec<u64> = std::iter::once(id).chain(linked.into_iter().filter(|_| with_linked)).collect();
-    let copies = originals
-        .iter()
+    // Each view's dimensions are part of what it shows, so they are copied with it.
+    let measured: Vec<u64> = record.dimensions.iter().filter(|d| originals.contains(&d.view)).map(|d| d.id).collect();
+    let mut copies = (0..originals.len() + measured.len())
         .map(|_| record.allocate_id(&mut s.ids))
         .collect::<solidcraft_doc::Result<Vec<u64>>>()
         .map_err(|e| bad(COPY, e.to_string()))?;
+    let dimension_copies = copies.split_off(originals.len());
     let copy_of = |old: u64| originals.iter().position(|o| *o == old).and_then(|i| copies.get(i)).copied();
     let sheet = s.edit_drawing(COPY, |d| {
         let (sheet, middle) = sheet_named(d, &request.sheet, COPY)?;
@@ -447,6 +450,15 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             made.push(Arc::new(view));
         }
         d.add_views(made);
+        let copied: Vec<Arc<Dimension>> = measured
+            .iter()
+            .zip(&dimension_copies)
+            .filter_map(|(old, new)| {
+                let original = d.dimension(*old)?;
+                Some(Arc::new(Dimension { id: *new, view: copy_of(original.view)?, ..original.clone() }))
+            })
+            .collect();
+        d.add_dimensions(copied);
         Ok(sheet)
     })?;
     let first = copies.first().copied().unwrap_or_default();

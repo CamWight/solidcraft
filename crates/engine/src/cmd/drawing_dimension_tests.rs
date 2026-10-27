@@ -112,6 +112,29 @@ fn an_added_dimension_is_one_undo_step() {
     assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), after);
 }
 
+/// A copied view's dimensions are copies with ids of their own, measuring the same, and one undo
+/// step takes the copy and them out.
+#[test]
+fn a_copied_view_takes_copies_of_its_dimensions() {
+    let (mut s, view) = front_view();
+    let original = run(&mut s, ADD, json!({"view": ids::encode(view), "kind": {"length": {"edge": [40, 0, 30]}}, "text": {"at": [0, 25]}}));
+    let before = s.drawing("test").unwrap().to_json().unwrap();
+    let reply = run(&mut s, "drawing.view.copy_to_sheet", json!({"view": ids::encode(view), "sheet": "Sheet 1", "position_mm": [100, 100]}));
+    let copy = reply["view"].clone();
+    let listed = run(&mut s, "drawing.view.inspect", json!({"view": copy}))["dimensions"].clone();
+    let [copied] = listed.as_array().map(Vec::as_slice).unwrap_or_default() else { panic!("one copied dimension: {listed}") };
+    assert_ne!(copied, &original["dimension"]);
+    let read = run(&mut s, INSPECT, json!({"dimension": copied}));
+    reads(&read, 80.0, "80.00");
+    assert_eq!(read["view"], copy);
+    let (mine, theirs) = (&read["record"], &original["record"]);
+    assert_eq!((&mine["kind"], &mine["text"], &mine["offset_mm"]), (&theirs["kind"], &theirs["text"], &theirs["offset_mm"]));
+    // The original keeps its own.
+    assert_eq!(run(&mut s, "drawing.view.inspect", json!({"view": ids::encode(view)}))["dimensions"], json!([original["dimension"]]));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), before);
+}
+
 /// An edit changes only what it is given and names only what changed; the same values again
 /// change nothing and add no undo step, and `null` shows the number again.
 #[test]
