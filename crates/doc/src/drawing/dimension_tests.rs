@@ -227,6 +227,17 @@ fn the_dimensions_rules_are_kept_on_reading() {
     assert_eq!(many(MAX_DIMENSIONS + 1), Err(format!("damaged drawing: a drawing has at most {MAX_DIMENSIONS} dimensions")));
 }
 
+/// Two lines at 45° read 45°, and 135° on the other side, whichever way each runs: the angle
+/// between their directions is 45° or 135° by how the kernel runs the edges.
+#[test]
+fn an_angle_between_lines_reads_the_same_whichever_way_they_run() {
+    let (acute, obtuse) = (45f64.to_radians(), 135f64.to_radians());
+    for between in [acute, obtuse] {
+        assert!((between_lines(between, false) - acute).abs() < 1e-12, "{between}");
+        assert!((between_lines(between, true) - obtuse).abs() < 1e-12, "{between}");
+    }
+}
+
 /// A direction along a picked line saves as its plane coordinates and reads back as the same
 /// direction: what W19a measures along.
 #[test]
