@@ -8,14 +8,24 @@
 //! then moved to its centre, so the same lines on the same centre are the same bytes however they
 //! got there. It reads the model as it is: no model is evaluated.
 //!
+//! The sheet page draws through the provider instead, which keeps each view's lines between frames:
+//! [`extract`] returns the last scene at once and says which views are out of date, and [`step`]
+//! brings one of them up to date, a short piece of work for the UI's tick. A view moved across its
+//! sheet is moved, never projected again. The provider evaluates no model either. Its cache is the
+//! session's view state, beside the drawing: never saved, never an undo step, and dropped when its
+//! drawing closes.
+//!
 //! [`SheetLayout::paper`]: solidcraft_geom::drawing_sheet::SheetLayout::paper
 
 use std::borrow::Borrow;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use solidcraft_doc::drawing::view::ResolvedView;
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
-use solidcraft_doc::{DocError, ids};
+use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, Scene};
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 
@@ -25,6 +35,10 @@ use crate::{EngineError, Result, Session};
 
 /// The command the sheet scene answers for, in its errors.
 pub const CMD: &str = "drawing.scene";
+
+/// Numbers every scene the provider assembles, in every session, so a page never sees one number
+/// for two scenes, not even across closing and opening its drawing.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 
 /// What became of one view of a sheet scene.
 #[derive(Clone, Debug, PartialEq)]
@@ -64,6 +78,19 @@ pub struct SheetScene {
     pub scene: Scene,
     /// Each view on the sheet, in id order.
     pub views: Vec<ViewState>,
+}
+
+/// One sheet as the provider last drew it ([`extract`]).
+#[derive(Clone, Debug)]
+pub struct SheetView {
+    pub scene: Arc<Scene>,
+    /// Goes up each time `scene` changes, so the page redraws only then.
+    pub generation: u64,
+    /// Each view on the sheet drawn so far, in id order, as it was last drawn.
+    pub views: Vec<ViewState>,
+    /// The views out of date, in id order: not drawn yet, or drawn from another model or with other
+    /// settings than they have now. Their last lines stay in the scene until [`step`] draws them.
+    pub stale: Vec<u64>,
 }
 
 /// Sheet `sheet` of `drawing`, one of `s`'s design's drawings, drawn at once: its border, then each
@@ -205,6 +232,133 @@ fn reason(e: EngineError) -> String {
     match e {
         EngineError::BadParams { msg, .. } => msg,
         e => e.to_string(),
+    }
+}
+
+/// The provider's cache: per view, the lines it was last drawn with. The session holds one, for
+/// the drawing open.
+#[derive(Default)]
+pub struct Cache {
+    /// The drawing it is for.
+    drawing: Option<u64>,
+    /// The sheet last extracted: the one [`step`] brings up to date.
+    sheet: Option<u64>,
+    /// Each view's last drawing, by id.
+    views: BTreeMap<u64, Entry>,
+    /// The shown set of the world state views were last drawn from, worked out once for it.
+    shown: Option<(Arc<ModelState>, std::result::Result<ShownSet, Unmeasured>)>,
+    last: Option<Assembled>,
+    /// Numbers each view drawn, so a scene is assembled again only when one of its views was.
+    serial: u64,
+    /// Views drawn, for tests: a move draws none.
+    #[cfg(test)]
+    projections: usize,
+}
+
+/// A view's last drawing, and what it was drawn from: the world state (held, so its address can't
+/// be reused while it is compared) and the view as it drew.
+struct Entry {
+    state: Arc<ModelState>,
+    view: ResolvedView,
+    drawn: Drawn,
+    serial: u64,
+}
+
+/// What a scene is assembled from: the sheet's record, and each view on it with its entry's serial
+/// (0: not drawn yet) and its centre.
+#[derive(PartialEq)]
+struct Inputs {
+    sheet: Sheet,
+    views: Vec<(u64, u64, Vec2)>,
+}
+
+/// The last answer of [`extract`], for the sheet, drawing, world state and serial it was for: the
+/// same four again return it as it is.
+struct Assembled {
+    sheet: u64,
+    drawing: Arc<Drawing>,
+    state: Arc<ModelState>,
+    serial: u64,
+    inputs: Inputs,
+    answer: SheetView,
+}
+
+impl Cache {
+    /// Whether view `id`, drawing as `view` now, was last drawn so, from `state`.
+    fn fresh(&self, id: u64, state: &Arc<ModelState>, view: &ResolvedView) -> bool {
+        self.views.get(&id).is_some_and(|e| Arc::ptr_eq(&e.state, state) && e.view == *view)
+    }
+}
+
+/// Sheet `sheet` of the drawing open, as the provider last drew it: at once, as nothing is drawn
+/// here. The first call for a sheet gives its border, with every view out of date.
+pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
+    forget_closed(s);
+    let d = s.drawing(CMD)?.clone();
+    let state = s.world_state();
+    let cache = &mut s.drawing_scenes;
+    if let Some(last) = &cache.last
+        && last.sheet == sheet
+        && last.serial == cache.serial
+        && Arc::ptr_eq(&last.drawing, &d)
+        && Arc::ptr_eq(&last.state, &state)
+    {
+        return Ok(last.answer.clone());
+    }
+    let record = sheet_of(&d, sheet)?;
+    let on = views_on(&d, sheet)?;
+    cache.drawing = Some(d.id);
+    cache.sheet = Some(sheet);
+    let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &state, view)).map(|(id, ..)| *id).collect();
+    let serial = |id: &u64| cache.views.get(id).map_or(0, |e| e.serial);
+    let inputs = Inputs { sheet: record.clone(), views: on.iter().map(|(id, _, centre)| (*id, serial(id), *centre)).collect() };
+    let (scene, views, generation) = match cache.last.take() {
+        Some(last) if last.inputs == inputs => (last.answer.scene, last.answer.views, last.answer.generation),
+        _ => {
+            // Views no longer in the drawing are forgotten: each holds a world state.
+            let kept: BTreeSet<u64> = d.views.iter().map(|v| v.id).collect();
+            cache.views.retain(|id, _| kept.contains(id));
+            let drawn = on.iter().filter_map(|(id, _, centre)| cache.views.get(id).map(|e| (*id, *centre, &e.drawn)));
+            let (scene, views) = assemble(record, drawn)?;
+            (Arc::new(scene), views, GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
+        }
+    };
+    let answer = SheetView { scene, generation, views, stale };
+    cache.last = Some(Assembled { sheet, drawing: d, state, serial: cache.serial, inputs, answer: answer.clone() });
+    Ok(answer)
+}
+
+/// Draws the first view out of date on the sheet last extracted, and says whether more are
+/// waiting: a short piece of work for the UI's tick, one view's projection.
+pub fn step(s: &mut Session) -> bool {
+    forget_closed(s);
+    let (Ok(d), Some(sheet)) = (s.drawing(CMD).cloned(), s.drawing_scenes.sheet) else { return false };
+    let Ok(on) = views_on(&d, sheet) else { return false };
+    let state = s.world_state();
+    let waiting: Vec<(u64, ResolvedView)> =
+        on.into_iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &state, view)).map(|(id, view, _)| (id, view)).collect();
+    let Some(&(id, view)) = waiting.first() else { return false };
+    let shown = match s.drawing_scenes.shown.take() {
+        Some((was, shown)) if Arc::ptr_eq(&was, &state) => shown,
+        _ => crate::drawing_view::shown(s),
+    };
+    let drawn = draw(s, &shown, id, &view);
+    let cache = &mut s.drawing_scenes;
+    cache.shown = Some((state.clone(), shown));
+    cache.serial += 1;
+    cache.views.insert(id, Entry { state, view, drawn, serial: cache.serial });
+    #[cfg(test)]
+    {
+        cache.projections += 1;
+    }
+    waiting.len() > 1
+}
+
+/// Drops the cache once its drawing isn't the one open: closing a drawing (or opening another) ends
+/// its scenes, and the world states they hold. [`Session::execute`] calls it after every command.
+pub(crate) fn forget_closed(s: &mut Session) {
+    if s.drawing_scenes.drawing.is_some_and(|d| s.open_drawing != Some(d)) {
+        s.drawing_scenes = Cache::default();
     }
 }
 
