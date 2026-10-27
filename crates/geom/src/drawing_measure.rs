@@ -6,6 +6,8 @@
 //! `foreshortened` says a measured line isn't parallel to the view's plane, so the two differ. The
 //! view's scale and place on the sheet never change a measurement.
 
+use serde::{Deserialize, Serialize};
+
 use crate::drawing_view::{Invalid, PARALLEL, require};
 use crate::section::{MAX_NUMBER, validate_plane};
 use crate::{EPS, Plane, Vec2, Vec3};
@@ -13,7 +15,8 @@ use crate::{EPS, Plane, Vec2, Vec3};
 type Result<T> = std::result::Result<T, Invalid>;
 
 /// Which way a linear dimension measures on its view.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum LinearDirection {
     /// Along the view's horizontal (paper x).
     Horizontal,
@@ -27,7 +30,8 @@ pub enum LinearDirection {
 }
 
 /// What a dimension reads: the length or angle as the view shows it, or as the model has it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Reading {
     Projected,
     True,

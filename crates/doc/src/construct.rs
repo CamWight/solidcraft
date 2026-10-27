@@ -177,7 +177,7 @@ fn edge_points(st: &ModelState, at: Vec3, name: &Option<String>) -> Result<Vec<V
 }
 
 /// The most edge names a vertex reference keeps.
-const MAX_VERTEX_EDGES: usize = 16;
+pub(crate) const MAX_VERTEX_EDGES: usize = 16;
 
 /// Where the edges named `names` meet: the end every one of them has, nearest `at` (two edges
 /// between the same two vertices share both). `None` when an edge is gone or they share no end.

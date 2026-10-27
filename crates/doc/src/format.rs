@@ -1138,7 +1138,7 @@ fn validate_freeform_offsets(value: &Value) -> Result<()> {
 
 /// Largest coordinate or size a design may hold (mm): a kilometre-scale part is already far
 /// outside what the kernel's tolerances serve.
-const MAX_REAL: f64 = 1e9;
+pub(crate) const MAX_REAL: f64 = 1e9;
 
 /// Every non-integer number in a `noun`'s file is finite and within ±`MAX_REAL` (a damaged or
 /// hostile file is refused instead of overflowing the geometry later).
