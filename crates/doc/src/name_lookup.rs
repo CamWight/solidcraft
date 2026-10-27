@@ -8,6 +8,8 @@
 //! was worked out from geometry, found where the reference's point no longer lies, is reported:
 //! only geometry decided.
 
+use std::sync::Arc;
+
 use solidcraft_geom::{Mesh, Vec3};
 
 use crate::history_names::{Match, Names};
@@ -45,49 +47,88 @@ pub struct EdgeHit {
     pub legacy: bool,
 }
 
-/// The edge of a body a stored edge name finds: the edge with that name; else the one edge
-/// between the faces it names (followed through splits and merges of those faces); else the
+/// A body's edge names and face names, worked out once for every edge name looked up on it.
+pub(crate) struct BodyEdges {
+    pub(crate) mesh: Arc<Mesh>,
+    names: Vec<String>,
+    faces: Arc<Names>,
+}
+
+/// The edges of a body a stored edge name matches, before a picked point decides between them.
+pub(crate) enum EdgeMatch {
+    /// The edge with that name, or the one edge between the faces it names.
+    Edge(usize),
+    /// Pieces of it: the faces it names meet along several edges now, or only a piece of one of
+    /// them is left.
+    Pieces(Vec<usize>),
+}
+
+impl BodyEdges {
+    pub(crate) fn new(b: &ModelBody) -> BodyEdges {
+        BodyEdges { mesh: b.mesh(), names: edge_names(b), faces: naming::names(b) }
+    }
+
+    /// Whether edge `i`'s name follows exact history: the faces it separates do, and it isn't one
+    /// of several edges between them, numbered by where they lie.
+    pub(crate) fn verified(&self, i: usize) -> bool {
+        self.mesh.edge_faces.get(i).is_some_and(|fs| fs.iter().all(|f| self.faces.verified(*f as usize)))
+            && self.names.get(i).is_some_and(|n| strip_edge_number(n).len() == n.len())
+    }
+
+    /// What the stored edge name `name` matches: the edge with that name; else the one edge
+    /// between the faces it names (followed through splits and merges of those faces); else the
+    /// pieces of it. `None` when nothing does.
+    pub(crate) fn matching(&self, name: &str) -> Option<EdgeMatch> {
+        if let Some(i) = self.names.iter().position(|n| n == name) {
+            return Some(EdgeMatch::Edge(i));
+        }
+        // By the faces it separates: the best way any edge matches.
+        let wanted = strip_edge_number(name);
+        let mut best: Option<(Match, Vec<usize>)> = None;
+        for (i, fs) in self.mesh.edge_faces.iter().enumerate() {
+            let [fa, fb] = fs.as_slice() else { continue };
+            let Some(level) = edge_match(&self.faces, *fa as usize, *fb as usize, wanted) else { continue };
+            keep_best(&mut best, level, i);
+        }
+        let (level, cands) = best?;
+        let one = match cands.as_slice() {
+            [i] if level >= Match::Piece => Some(*i),
+            _ => None,
+        };
+        Some(one.map_or(EdgeMatch::Pieces(cands), EdgeMatch::Edge))
+    }
+}
+
+/// The edge of a body a stored edge name finds: the edge [`BodyEdges::matching`] gives, else the
 /// piece of it nearest `near` (`split`). `Err` explains when there is none.
 pub fn locate_edge(b: &ModelBody, name: &str, near: Vec3) -> Result<EdgeHit, String> {
     if let Some(old) = legacy_name(name) {
         return legacy_locate_edge(b, old, near).map_err(|_| format!("edge `{name}` no longer exists"));
     }
-    let m = b.mesh();
-    let names = edge_names(b);
-    let faces = naming::names(b);
-    let mid = |i: usize| edge_mid(&m, i);
-    // Several edges between the same two faces are numbered by where they lie: not exact.
-    let verified = |i: usize| {
-        m.edge_faces.get(i).is_some_and(|fs| fs.iter().all(|f| faces.verified(*f as usize)))
-            && names.get(i).is_some_and(|n| strip_edge_number(n).len() == n.len())
-    };
-    let exact = |i: usize| -> Result<EdgeHit, String> {
-        let on = edge_near(b, &m, i, near);
-        mid(i)
-            .map(|p| EdgeHit { edge: i, point: if on { near } else { p }, split: false, verified: verified(i), on_point: on, legacy: false })
-            .ok_or_else(|| "edge".into())
-    };
-    if let Some(i) = names.iter().position(|n| n == name) {
-        return exact(i);
+    let edges = BodyEdges::new(b);
+    let m = &edges.mesh;
+    let gone = || format!("edge `{name}` no longer exists");
+    match edges.matching(name).ok_or_else(gone)? {
+        EdgeMatch::Edge(i) => {
+            let on = edge_near(b, m, i, near);
+            edge_mid(m, i)
+                .map(|p| EdgeHit {
+                    edge: i,
+                    point: if on { near } else { p },
+                    split: false,
+                    verified: edges.verified(i),
+                    on_point: on,
+                    legacy: false,
+                })
+                .ok_or_else(|| "edge".into())
+        }
+        EdgeMatch::Pieces(cands) => cands
+            .iter()
+            .filter_map(|i| edge_mid(m, *i).map(|p| (p, *i)))
+            .min_by(|a, b| a.0.dist(near).total_cmp(&b.0.dist(near)))
+            .map(|(p, i)| EdgeHit { edge: i, point: p, split: true, verified: edges.verified(i), on_point: false, legacy: false })
+            .ok_or_else(gone),
     }
-    // By the faces it separates: the best way any edge matches.
-    let wanted = strip_edge_number(name);
-    let mut best: Option<(Match, Vec<usize>)> = None;
-    for (i, fs) in m.edge_faces.iter().enumerate() {
-        let [fa, fb] = fs.as_slice() else { continue };
-        let Some(level) = edge_match(&faces, *fa as usize, *fb as usize, wanted) else { continue };
-        keep_best(&mut best, level, i);
-    }
-    let (level, cands) = best.ok_or_else(|| format!("edge `{name}` no longer exists"))?;
-    if let ([i], true) = (cands.as_slice(), level >= Match::Piece) {
-        return exact(*i);
-    }
-    cands
-        .iter()
-        .filter_map(|i| mid(*i).map(|p| (p, *i)))
-        .min_by(|a, b| a.0.dist(near).total_cmp(&b.0.dist(near)))
-        .map(|(p, i)| EdgeHit { edge: i, point: p, split: true, verified: verified(i), on_point: false, legacy: false })
-        .ok_or_else(|| format!("edge `{name}` no longer exists"))
 }
 
 /// Whether the picked point `near` lies on edge `i` of body `b` (whose mesh is `m`): then a
