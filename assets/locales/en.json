@@ -572,6 +572,7 @@
   "cmd.drawing_properties": "Drawing Properties",
   "cmd.drawing_properties_remove": "Remove Drawing Property",
   "cmd.drawing_properties_set": "Change Drawing Properties",
+  "cmd.drawing_scene": "Draw Sheet",
   "cmd.drawing_set": "Drawing Settings",
   "cmd.drawing_sheet_add": "Add Sheet",
   "cmd.drawing_sheet_delete": "Delete Sheet",

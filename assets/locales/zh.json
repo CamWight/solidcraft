@@ -572,6 +572,7 @@
   "cmd.drawing_properties": "绘图属性",
   "cmd.drawing_properties_remove": "删除绘图属性",
   "cmd.drawing_properties_set": "更改绘图属性",
+  "cmd.drawing_scene": "绘制图纸",
   "cmd.drawing_set": "绘图设置",
   "cmd.drawing_sheet_add": "添加图纸",
   "cmd.drawing_sheet_delete": "删除图纸",
