@@ -31,8 +31,13 @@ fn front() -> (Drawing, IdSource, u64) {
 fn add(d: &mut Drawing, id_source: &mut IdSource, kind: ViewKind, place: ViewPlace, settings: ViewOverrides) -> u64 {
     let id = d.allocate_id(id_source).unwrap();
     let sheet = d.sheets[0].id;
-    d.views.push(Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 }));
+    d.add_views([Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 })]);
     id
+}
+
+/// View `id` of `d`, to change.
+fn view_mut(d: &mut Drawing, id: u64) -> &mut View {
+    d.views.iter_mut().find(|v| v.id == id).map(Arc::make_mut).unwrap()
 }
 
 fn projected(parent: u64, side: ProjectedSide) -> ViewKind {
@@ -69,9 +74,9 @@ fn refused(d: &Drawing, edit: impl FnOnce(&mut Value)) -> String {
     Drawing::from_json(&v.to_string()).map_or_else(|e| e.to_string(), |_| "read".into())
 }
 
-/// A view saves its kind, its place and what it sets itself, and nothing it leaves out; the
-/// drawing saves its projection. It reads back as saved, the same bytes again, and an older
-/// drawing reads with no views, in third angle.
+/// A view saves its kind, its place and what it sets itself, and nothing it leaves out; the views
+/// save by id, and the drawing saves its projection. It reads back as saved, the same bytes again,
+/// and an older drawing reads with no views, in third angle.
 #[test]
 fn views_save_what_they_set_and_read_back_as_saved() {
     let (d, _, [front, right, top]) = three();
@@ -82,8 +87,8 @@ fn views_save_what_they_set_and_read_back_as_saved() {
         v["views"],
         json!([
             {"id": front_id, "sheet": sheet, "kind": {"base": {"source": source, "view": "front"}}, "place": {"at": [150.0, 150.0]}, "settings": {"scale": "1:2"}},
-            {"id": right_id, "sheet": sheet, "kind": {"projected": {"parent": front_id, "side": "right"}}, "place": {"aligned": 320.0}, "settings": {"display_style": "visible_hidden"}},
             {"id": top_id, "sheet": sheet, "kind": {"projected": {"parent": right_id, "side": "above"}}, "place": {"at": [320.0, 250.0]}},
+            {"id": right_id, "sheet": sheet, "kind": {"projected": {"parent": front_id, "side": "right"}}, "place": {"aligned": 320.0}, "settings": {"display_style": "visible_hidden"}},
         ])
     );
     let reopened = Drawing::from_json(&d.to_json().unwrap()).unwrap();
@@ -101,6 +106,35 @@ fn views_save_what_they_set_and_read_back_as_saved() {
     assert_eq!(file(&old).get("views"), None, "no views, none written");
 }
 
+/// A drawing lists its views by id, whatever order they were added in: the same views added the
+/// other way round make the same drawing and save as the same bytes. A file that lists them in
+/// another order (saved before views went by id, or edited by hand) reads by id and saves as those
+/// bytes. An edit that leaves them in another order breaks the record's rule.
+#[test]
+fn views_are_listed_by_id_whatever_order_they_were_added_in() {
+    let (d, _, added) = three();
+    let mut by_id = added.to_vec();
+    by_id.sort_unstable();
+    assert_ne!(by_id, added, "the seed's ids aren't in the order the views were added in");
+    let listed = |d: &Drawing| d.views.iter().map(|v| v.id).collect::<Vec<_>>();
+    let saved: Vec<u64> = file(&d)["views"].as_array().unwrap().iter().map(|v| ids::decode(v["id"].as_str().unwrap()).unwrap()).collect();
+    assert_eq!((listed(&d), saved), (by_id.clone(), by_id.clone()));
+    let mut reversed = d.clone();
+    reversed.views.clear();
+    reversed.add_views(d.views.iter().rev().cloned());
+    assert_eq!(reversed, d);
+    let bytes = d.to_json().unwrap();
+    assert_eq!(reversed.to_json().unwrap(), bytes);
+    let mut other_order = file(&d);
+    other_order["views"].as_array_mut().unwrap().reverse();
+    let reopened = Drawing::from_json(&other_order.to_string()).unwrap();
+    assert_eq!(reopened, d);
+    assert_eq!((listed(&reopened), reopened.to_json().unwrap()), (by_id, bytes));
+    let mut unsorted = d.clone();
+    unsorted.views.reverse();
+    assert_eq!(unsorted.validate().unwrap_err().to_string(), "a drawing lists its views by id");
+}
+
 /// What reading refuses, each rule by name: where a view is and what it draws, its parents, its
 /// place and margin, its settings, its id, and how many views there are.
 #[test]
@@ -109,9 +143,10 @@ fn the_views_rules_are_kept_on_reading() {
     let [front_id, right_id, top_id] = [front, right, top].map(ids::encode);
     let nothing = ids::encode(99);
     let rule = |id: &str, rule: &str| format!("damaged drawing: view {id}: {rule}");
+    // The file lists the views by id: front ([0]), top ([1]), then right ([2]).
     // Where it is and what it draws.
     let on = format!("it is on sheet {nothing}, which the drawing doesn't have");
-    assert_eq!(refused(&d, |v| v["views"][1]["sheet"] = json!(nothing)), rule(&right_id, &on));
+    assert_eq!(refused(&d, |v| v["views"][2]["sheet"] = json!(nothing)), rule(&right_id, &on));
     let draws = format!("it draws source {nothing}, which the drawing doesn't have");
     assert_eq!(refused(&d, |v| v["views"][0]["kind"]["base"]["source"] = json!(nothing)), rule(&front_id, &draws));
     let no_scale = refused(&d, |v| {
@@ -130,9 +165,9 @@ fn the_views_rules_are_kept_on_reading() {
         move |v: &mut Value| v["views"][view]["kind"] = json!({"projected": {"parent": parent, "side": "left"}})
     };
     let missing = format!("its parent {nothing} isn't one of the drawing's views");
-    assert_eq!(refused(&d, parent(1, &nothing)), rule(&right_id, &missing));
+    assert_eq!(refused(&d, parent(1, &nothing)), rule(&top_id, &missing));
     assert_eq!(refused(&d, parent(1, &front_id)), "read");
-    assert_eq!(refused(&d, parent(1, &right_id)), rule(&right_id, "its chain of parents loops"));
+    assert_eq!(refused(&d, parent(1, &top_id)), rule(&top_id, "its chain of parents loops"));
     assert_eq!(refused(&d, parent(0, &right_id)), rule(&front_id, "its chain of parents loops"), "two views");
     assert_eq!(refused(&d, parent(0, &top_id)), rule(&front_id, "its chain of parents loops"), "three views");
     // A view lined up with its parent is on its parent's sheet; one placed apart may be on any.
@@ -149,17 +184,17 @@ fn the_views_rules_are_kept_on_reading() {
     }));
     let other_id = ids::encode(other);
     assert_eq!(
-        refused(&d, |v| v["views"][1]["sheet"] = json!(other_id)),
+        refused(&d, |v| v["views"][2]["sheet"] = json!(other_id)),
         rule(&right_id, "a view lined up with its parent is on its parent's sheet")
     );
-    assert_eq!(refused(&d, |v| v["views"][2]["sheet"] = json!(other_id)), "read");
+    assert_eq!(refused(&d, |v| v["views"][1]["sheet"] = json!(other_id)), "read");
     // Its place and its reference margin.
     let off_paper = "its place is at most 5000 mm from the sheet's origin";
-    assert_eq!(refused(&d, |v| v["views"][2]["place"] = json!({"at": [5000.0, -5000.0]})), "read");
-    assert_eq!(refused(&d, |v| v["views"][2]["place"] = json!({"at": [5000.001, 0.0]})), rule(&top_id, off_paper));
-    assert_eq!(refused(&d, |v| v["views"][1]["place"] = json!({"aligned": -5000.001})), rule(&right_id, off_paper));
+    assert_eq!(refused(&d, |v| v["views"][1]["place"] = json!({"at": [5000.0, -5000.0]})), "read");
+    assert_eq!(refused(&d, |v| v["views"][1]["place"] = json!({"at": [5000.001, 0.0]})), rule(&top_id, off_paper));
+    assert_eq!(refused(&d, |v| v["views"][2]["place"] = json!({"aligned": -5000.001})), rule(&right_id, off_paper));
     for (margin, read) in [(0.0, true), (100_000.0, true), (-0.001, false), (100_000.001, false)] {
-        let why = refused(&d, |v| v["views"][2]["reference_margin_mm"] = json!(margin));
+        let why = refused(&d, |v| v["views"][1]["reference_margin_mm"] = json!(margin));
         let expected = if read { "read".to_string() } else { rule(&top_id, "its reference margin is 0 to 100000 model millimetres") };
         assert_eq!(why, expected, "{margin}");
     }
@@ -219,7 +254,7 @@ fn a_chain_of_views_is_at_most_its_depth() {
 #[test]
 fn a_view_resolves_through_its_chain() {
     let (mut d, _, [front, right, top]) = three();
-    let view = Arc::make_mut(&mut d.views[2]);
+    let view = view_mut(&mut d, top);
     view.settings.tangent_edges = Some(TangentEdges::Show);
     view.reference_margin_mm = 2.0;
     let resolved = d.resolve_view(top).unwrap();
@@ -239,7 +274,7 @@ fn a_view_resolves_through_its_chain() {
     d.projection = Projection::First;
     assert_eq!(d.resolve_view(right).unwrap().basis, NamedView::Left.basis());
     // A view's own setting wins over its parent's.
-    Arc::make_mut(&mut d.views[2]).settings.display_style = Some(VisualStyle::Visible);
+    view_mut(&mut d, top).settings.display_style = Some(VisualStyle::Visible);
     assert_eq!(d.resolve_view(top).unwrap().display_style, Setting { value: VisualStyle::Visible, set_by: SetBy::This });
     // Four quarter turns the same way bring the front view back.
     let (mut d, mut id_source, front) = self::front();
@@ -265,9 +300,9 @@ fn a_views_centre_is_its_point_or_lined_up_with_its_parent() {
     let centres = |d: &Drawing| [front, right, top, back, below].map(|id| d.view_centre(id).unwrap());
     let at = |x, y| Vec2::new(x, y);
     assert_eq!(centres(&d), [at(150.0, 150.0), at(320.0, 150.0), at(320.0, 250.0), at(450.0, 150.0), at(320.0, 60.0)]);
-    Arc::make_mut(&mut d.views[0]).place = ViewPlace::At([140.0, 130.0]);
+    view_mut(&mut d, front).place = ViewPlace::At([140.0, 130.0]);
     assert_eq!(centres(&d), [at(140.0, 130.0), at(320.0, 130.0), at(320.0, 250.0), at(450.0, 130.0), at(320.0, 60.0)]);
-    Arc::make_mut(&mut d.views[0]).place = ViewPlace::Aligned(10.0);
+    view_mut(&mut d, front).place = ViewPlace::Aligned(10.0);
     for id in [front, right, top, back, below] {
         assert_eq!(d.view_centre(id).unwrap_err().to_string(), format!("base view {} isn't placed at a point", ids::encode(front)));
     }
