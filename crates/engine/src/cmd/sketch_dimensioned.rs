@@ -307,7 +307,7 @@ fn place_from_origin(scratch: &mut Session, out: &Value, params: &Value, mut dof
 /// points have z = 0 (a 3D frame would read its points' own z).
 fn coordinate(s: &Session, params: &Value, point: &str) -> Option<Vec3> {
     let id = super::sketch_store::target(s, params, "sketch.draw.dimensioned").ok()?;
-    let sketch = s.doc.sketch(id).ok()?;
+    let sketch = super::sketch_store::read(&s.doc, id).ok()?;
     let at = sketch.point(sketch.resolve_point(point)?)?;
     Some(Vec3::new(at.x, at.y, 0.0))
 }
