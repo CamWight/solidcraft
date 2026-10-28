@@ -35,7 +35,7 @@
 use solidcraft_geom::Vec2;
 
 use crate::model::{ConstraintKind, CurveKind, MAX_COORD, Sketch, in_range, radius_in_range};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 /// Two intersections closer than this (relative to the size of the loci: radii, centre
 /// distance) are one touching intersection.

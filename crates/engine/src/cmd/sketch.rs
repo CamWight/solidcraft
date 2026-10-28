@@ -2,6 +2,7 @@
 
 use serde_json::{Value, json};
 use solidcraft_doc::{FeatureKind, PlaneRef, expr::Kind};
+use solidcraft_geom::union_find::{find, union};
 use solidcraft_geom::{Plane, Vec2, Vec3};
 use solidcraft_sketch::{Analysis, Budget, ConstraintKind, CurveKind, Hold, PointExprs, Sketch, SolveReport, TwoCircles, solve, solve_with};
 
@@ -1039,26 +1040,12 @@ fn axis_implied(sk: &Sketch, l: usize, horizontal: bool, own: &str) -> bool {
     let (a, b) = (*a, *b);
     // Coincident points as one (union-find over the coincident constraints).
     let mut parent: Vec<usize> = (0..sk.points.len()).collect();
-    let root = |parent: &[usize], mut i: usize| {
-        for _ in 0..parent.len() {
-            match parent.get(i) {
-                Some(&up) if up != i => i = up,
-                _ => break,
-            }
-        }
-        i
-    };
     for c in &sk.constraints {
         if let ConstraintKind::Coincident { p, q } = c.kind {
-            let (rp, rq) = (root(&parent, p), root(&parent, q));
-            if rp != rq
-                && let Some(slot) = parent.get_mut(rp)
-            {
-                *slot = rq;
-            }
+            union(&mut parent, p, q);
         }
     }
-    let (ra, rb) = (root(&parent, a), root(&parent, b));
+    let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
     sk.constraints.iter().filter(|c| c.id != own).any(|c| {
         let ends = match (&c.kind, horizontal) {
             (ConstraintKind::Horizontal { l: m }, true) | (ConstraintKind::Vertical { l: m }, false) if *m != l => {
@@ -1071,7 +1058,7 @@ fn axis_implied(sk: &Sketch, l: usize, horizontal: bool, own: &str) -> bool {
             _ => None,
         };
         ends.is_some_and(|(p, q)| {
-            let (rp, rq) = (root(&parent, p), root(&parent, q));
+            let (rp, rq) = (find(&mut parent, p), find(&mut parent, q));
             rp != rq && ((rp, rq) == (ra, rb) || (rp, rq) == (rb, ra))
         })
     })

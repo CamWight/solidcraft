@@ -31,6 +31,7 @@ pub mod simplify;
 pub mod spline_space;
 pub mod tess;
 pub mod tspline;
+pub mod union_find;
 mod unit_vec3;
 mod vec;
 

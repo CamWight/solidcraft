@@ -14,7 +14,7 @@ use solidcraft_geom::{Loop2, Region2, Ring, Seg2, Vec2};
 
 use crate::model::{CurveKind, Sketch};
 use crate::shape::{Shape, intersections_within};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 const MERGE_TOL: f64 = 1e-6;
 const MAX_EDGES: usize = 50_000;

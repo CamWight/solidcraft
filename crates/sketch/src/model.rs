@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::{Aabb2, Seg2, Vec2, Vec3};
 
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 /// Hard caps that keep hostile input from exhausting memory or time.
 pub const MAX_POINTS: usize = 20_000;

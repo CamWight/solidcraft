@@ -39,7 +39,6 @@ mod solver;
 mod spline_points;
 mod text;
 mod thin;
-mod union_find;
 mod wire;
 
 pub use curves::{

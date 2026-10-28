@@ -7,9 +7,11 @@ use super::{
 use crate::{
     Budget, CurveKind, Sketch,
     linalg::{Mat, rref},
+};
+use solidcraft_geom::{
+    Vec2,
     union_find::{find, union},
 };
-use solidcraft_geom::Vec2;
 
 const MAX_VARIABLES: usize = 400;
 const MAX_STEPS: usize = 96;

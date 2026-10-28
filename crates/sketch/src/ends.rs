@@ -12,7 +12,7 @@
 use solidcraft_geom::{Aabb2, Seg2, Vec2};
 
 use crate::model::{ConstraintKind, CurveKind, Sketch};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 /// How close an end has to be to another curve to touch it: the distance at which profile
 /// finding joins and splits curves.

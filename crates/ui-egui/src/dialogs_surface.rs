@@ -9,6 +9,7 @@ use solidcraft_engine::Sel;
 use solidcraft_engine::doc::expr::Kind as ValueKind;
 use solidcraft_engine::doc::{AxisRef, Direction, FaceAt, FeatureKind, Mat, PlaneRef, Position, ProfileSel, RuledCorners, RuledMode};
 use solidcraft_engine::geom::Vec3;
+use solidcraft_engine::geom::union_find::{find, union};
 
 use crate::SolveApp;
 use crate::dialogs::{Kind, OP_LABELS, OPS, combo, form_row, op_index};
@@ -438,29 +439,17 @@ fn chains(app: &SolveApp, picks: &[Sel]) -> Result<Vec<Chain>, String> {
     let meet = |a: &[Vec3; 2], b: &[Vec3; 2]| a.iter().any(|p| b.iter().any(|q| p.dist(*q) <= 1e-6 * (1.0 + p.len())));
     // Union the picks that meet, keeping the first pick of each chain in front.
     let mut group: Vec<usize> = (0..parts.len()).collect();
-    fn root(group: &[usize], mut i: usize) -> usize {
-        while let Some(&g) = group.get(i) {
-            if g == i {
-                break;
-            }
-            i = g;
-        }
-        i
-    }
     for i in 0..parts.len() {
         for j in 0..i {
             let (Some((ci, ei)), Some((cj, ej))) = (parts.get(i), parts.get(j)) else { continue };
             if same_source(ci, cj) && meet(ei, ej) {
-                let (ri, rj) = (root(&group, i), root(&group, j));
-                if let Some(g) = group.get_mut(ri.max(rj)) {
-                    *g = ri.min(rj);
-                }
+                union(&mut group, i, j);
             }
         }
     }
     let mut out: Vec<(usize, Chain)> = Vec::new();
     for (i, (part, _)) in parts.into_iter().enumerate() {
-        let r = root(&group, i);
+        let r = find(&mut group, i);
         match out.iter_mut().find(|(k, _)| *k == r) {
             Some((_, Chain::Sketch { ids, .. })) => {
                 if let Chain::Sketch { ids: more, .. } = part {

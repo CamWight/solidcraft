@@ -15,7 +15,7 @@ use crate::linalg::{Mat, solve as lin_solve};
 use crate::model::Sketch;
 #[cfg(feature = "solver-profiling")]
 use crate::profiling::{self, Phase};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 #[cfg(test)]
 #[path = "redundancy_tests.rs"]

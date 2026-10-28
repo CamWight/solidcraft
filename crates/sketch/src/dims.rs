@@ -11,7 +11,7 @@
 use solidcraft_geom::Vec2;
 
 use crate::model::{ConstraintKind, CurveKind, Sketch, TwoCircles};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 /// What a dimension measures, in a form that can be drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]

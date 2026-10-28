@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
+use crate::union_find::{find, union};
 use crate::{Aabb3, Mesh, Vec3};
 
 /// Runs a job for every index below `n`: the jobs are independent, so any order and any number
@@ -591,32 +592,6 @@ fn sided(mut off: Vec<Off>, other: &Mesh, from_a: bool, each: Each) -> Vec<Pt> {
             .collect::<Vec<_>>()
     });
     parts.into_iter().flatten().collect()
-}
-
-fn find(parent: &mut [usize], mut i: usize) -> usize {
-    for _ in 0..parent.len() {
-        let Some(&p) = parent.get(i) else { return i };
-        if p == i {
-            return i;
-        }
-        let gp = parent.get(p).copied().unwrap_or(p);
-        if let Some(slot) = parent.get_mut(i) {
-            *slot = gp;
-        }
-        i = gp;
-    }
-    i
-}
-
-fn union(parent: &mut [usize], a: usize, b: usize) -> bool {
-    let (ra, rb) = (find(parent, a), find(parent, b));
-    if ra == rb {
-        return false;
-    }
-    if let Some(slot) = parent.get_mut(ra.max(rb)) {
-        *slot = ra.min(rb);
-    }
-    true
 }
 
 /// Groups of samples (indices into `pts`), one side each: samples in the same or neighbouring

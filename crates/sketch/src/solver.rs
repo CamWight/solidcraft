@@ -21,7 +21,7 @@ use crate::linalg::{Mat, determined_vars, solve as lin_solve};
 use crate::model::{ConstraintKind, CurveKind, Sketch, TwoCircles};
 #[cfg(feature = "solver-profiling")]
 use crate::profiling::{self, Decision, Phase, StopReason};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 #[path = "cursor.rs"]
 mod cursor;

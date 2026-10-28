@@ -61,7 +61,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use solidcraft_geom::Vec2;
 
 use crate::loci::{Locus, Reading, Rel, Span, View, crossing, mag, place, side};
-use crate::union_find::{find, union};
+use solidcraft_geom::union_find::{find, union};
 
 /// More starting clusters than this (one per dimensioned point pair) and the sketch is left
 /// to the numerical solver unchanged.
