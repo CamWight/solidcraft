@@ -51,6 +51,17 @@ fn the_tree_finds_the_nearest_point_as_a_search_of_every_triangle_does() {
         assert!((p.dist_to_triangle(a, b, c) - d).abs() < 1e-12);
     }
     assert!(TriangleTree::new(&Mesh::default()).nearest(Vec3::ZERO).is_none());
+    // Triangles it leaves out (a corner that isn't finite, a corner past the positions) don't
+    // move the others' indices.
+    let mut m = cuboid(Vec3::ZERO, Vec3::new(1.0, 1.0, 1.0));
+    m.positions.push(Vec3::new(f64::NAN, 0.0, 0.0));
+    let nan = m.positions.len() as u32 - 1;
+    m.triangles.splice(0..0, [[0, 1, nan], [0, 1, 99]]);
+    let tree = TriangleTree::new(&m);
+    assert_eq!(tree.len(), 12);
+    let (d, i) = tree.nearest(Vec3::new(0.5, 0.5, 3.0)).unwrap();
+    assert_eq!(d, 2.0);
+    assert_eq!(m.triangles.get(i as usize).and_then(|t| m.tri(t)).map(|t| t.map(|v| v.z)), Some([1.0; 3]), "triangle {i} is on the top");
 }
 
 #[test]

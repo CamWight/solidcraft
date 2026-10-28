@@ -146,6 +146,42 @@ impl Bvh {
         best
     }
 
+    /// The item nearest the point `p`: `dist2` gives an item's squared distance from `p`, and the
+    /// answer is (distance, item). Equal distances go to the lowest item. Boxes are entered
+    /// nearest first, and one farther than the best item so far is skipped.
+    pub fn nearest_to(&self, p: Vec3, mut dist2: impl FnMut(u32) -> f64) -> Option<(f64, u32)> {
+        if !p.is_finite() {
+            return None;
+        }
+        let gap = |n: usize| self.nodes.get(n).map_or(f64::INFINITY, |node| box_dist2(&node.bounds, p));
+        let mut best: Option<(f64, u32)> = None;
+        let mut stack = vec![0usize];
+        while let Some(n) = stack.pop() {
+            let Some(node) = self.nodes.get(n) else { continue };
+            if best.is_some_and(|(bd, _)| gap(n) > bd) {
+                continue;
+            }
+            if node.count > 0 {
+                let (a, b) = (node.first as usize, node.first as usize + node.count as usize);
+                for &i in self.order.get(a..b).unwrap_or(&[]) {
+                    let d = dist2(i);
+                    if !d.is_nan() && best.is_none_or(|(bd, bi)| d < bd || (d == bd && i < bi)) {
+                        best = Some((d, i));
+                    }
+                }
+                continue;
+            }
+            let (l, r) = (node.first as usize, node.first as usize + 1);
+            // The nearer child is popped first.
+            if gap(l) <= gap(r) {
+                stack.extend([r, l]);
+            } else {
+                stack.extend([l, r]);
+            }
+        }
+        best.map(|(d, i)| (d.sqrt(), i))
+    }
+
     /// Calls `item(i, j)` for pairs of items, `i` from this hierarchy and `j` from `other`, in
     /// leaves whose boxes, and every pair of boxes above them, `enter` accepts. `enter` is asked
     /// again for a pair of boxes when it is taken up, so a bound that tightens while items are
@@ -196,6 +232,11 @@ impl Bvh {
 
 fn finite(b: &Aabb3) -> bool {
     [b.min.x, b.min.y, b.min.z, b.max.x, b.max.y, b.max.z].iter().all(|v| v.is_finite())
+}
+
+/// Squared distance from `p` to the box (0 inside it).
+fn box_dist2(b: &Aabb3, p: Vec3) -> f64 {
+    (b.min - p).max(p - b.max).max(Vec3::ZERO).len2()
 }
 
 /// Where the ray from `o` along `d` (`inv` = 1 / `d` per axis) enters box `b` grown by `pad`,

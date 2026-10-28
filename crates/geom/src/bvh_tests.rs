@@ -115,6 +115,46 @@ fn segments_near_the_ray_are_all_reported() {
 }
 
 #[test]
+fn the_item_nearest_a_point_is_the_one_a_scan_finds() {
+    let mut rng = Lcg(5);
+    // Unit boxes on a grid (many at equal distance from grid points) and random boxes.
+    let mut boxes: Vec<Aabb3> = (0..64)
+        .map(f64::from)
+        .map(|k| Aabb3 { min: Vec3::new(k % 8.0, (k / 8.0).floor(), 0.0), max: Vec3::new(k % 8.0 + 1.0, (k / 8.0).floor() + 1.0, 1.0) })
+        .collect();
+    for _ in 0..200 {
+        let c = rng.vec(10.0);
+        let h = Vec3::new(rng.range(0.0, 1.0), rng.range(0.0, 1.0), rng.range(0.0, 1.0));
+        boxes.push(Aabb3 { min: c - h, max: c + h });
+    }
+    let bvh = Bvh::new(&boxes);
+    let to_box = |p: Vec3, i: u32| boxes.get(i as usize).map_or(f64::INFINITY, |b| (b.min - p).max(p - b.max).max(Vec3::ZERO).len2());
+    for k in 0..2000 {
+        let p = if k % 3 == 0 { Vec3::new(f64::from(k % 9), f64::from((k / 9) % 9), 3.0) } else { rng.vec(14.0) };
+        let mut want: Option<(f64, u32)> = None;
+        for i in 0..boxes.len() as u32 {
+            let d = to_box(p, i);
+            if want.is_none_or(|(bd, _)| d < bd) {
+                want = Some((d, i));
+            }
+        }
+        assert_eq!(bvh.nearest_to(p, |i| to_box(p, i)), want.map(|(d, i)| (d.sqrt(), i)), "point {k} at {p:?}");
+    }
+    assert_eq!(bvh.nearest_to(Vec3::new(f64::NAN, 0.0, 0.0), |_| 1.0), None);
+    assert_eq!(bvh.nearest_to(Vec3::ZERO, |_| f64::NAN), None, "an item without a distance is never the nearest");
+    assert_eq!(Bvh::new(&[]).nearest_to(Vec3::ZERO, |_| 1.0), None);
+    // Nearer boxes go first, so a point near one end of a long row looks at few items.
+    let row: Vec<Aabb3> = (0..4096).map(f64::from).map(|x| Aabb3 { min: Vec3::new(x, 0.0, 0.0), max: Vec3::new(x + 0.5, 1.0, 1.0) }).collect();
+    let mut asked = 0;
+    let found = Bvh::new(&row).nearest_to(Vec3::new(10.2, 0.5, 2.0), |i| {
+        asked += 1;
+        row.get(i as usize).map_or(f64::INFINITY, |b| (b.min.x - 10.2).max(10.2 - b.max.x).max(0.0).powi(2) + 1.0)
+    });
+    assert_eq!(found, Some((1.0, 10)));
+    assert!(asked <= 16, "{asked} items looked at");
+}
+
+#[test]
 fn hostile_boxes_never_panic() {
     let nan = Vec3::new(f64::NAN, 0.0, 0.0);
     let boxes = [Aabb3::EMPTY, Aabb3 { min: nan, max: nan }, Aabb3 { min: Vec3::ZERO, max: Vec3::new(1.0, 1.0, 1.0) }];

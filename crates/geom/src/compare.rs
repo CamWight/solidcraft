@@ -16,7 +16,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 use crate::union_find::{find, union};
-use crate::{Aabb3, Mesh, Vec3};
+use crate::{Aabb3, Bvh, Mesh, Vec3};
 
 /// Runs a job for every index below `n`: the jobs are independent, so any order and any number
 /// of threads will do. [`serial`] runs them one after another; a caller with threads passes one
@@ -192,36 +192,19 @@ fn box_of(t: &[Vec3; 3]) -> Aabb3 {
     b
 }
 
-/// Squared distance from `p` to the box (0 inside it).
-fn box_dist2(b: &Aabb3, p: Vec3) -> f64 {
-    (b.min - p).max(p - b.max).max(Vec3::ZERO).len2()
-}
-
 /// Do the boxes overlap on every axis but `skip` (none when `skip > 2`)?
 fn boxes_meet(a: &Aabb3, b: &Aabb3, skip: usize) -> bool {
     (0..3).filter(|&k| k != skip).all(|k| comp(a.min, k) <= comp(b.max, k) && comp(b.min, k) <= comp(a.max, k))
 }
 
-/// Triangles in a leaf of [`TriangleTree`], at most (unless they all share a centre).
-const LEAF: usize = 4;
-
-/// A bounding-volume hierarchy over a mesh's triangles: the nearest point of the surface, and
-/// the triangles a line can cross.
+/// A mesh's triangles in a bounding volume hierarchy: the nearest point of the surface, and the
+/// triangles a line can cross.
 pub struct TriangleTree {
-    /// The mesh's triangles with finite corners, in tree order.
+    /// The mesh's triangles with finite corners.
     tris: Vec<[Vec3; 3]>,
     /// Each one's index in the mesh.
     ids: Vec<u32>,
-    nodes: Vec<Node>,
-}
-
-#[derive(Clone, Copy)]
-struct Node {
-    bbox: Aabb3,
-    /// A leaf holds `tris[a..b]`; an inner node has the children `a` and `b`.
-    a: u32,
-    b: u32,
-    leaf: bool,
+    bvh: Bvh,
 }
 
 impl TriangleTree {
@@ -236,51 +219,8 @@ impl TriangleTree {
                 ids.push(i);
             }
         }
-        let centres: Vec<Vec3> = tris.iter().map(|t| (t[0] + t[1] + t[2]) / 3.0).collect();
-        let mut order: Vec<u32> = (0..u32::try_from(tris.len()).unwrap_or(u32::MAX)).collect();
-        let n = order.len();
-        let empty = Node { bbox: Aabb3::EMPTY, a: 0, b: 0, leaf: true };
-        let mut nodes = vec![empty];
-        let mut work = vec![(0usize, 0usize, n)];
-        while let Some((ni, lo, hi)) = work.pop() {
-            let Some(range) = order.get_mut(lo..hi) else { continue };
-            let (mut bbox, mut cb) = (Aabb3::EMPTY, Aabb3::EMPTY);
-            for &i in range.iter() {
-                if let (Some(t), Some(c)) = (tris.get(i as usize), centres.get(i as usize)) {
-                    bbox = bbox.union(&box_of(t));
-                    cb.add(*c);
-                }
-            }
-            let size = cb.size();
-            let axis = if size.x >= size.y && size.x >= size.z {
-                0
-            } else if size.y >= size.z {
-                1
-            } else {
-                2
-            };
-            let node = if hi - lo <= LEAF || comp(size, axis) <= 0.0 {
-                Node { bbox, a: lo as u32, b: hi as u32, leaf: true }
-            } else {
-                let mid = (hi - lo) / 2;
-                range.select_nth_unstable_by(mid, |x, y| {
-                    let c = |i: &u32| centres.get(*i as usize).map_or(0.0, |c| comp(*c, axis));
-                    c(x).total_cmp(&c(y))
-                });
-                let (left, right) = (nodes.len(), nodes.len() + 1);
-                nodes.push(empty);
-                nodes.push(empty);
-                work.push((left, lo, lo + mid));
-                work.push((right, lo + mid, hi));
-                Node { bbox, a: left as u32, b: right as u32, leaf: false }
-            };
-            if let Some(slot) = nodes.get_mut(ni) {
-                *slot = node;
-            }
-        }
-        let tris_in_order = order.iter().filter_map(|&i| tris.get(i as usize).copied()).collect();
-        let ids_in_order = order.iter().filter_map(|&i| ids.get(i as usize).copied()).collect();
-        TriangleTree { tris: tris_in_order, ids: ids_in_order, nodes }
+        let bvh = Bvh::new(&tris.iter().map(box_of).collect::<Vec<_>>());
+        TriangleTree { tris, ids, bvh }
     }
 
     pub fn len(&self) -> usize {
@@ -294,59 +234,23 @@ impl TriangleTree {
     /// The distance from `p` to the nearest point of the surface, and the index in the mesh of
     /// the triangle it lies on (`None` for an empty mesh or a point that isn't finite).
     pub fn nearest(&self, p: Vec3) -> Option<(f64, u32)> {
-        if !p.is_finite() || self.tris.is_empty() {
-            return None;
-        }
-        let (mut best2, mut hit) = (f64::INFINITY, None);
-        let mut stack: Vec<u32> = Vec::with_capacity(64);
-        stack.push(0);
-        while let Some(ni) = stack.pop() {
-            let Some(node) = self.nodes.get(ni as usize) else { continue };
-            if box_dist2(&node.bbox, p) >= best2 {
-                continue;
-            }
-            if node.leaf {
-                for k in node.a..node.b {
-                    let Some([a, b, c]) = self.tris.get(k as usize).copied() else { continue };
-                    let d2 = (p.closest_on_triangle(a, b, c) - p).len2();
-                    if d2 < best2 {
-                        best2 = d2;
-                        hit = self.ids.get(k as usize).copied();
-                    }
-                }
-                continue;
-            }
-            let d = |i: u32| self.nodes.get(i as usize).map_or(f64::INFINITY, |n| box_dist2(&n.bbox, p));
-            let (da, db) = (d(node.a), d(node.b));
-            // The nearer child is searched first (pushed last).
-            let (near, far, dn, df) = if da <= db { (node.a, node.b, da, db) } else { (node.b, node.a, db, da) };
-            if df < best2 {
-                stack.push(far);
-            }
-            if dn < best2 {
-                stack.push(near);
-            }
-        }
-        hit.map(|i| (best2.sqrt(), i))
+        let to = |k: u32| self.tris.get(k as usize).map_or(f64::INFINITY, |[a, b, c]| (p.closest_on_triangle(*a, *b, *c) - p).len2());
+        let (d, k) = self.bvh.nearest_to(p, to)?;
+        Some((d, *self.ids.get(k as usize)?))
     }
 
-    /// Every triangle (by its place in the tree) whose box overlaps `bx` on the two axes other
+    /// Every triangle (by its place in `tris`) whose box overlaps `bx` on the two axes other
     /// than `axis`: the triangles a line along `axis` through `bx` can cross.
     fn column(&self, bx: &Aabb3, axis: usize) -> Vec<usize> {
         let mut out = Vec::new();
-        let mut stack: Vec<u32> = if self.tris.is_empty() { Vec::new() } else { vec![0] };
-        while let Some(ni) = stack.pop() {
-            let Some(node) = self.nodes.get(ni as usize) else { continue };
-            if !boxes_meet(&node.bbox, bx, axis) {
-                continue;
-            }
-            if node.leaf {
-                out.extend((node.a..node.b).map(|k| k as usize).filter(|&k| self.tris.get(k).is_some_and(|t| boxes_meet(&box_of(t), bx, axis))));
-            } else {
-                stack.push(node.a);
-                stack.push(node.b);
-            }
-        }
+        self.bvh.visit(
+            |b| boxes_meet(b, bx, axis),
+            |k| {
+                if self.tris.get(k as usize).is_some_and(|t| boxes_meet(&box_of(t), bx, axis)) {
+                    out.push(k as usize);
+                }
+            },
+        );
         out
     }
 }
