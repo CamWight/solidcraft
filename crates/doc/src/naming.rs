@@ -204,43 +204,6 @@ fn samples_up_to(m: &Mesh, nf: usize, most: usize) -> Vec<Vec<Vec3>> {
         .collect()
 }
 
-/// The point of triangle `abc` nearest `p`. A zero-length edge (a cone's tip repeats its apex
-/// vertex) has no interior to project onto, so its branch is skipped rather than dividing 0 by 0.
-pub(crate) fn closest(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let (ab, ac, ap) = (b - a, c - a, p - a);
-    let (d1, d2) = (ab.dot(ap), ac.dot(ap));
-    if d1 <= 0.0 && d2 <= 0.0 {
-        return a;
-    }
-    let bp = p - b;
-    let (d3, d4) = (ab.dot(bp), ac.dot(bp));
-    if d3 >= 0.0 && d4 <= d3 {
-        return b;
-    }
-    let vc = d1 * d4 - d3 * d2;
-    if vc <= 0.0 && d1 >= 0.0 && d3 <= 0.0 && d1 - d3 > 0.0 {
-        return a + ab * (d1 / (d1 - d3));
-    }
-    let cp = p - c;
-    let (d5, d6) = (ab.dot(cp), ac.dot(cp));
-    if d6 >= 0.0 && d5 <= d6 {
-        return c;
-    }
-    let vb = d5 * d2 - d1 * d6;
-    if vb <= 0.0 && d2 >= 0.0 && d6 <= 0.0 && d2 - d6 > 0.0 {
-        return a + ac * (d2 / (d2 - d6));
-    }
-    let va = d3 * d6 - d5 * d4;
-    if va <= 0.0 && (d4 - d3) >= 0.0 && (d5 - d6) >= 0.0 && (d4 - d3) + (d5 - d6) > 0.0 {
-        return b + (c - b) * ((d4 - d3) / ((d4 - d3) + (d5 - d6)));
-    }
-    let den = va + vb + vc;
-    if den.abs() < 1e-300 {
-        return a;
-    }
-    a + ab * (vb / den) + ac * (vc / den)
-}
-
 /// A body's faces as triangle lists with bounding boxes, for "does this point lie on face f".
 struct FaceIndex {
     faces: Vec<(Aabb3, Vec<[Vec3; 3]>)>,
@@ -265,7 +228,7 @@ impl FaceIndex {
             if !bounds.inflated(tol).contains(p) {
                 continue;
             }
-            let d = tris.iter().map(|[a, b, c]| closest(p, *a, *b, *c).dist(p)).fold(f64::MAX, f64::min);
+            let d = tris.iter().map(|[a, b, c]| p.dist_to_triangle(*a, *b, *c)).fold(f64::MAX, f64::min);
             if d <= tol && best.is_none_or(|(bd, _)| d < bd) {
                 best = Some((d, i));
             }
@@ -1147,20 +1110,6 @@ mod tests {
     }
 
     use super::*;
-
-    /// A cone's tip repeats its apex vertex, so a triangle can have a zero-length edge. The nearest
-    /// point on it must still be a real point (it used to be NaN, which broke picking the tip).
-    #[test]
-    fn closest_point_on_a_degenerate_triangle_is_finite() {
-        let (a, c) = (Vec3::new(0., 0., 0.), Vec3::new(2., 0., 0.));
-        for (b, c) in [(a, c), (c, c), (a, a)] {
-            for p in [Vec3::new(1., 1., 0.), Vec3::new(-1., 0.5, 0.), Vec3::new(3., -2., 1.), a] {
-                let q = closest(p, a, b, c);
-                assert!(q.x.is_finite() && q.y.is_finite() && q.z.is_finite(), "{a:?} {b:?} {c:?} {p:?} -> {q:?}");
-            }
-        }
-        assert_eq!(closest(Vec3::new(1., 1., 0.), a, a, c), Vec3::new(1., 0., 0.));
-    }
 
     #[test]
     fn merged_face_votes_collectively_for_pieces_of_one_source() {

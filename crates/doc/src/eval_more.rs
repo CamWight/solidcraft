@@ -202,7 +202,7 @@ fn planar_normal_at(b: &Body, p: Vec3) -> Option<Vec3> {
     let mut near = vec![f64::INFINITY; faces.len()];
     for (t, f) in mesh.triangles.iter().zip(&mesh.tri_face) {
         if let (Some([u, v, w]), Some(d)) = (mesh.tri(t), near.get_mut(*f as usize)) {
-            *d = d.min(crate::appearance::closest_on_triangle(p, u, v, w).dist(p));
+            *d = d.min(p.dist_to_triangle(u, v, w));
         }
     }
     faces

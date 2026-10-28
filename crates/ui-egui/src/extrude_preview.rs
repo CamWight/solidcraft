@@ -228,7 +228,7 @@ fn prepare(app: &SolveApp, inputs: &[Sel]) -> Option<Cached> {
             // must fall back rather than previewing a different face.
             let tolerance = (mesh.bounds().diagonal() * 1e-8).max(1e-8);
             for (index, point) in selected.values() {
-                if !surfaces.get(*index)?.triangles.iter().any(|triangle| crate::dialogs::point_tri_dist(*point, *triangle) < tolerance) {
+                if !surfaces.get(*index)?.triangles.iter().any(|[a, b, c]| point.dist_to_triangle(*a, *b, *c) < tolerance) {
                     return None;
                 }
             }

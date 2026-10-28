@@ -9,15 +9,6 @@ use solidcraft_geom::{Mesh, Vec2, Vec3};
 use crate::params::{bad, vec3};
 use crate::{Result, Session};
 
-fn point_triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
-    let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return f64::INFINITY };
-    let h = (p - a).dot(nn);
-    let q = p - nn * h;
-    let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
-}
-
 /// The outward normal of the planar body face at `p`.
 pub(super) fn face_normal(s: &Session, p: Vec3) -> Option<Vec3> {
     face_normal_in(s, p, None)
@@ -194,7 +185,7 @@ pub(super) fn face_at_state(st: &solidcraft_doc::ModelState, p: Vec3, only: Opti
         let mut near: Option<(u32, f64)> = None;
         for (t, f) in m.triangles.iter().zip(&m.tri_face) {
             let Some([a, bb, c]) = m.tri(t) else { continue };
-            let d = point_triangle_dist(p, a, bb, c);
+            let d = p.dist_to_triangle(a, bb, c);
             if near.is_none_or(|(_, nd)| d < nd) {
                 near = Some((*f, d));
             }

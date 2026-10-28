@@ -125,6 +125,79 @@ fn vec_ops_and_serde() {
     assert_eq!(b, Vec2::new(1.0, 2.0));
 }
 
+/// The nearest point of a triangle, checked by what it must be rather than by a second copy of
+/// the method: a point of the triangle, no farther than its sides, and no point sampled over the
+/// triangle nearer. The triangles include the hard shapes: a repeated corner (a cone's tip),
+/// three corners in a line, all three at one point, and slivers.
+#[test]
+fn the_nearest_point_of_a_triangle_is_exact_for_every_shape() {
+    let mut seed = 99u64;
+    let mut rnd = || {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64 * 4.0 - 2.0
+    };
+    const N: usize = 60;
+    for k in 0..3000 {
+        let mut v = || Vec3::new(rnd(), rnd(), rnd());
+        let (a, mut b, mut c, p) = (v(), v(), v(), v());
+        match k % 7 {
+            1 => b = a,
+            2 => c = b,
+            3 => c = a + (b - a) * 2.5,
+            4 => c = a + (b - a) * 0.3,
+            5 => (b, c) = (a, a),
+            6 => c = a + (b - a) * 0.5 + (b - a).any_perp() * 1e-7,
+            _ => {}
+        }
+        let q = p.closest_on_triangle(a, b, c);
+        let d = q.dist(p);
+        let size = a.dist(b).max(b.dist(c)).max(c.dist(a));
+        let sides = p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)).min(p.dist_to_segment(c, a));
+        assert!(q.is_finite() && d <= sides + 1e-12, "case {k}: {d} past the sides' {sides}");
+        let samples = (0..=N)
+            .flat_map(|i| (0..=N - i).map(move |j| (i, j)))
+            .map(|(i, j)| a + (b - a) * (i as f64 / N as f64) + (c - a) * (j as f64 / N as f64));
+        let (mut nearest_sample, mut from_q) = (f64::INFINITY, f64::INFINITY);
+        for s in samples {
+            nearest_sample = nearest_sample.min(s.dist(p));
+            from_q = from_q.min(s.dist(q));
+        }
+        assert!(d <= nearest_sample + 1e-12, "case {k}: a sample is nearer ({nearest_sample} < {d})");
+        assert!(from_q <= 2.0 * size / N as f64, "case {k}: {q:?} is not on the triangle");
+        assert_eq!(p.dist_to_triangle(a, b, c), d);
+    }
+    // Slivers thinner than rounding (widths 1e-10 to 1e-16), with points very near them. Every
+    // point of a sliver is within its width `w` of the side `ab`, so the answer must be too, and
+    // its distance is the sides' less at most `w`. The plane of such a sliver is mostly rounding:
+    // using it puts the point up to 1e-4 of the size off the sliver.
+    for k in 0..3000 {
+        let (a, b) = (Vec3::new(rnd(), rnd(), rnd()), Vec3::new(rnd(), rnd(), rnd()));
+        let c = a + (b - a) * (rnd() / 4.0 + 0.5) + (b - a).any_perp() * 10f64.powi(-10 - k % 7);
+        let p = a + (b - a) * (rnd() / 4.0 + 0.5) + Vec3::new(rnd(), rnd(), rnd()) * 10f64.powi(-(k / 7 % 14));
+        let size = a.dist(b).max(b.dist(c)).max(c.dist(a));
+        let w = c.dist_to_segment(a, b);
+        let sides = p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)).min(p.dist_to_segment(c, a));
+        let q = p.closest_on_triangle(a, b, c);
+        let d = q.dist(p);
+        let tol = 1e-8 * size;
+        assert!(q.dist_to_segment(a, b) <= w + tol, "sliver {k}: {q:?} is off it");
+        assert!(d <= sides + tol && d >= sides - w - tol, "sliver {k}: {d} against the sides' {sides}");
+    }
+    // A cone's tip: the side from the repeated corner still counts.
+    let (a, c) = (Vec3::ZERO, Vec3::new(2.0, 0.0, 0.0));
+    assert_eq!(Vec3::new(1.0, 1.0, 0.0).closest_on_triangle(a, a, c), Vec3::new(1.0, 0.0, 0.0));
+    assert_eq!(Vec3::new(1.0, 1.0, 0.0).closest_on_triangle(a, c, c), Vec3::new(1.0, 0.0, 0.0));
+    // A sliver of half-micrometre legs: points past its sides are as far as they are.
+    let (a, b, c) = (Vec3::ZERO, Vec3::new(5e-4, 0.0, 0.0), Vec3::new(0.0, 5e-4, 0.0));
+    assert!((Vec3::new(2.5e-4, -2e-3, 0.0).dist_to_triangle(a, b, c) - 2e-3).abs() < 1e-15);
+    // Over a 20 nm triangle, the distance is from its plane.
+    let (a, b, c) = (Vec3::ZERO, Vec3::new(2e-5, 0.0, 0.0), Vec3::new(0.0, 2e-5, 0.0));
+    assert!((Vec3::new(5e-6, 5e-6, 0.99999e-3).dist_to_triangle(a, b, c) - 0.99999e-3).abs() < 1e-12);
+    // Nothing that isn't finite is ever near.
+    assert_eq!(Vec3::new(f64::NAN, 0.0, 0.0).dist_to_triangle(a, b, c), f64::INFINITY);
+    assert_eq!(Vec3::new(5e-6, 5e-6, 1e-3).dist_to_triangle(a, b, Vec3::new(f64::INFINITY, 0.0, 0.0)), f64::INFINITY);
+}
+
 #[test]
 fn aabb() {
     let mut b = Aabb3::EMPTY;

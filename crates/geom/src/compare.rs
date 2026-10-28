@@ -128,7 +128,9 @@ pub struct Comparison {
     pub face_area: [HashMap<u32, f64>; 2],
 }
 
-/// The point of triangle `abc` nearest `p` (Ericson, Real-Time Collision Detection, 5.1.5).
+/// The point of triangle `abc` nearest `p` (Ericson, Real-Time Collision Detection, 5.1.5). Kept
+/// unchanged for the kernel, whose code is paused; everything else uses
+/// [`Vec3::closest_on_triangle`], which also answers for triangles thinner than rounding.
 pub fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
     let (ab, ac, ap) = (b - a, c - a, p - a);
     let (d1, d2) = (ab.dot(ap), ac.dot(ap));
@@ -306,7 +308,7 @@ impl TriangleTree {
             if node.leaf {
                 for k in node.a..node.b {
                     let Some([a, b, c]) = self.tris.get(k as usize).copied() else { continue };
-                    let d2 = (closest_on_triangle(p, a, b, c) - p).len2();
+                    let d2 = (p.closest_on_triangle(a, b, c) - p).len2();
                     if d2 < best2 {
                         best2 = d2;
                         hit = self.ids.get(k as usize).copied();

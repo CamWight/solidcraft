@@ -11,7 +11,7 @@
 use solidcraft_geom::{Mesh, Vec3};
 
 use crate::history_names::{Match, Names};
-use crate::naming::{self, closest, edge_names, face_names, legacy_edge_names, legacy_face_names, strip_piece};
+use crate::naming::{self, edge_names, face_names, legacy_edge_names, legacy_face_names, strip_piece};
 use crate::piece_names::{strip_edge_number, strip_edge_piece};
 use crate::{ModelBody, ModelState};
 
@@ -104,7 +104,7 @@ fn nearest_on_face(m: &Mesh, face: usize, p: Vec3) -> Option<(f64, Vec3)> {
             continue;
         }
         let Some([a, b, c]) = m.tri(t) else { continue };
-        let q = closest(p, a, b, c);
+        let q = p.closest_on_triangle(a, b, c);
         let d = q.dist(p);
         // A non-finite candidate must never become the best: nothing compares less than NaN.
         if d.is_finite() && best.is_none_or(|x| d < x.0) {
@@ -372,7 +372,7 @@ fn legacy_locate<'a>(bodies: impl Iterator<Item = (usize, &'a ModelBody)>, name:
                 continue;
             }
             let Some([a, bb, c]) = m.tri(t) else { continue };
-            let q = closest(p, a, bb, c);
+            let q = p.closest_on_triangle(a, bb, c);
             let d = q.dist(p) - if exact { 1e-9 } else { 0.0 };
             if d.is_finite() && best.is_none_or(|x| d < x.0) {
                 best = Some((d, bi, *f as usize, q, !exact, tol));

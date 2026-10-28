@@ -372,7 +372,7 @@ fn resolve_named_edge(st: &ModelState, plane: &Plane, kind: LinkKind, body: &str
     let pts = target.mesh().edges.get(index).cloned().unwrap_or_default();
     let at = pts
         .windows(2)
-        .filter_map(|w| Some(closest_on_segment(near, *w.first()?, *w.get(1)?)))
+        .filter_map(|w| Some(near.closest_on_segment(*w.first()?, *w.get(1)?)))
         .min_by(|a, b| a.dist(near).total_cmp(&b.dist(near)))
         .ok_or_else(|| lost("named projection edge"))?;
     let mut wires = Vec::new();
@@ -739,13 +739,6 @@ fn body_mesh(st: &ModelState, name: &str, at: Vec3) -> Result<(usize, std::sync:
     Ok((i, b.mesh()))
 }
 
-fn closest_on_segment(p: Vec3, a: Vec3, b: Vec3) -> Vec3 {
-    let ab = b - a;
-    let l2 = ab.len2();
-    let t = if l2 > 0.0 { ((p - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-    a + ab * t
-}
-
 /// Nearest non-seam edge: (index, closest point, distance).
 pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
     let mut best: Option<(usize, Vec3, f64)> = None;
@@ -755,7 +748,7 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
         }
         for w in e.windows(2) {
             let (Some(a), Some(b)) = (w.first(), w.get(1)) else { continue };
-            let q = closest_on_segment(p, *a, *b);
+            let q = p.closest_on_segment(*a, *b);
             let d = q.dist(p);
             if best.is_none_or(|(_, _, bd)| d < bd) {
                 best = Some((i, q, d));
@@ -765,26 +758,12 @@ pub(crate) fn nearest_edge(m: &Mesh, p: Vec3) -> Option<(usize, Vec3, f64)> {
     best
 }
 
-pub(crate) fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return closest_on_segment(p, a, b) };
-    let q = p - nn * (p - a).dot(nn);
-    let inside = (b - a).cross(q - a).dot(n) >= 0.0 && (c - b).cross(q - b).dot(n) >= 0.0 && (a - c).cross(q - c).dot(n) >= 0.0;
-    if inside {
-        return q;
-    }
-    [closest_on_segment(p, a, b), closest_on_segment(p, b, c), closest_on_segment(p, c, a)]
-        .into_iter()
-        .min_by(|x, y| x.dist(p).total_cmp(&y.dist(p)))
-        .unwrap_or(a)
-}
-
 /// Nearest face: (B-rep face index, closest point, distance).
 pub(crate) fn nearest_face(m: &Mesh, p: Vec3) -> Option<(u32, Vec3, f64)> {
     let mut best: Option<(u32, Vec3, f64)> = None;
     for (t, f) in m.triangles.iter().zip(&m.tri_face) {
         let Some([a, b, c]) = m.tri(t) else { continue };
-        let q = closest_on_triangle(p, a, b, c);
+        let q = p.closest_on_triangle(a, b, c);
         let d = q.dist(p);
         if best.is_none_or(|(_, _, bd)| d < bd) {
             best = Some((*f, q, d));

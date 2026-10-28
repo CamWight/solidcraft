@@ -21,23 +21,6 @@ enum Geo {
 const MAX_POINTS: usize = 4000;
 const MAX_TRIS: usize = 20000;
 
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    let n = (b - a).cross(c - a);
-    if let Some(nn) = n.normalized() {
-        let q = p - nn * (p - a).dot(nn);
-        if [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12) {
-            return q;
-        }
-    }
-    let on_seg = |u: Vec3, v: Vec3| {
-        let d = v - u;
-        let l2 = d.dot(d);
-        let t = if l2 > 0.0 { ((p - u).dot(d) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        u + d * t
-    };
-    [on_seg(a, b), on_seg(b, c), on_seg(c, a)].into_iter().min_by(|x, y| x.dist(p).total_cmp(&y.dist(p))).unwrap_or(a)
-}
-
 fn polyline_len(pts: &[Vec3]) -> f64 {
     pts.windows(2).map(|w| w[0].dist(w[1])).sum()
 }
@@ -392,7 +375,7 @@ fn closest(a: &Geo, b: &Geo) -> Option<(Vec3, Vec3)> {
         let mut best: Option<(f64, Vec3, Vec3)> = None;
         for p in &pts {
             for [x, y, z] in &tris {
-                let q = closest_on_triangle(*p, *x, *y, *z);
+                let q = p.closest_on_triangle(*x, *y, *z);
                 let d = p.dist(q);
                 if best.is_none_or(|(bd, _, _)| d < bd) {
                     best = Some((d, *p, q));

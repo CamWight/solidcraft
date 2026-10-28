@@ -34,7 +34,7 @@ fn wall(app: &SolveApp, p: Vec3) -> Sel {
         let m = b.mesh();
         for (t, f) in m.triangles.iter().zip(&m.tri_face) {
             let Some([a, bb, c]) = m.tri(t) else { continue };
-            let d = crate::preview::point_triangle_dist(p, a, bb, c);
+            let d = p.dist_to_triangle(a, bb, c);
             if best.as_ref().is_none_or(|(bd, _)| d < *bd) {
                 best = Some((d, Sel::Face { body: b.name.clone(), index: *f as usize, point: p }));
             }

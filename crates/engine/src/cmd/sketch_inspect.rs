@@ -168,33 +168,13 @@ fn face_at(st: &solidcraft_doc::ModelState, at: Vec3) -> Option<(usize, u32)> {
         let m = b.mesh();
         for (ti, t) in m.triangles.iter().enumerate() {
             let [a, bb, c] = t.map(|i| m.positions.get(i as usize).copied().unwrap_or_default());
-            let d = at.dist(closest_on_triangle(at, a, bb, c));
+            let d = at.dist_to_triangle(a, bb, c);
             if best.is_none_or(|x| d < x.0) {
                 best = Some((d, bi, m.tri_face.get(ti).copied().unwrap_or(0)));
             }
         }
     }
     best.filter(|b| b.0 < 1.0).map(|b| (b.1, b.2))
-}
-
-fn closest_on_triangle(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
-    // Project onto the plane, then clamp to the edges if outside.
-    let n = (b - a).cross(c - a);
-    let nn = n.dot(n);
-    if nn < 1e-300 {
-        return a;
-    }
-    let q = p - n * ((p - a).dot(n) / nn);
-    let inside = |u: Vec3, v: Vec3| (v - u).cross(q - u).dot(n) >= 0.0;
-    if inside(a, b) && inside(b, c) && inside(c, a) {
-        return q;
-    }
-    let seg = |u: Vec3, v: Vec3| {
-        let d = v - u;
-        let t = if d.dot(d) > 1e-300 { ((p - u).dot(d) / d.dot(d)).clamp(0.0, 1.0) } else { 0.0 };
-        u + d * t
-    };
-    [seg(a, b), seg(b, c), seg(c, a)].into_iter().min_by(|x, y| x.dist(p).total_cmp(&y.dist(p))).unwrap_or(a)
 }
 
 /// Smallest radius of curvature over a face of a mesh, from the turn of the vertex normals

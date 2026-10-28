@@ -165,21 +165,12 @@ fn frame_at(s: &Session, f: &Frames, p: Vec3, body: Option<&str>) -> Option<Mat>
         {
             continue;
         }
-        let d = mesh.triangles.iter().filter_map(|t| mesh.tri(t)).map(|[a, b, c]| tri_dist(p, a, b, c)).fold(f64::INFINITY, f64::min);
+        let d = mesh.triangles.iter().filter_map(|t| mesh.tri(t)).map(|[a, b, c]| p.dist_to_triangle(a, b, c)).fold(f64::INFINITY, f64::min);
         if d <= tol && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
             best = Some((d, *m));
         }
     }
     best.map(|(_, m)| m)
-}
-
-fn tri_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
-    let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)) };
-    let h = (p - a).dot(nn);
-    let q = p - nn * h;
-    let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
 }
 
 struct Mapper<'a> {

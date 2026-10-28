@@ -1736,26 +1736,8 @@ impl<'a> SnapPoints<'a> {
 }
 
 /// How near a sketch point must be to a face to lie on it: a micrometre, wherever the part is (a
-/// planar face's triangles lie in its plane), by the true distance ([`triangle_dist`]).
+/// planar face's triangles lie in its plane), by the true distance ([`Vec3::dist_to_triangle`]).
 const ON_FACE: f64 = 1e-3;
-
-/// The distance from `p` to the triangle `abc`, exactly: from its plane when `p` is over it,
-/// otherwise from its nearest side. (`preview::point_triangle_dist` takes a point just past a
-/// side for one over the triangle, with an absolute tolerance that is wide for a sliver.)
-fn triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
-    let sides = [(a, b), (b, c), (c, a)];
-    let to_sides = || sides.iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min);
-    // However small the triangle: only one without area (or not finite) has no plane.
-    let n = (b - a).cross(c - a);
-    let len = n.len();
-    if !(len > 0.0 && len.is_finite()) {
-        return to_sides();
-    }
-    let unit = n / len;
-    let h = (p - a).dot(unit);
-    let q = p - unit * h;
-    if sides.iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(unit) >= 0.0) { h.abs() } else { to_sides() }
-}
 
 /// The most point-in-triangle tests one pick makes for the snap. Points past it aren't snapped
 /// to (the face as picked still is), so no sketch, however dense, can stall the viewport.
@@ -1848,7 +1830,7 @@ impl FaceSnap {
             self.budget.set(left - 1);
             #[cfg(test)]
             SNAP_WORK.with(|w| w.set((w.get().0, w.get().1 + 1)));
-            if boxes_meet(bb, &at, ON_FACE) && triangle_dist(p, *a, *b, *c) < ON_FACE {
+            if boxes_meet(bb, &at, ON_FACE) && p.dist_to_triangle(*a, *b, *c) < ON_FACE {
                 return Some(Sel::Face { body: self.body.clone(), index: self.face, point: p });
             }
         }
@@ -1921,9 +1903,9 @@ mod face_snap_tests {
     #[test]
     fn a_point_more_than_a_micrometre_off_a_sliver_is_off_the_face() {
         // A triangle with half-micrometre legs. Points 2 µm below its lower side and 1.6 µm past
-        // its long side get past `preview::point_triangle_dist`'s inside test (an absolute
-        // tolerance); the snap goes by the true distance and turns them down. Points on a side,
-        // or half a micrometre beyond one, are on the face.
+        // its long side passed an inside test with an absolute tolerance; the snap goes by the
+        // true distance and turns them down. Points on a side, or half a micrometre beyond one,
+        // are on the face.
         let (a, b, c) = (Vec3::ZERO, Vec3::new(5e-4, 0.0, 0.0), Vec3::new(0.0, 5e-4, 0.0));
         let out = Vec3::new(1.0, 1.0, 0.0) * std::f64::consts::FRAC_1_SQRT_2;
         let mid = Vec3::new(2.5e-4, 2.5e-4, 0.0);
@@ -1939,27 +1921,12 @@ mod face_snap_tests {
             budget: std::cell::Cell::new(SNAP_BUDGET),
         };
         for p in off {
-            assert!(crate::preview::point_triangle_dist(p, a, b, c) < ON_FACE, "the inside test alone takes {p:?}");
-            assert!(triangle_dist(p, a, b, c) > 1.5e-3, "{p:?}");
+            assert!(p.dist_to_triangle(a, b, c) > 1.5e-3, "{p:?}");
             assert_eq!(snap.place_at(p), None, "{p:?}");
         }
         for p in on {
             assert_eq!(snap.place_at(p), Some(Sel::Face { body: "Body1".into(), index: 0, point: p }), "{p:?}");
         }
-    }
-
-    #[test]
-    fn the_distance_to_a_tiny_triangle_is_from_its_plane_over_it() {
-        // Legs of 20 nm: the triangle still has a plane, and a point just under a micrometre
-        // above it is that far from it (not from its nearest side), so it is on the face. A
-        // triangle without area is measured from its sides; nothing here panics on non-finite input.
-        let (a, b, c) = (Vec3::ZERO, Vec3::new(2e-5, 0.0, 0.0), Vec3::new(0.0, 2e-5, 0.0));
-        let p = Vec3::new(5e-6, 5e-6, 0.99999e-3);
-        assert!((triangle_dist(p, a, b, c) - 0.99999e-3).abs() < 1e-12, "{}", triangle_dist(p, a, b, c));
-        assert!((triangle_dist(Vec3::new(0.0, 3.0, 4.0), a, b, b) - 5.0).abs() < 1e-9, "a triangle without area");
-        let far = |d: f64| d.is_nan() || d >= ON_FACE;
-        assert!(far(triangle_dist(Vec3::new(f64::NAN, 0.0, 0.0), a, b, c)), "a point that isn't finite is never near");
-        assert!(far(triangle_dist(p, a, b, Vec3::new(f64::INFINITY, 0.0, 0.0))), "nor is a triangle that isn't finite");
     }
 }
 
@@ -2173,7 +2140,7 @@ fn feature_of_face(s: &Session, body: &str, index: usize, p: Vec3) -> Option<u64
                 && p.x <= bb.max.x + tol
                 && p.y <= bb.max.y + tol
                 && p.z <= bb.max.z + tol
-                && m.triangles.iter().filter_map(|t| m.tri(t)).any(|t| point_tri_dist(p, t) < tol)
+                && m.triangles.iter().filter_map(|t| m.tri(t)).any(|[a, b, c]| p.dist_to_triangle(a, b, c) < tol)
         })
     };
     let found = s
@@ -2192,20 +2159,6 @@ fn feature_of_face(s: &Session, body: &str, index: usize, p: Vec3) -> Option<u64
         c.1.insert(key, found);
     });
     found
-}
-
-/// Distance from a point to a triangle.
-pub(crate) fn point_tri_dist(p: Vec3, [a, b, c]: [Vec3; 3]) -> f64 {
-    let n = (b - a).cross(c - a);
-    let nn = n.dot(n);
-    if nn > 1e-24 {
-        let q = p - n * ((p - a).dot(n) / nn);
-        let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= 0.0);
-        if inside {
-            return (p - q).len();
-        }
-    }
-    p.dist_to_segment(a, b).min(p.dist_to_segment(b, c)).min(p.dist_to_segment(c, a))
 }
 
 /// The pattern objects' label: features are picked in the timeline.
@@ -4922,7 +4875,7 @@ pub(crate) fn face_sel(s: &Session, p0: Vec3) -> Option<Sel> {
         let m = b.mesh();
         for (t, f) in m.triangles.iter().zip(&m.tri_face) {
             let Some([a, bb, c]) = m.tri(t) else { continue };
-            let d = crate::preview::point_triangle_dist(p, a, bb, c);
+            let d = p.dist_to_triangle(a, bb, c);
             if best.as_ref().is_none_or(|(bd, _, _, _)| d < *bd) {
                 best = Some((d, b, *f as usize, p));
             }

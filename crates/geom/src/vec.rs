@@ -139,12 +139,43 @@ impl Vec3 {
     pub fn to_f32(self) -> [f32; 3] {
         [self.x as f32, self.y as f32, self.z as f32]
     }
-    /// Distance from this point to the segment `a`–`b`.
-    pub fn dist_to_segment(self, a: Vec3, b: Vec3) -> f64 {
+    /// The point of the segment `a`–`b` nearest this one.
+    pub fn closest_on_segment(self, a: Vec3, b: Vec3) -> Vec3 {
         let ab = b - a;
         let l2 = ab.len2();
         let t = if l2 > 0.0 { ((self - a).dot(ab) / l2).clamp(0.0, 1.0) } else { 0.0 };
-        self.dist(a + ab * t)
+        a + ab * t
+    }
+    /// Distance from this point to the segment `a`–`b`.
+    pub fn dist_to_segment(self, a: Vec3, b: Vec3) -> f64 {
+        self.dist(self.closest_on_segment(a, b))
+    }
+    /// The point of the triangle `a`, `b`, `c` nearest this one: its foot on the triangle's plane
+    /// when that falls inside the triangle, otherwise the nearest point of a side. A triangle
+    /// thinner than rounding (the sine of its angle at `a` under 1e-8: one without area, a
+    /// repeated corner such as a cone's tip, three corners in a line) is taken as its sides, which
+    /// lie within that sine of all of it; its plane would be mostly rounding.
+    pub fn closest_on_triangle(self, a: Vec3, b: Vec3, c: Vec3) -> Vec3 {
+        let (ab, ac) = (b - a, c - a);
+        let n = ab.cross(ac);
+        let n2 = n.len2();
+        if n2 > 1e-16 * ab.len2() * ac.len2() {
+            let q = self - n * ((self - a).dot(n) / n2);
+            if [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= 0.0) {
+                return q;
+            }
+        }
+        [self.closest_on_segment(a, b), self.closest_on_segment(b, c), self.closest_on_segment(c, a)]
+            .into_iter()
+            .min_by(|x, y| self.dist(*x).total_cmp(&self.dist(*y)))
+            .unwrap_or(a)
+    }
+    /// Distance from this point to the triangle `a`, `b`, `c` ([`Vec3::closest_on_triangle`]).
+    /// Infinite, not NaN, when the point or a corner isn't finite, so such a triangle is never
+    /// the nearest.
+    pub fn dist_to_triangle(self, a: Vec3, b: Vec3, c: Vec3) -> f64 {
+        let d = self.dist(self.closest_on_triangle(a, b, c));
+        if d.is_nan() { f64::INFINITY } else { d }
     }
 }
 

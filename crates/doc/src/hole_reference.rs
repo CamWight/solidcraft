@@ -140,7 +140,7 @@ pub fn on_reference_face(st: &ModelState, frame: &ReferenceFrame, p: Vec3) -> bo
         .iter()
         .zip(&m.tri_face)
         .filter(|(_, f)| **f as usize == frame.face)
-        .any(|(t, _)| m.tri(t).is_some_and(|[a, bb, c]| crate::appearance::closest_on_triangle(p, a, bb, c).dist(p) <= tol))
+        .any(|(t, _)| m.tri(t).is_some_and(|[a, bb, c]| p.dist_to_triangle(a, bb, c) <= tol))
 }
 
 /// The persistent names of the edges at `edges`, on the body the hole at `at` is drilled into

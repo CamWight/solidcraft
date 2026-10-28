@@ -88,7 +88,7 @@ impl Surface {
     }
 
     fn to_triangle(&self, p: Vec3, t: u32) -> f64 {
-        self.tris.get(t as usize).map_or(f64::INFINITY, |[a, b, c]| crate::compare::closest_on_triangle(p, *a, *b, *c).dist(p))
+        self.tris.get(t as usize).map_or(f64::INFINITY, |[a, b, c]| p.dist_to_triangle(*a, *b, *c))
     }
 
     /// How far `p` lies from the surface, when that is more than `beyond`; otherwise

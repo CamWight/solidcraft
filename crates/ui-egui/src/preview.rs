@@ -858,17 +858,8 @@ impl SurfaceIndex {
     fn contains(&self, p: Vec3) -> bool {
         let (x, y, z) = (self.cell_of(p.x, 0), self.cell_of(p.y, 1), self.cell_of(p.z, 2));
         let Some(cell) = self.cells.get((x * self.res + y) * self.res + z) else { return false };
-        cell.iter().filter_map(|i| self.tris.get(*i as usize)).any(|[a, b, c]| point_triangle_dist(p, *a, *b, *c) < self.tol)
+        cell.iter().filter_map(|i| self.tris.get(*i as usize)).any(|[a, b, c]| p.dist_to_triangle(*a, *b, *c) < self.tol)
     }
-}
-
-pub fn point_triangle_dist(p: Vec3, a: Vec3, b: Vec3, c: Vec3) -> f64 {
-    let n = (b - a).cross(c - a);
-    let Some(nn) = n.normalized() else { return f64::INFINITY };
-    let h = (p - a).dot(nn);
-    let q = p - nn * h;
-    let inside = [(a, b), (b, c), (c, a)].iter().all(|(u, v)| (*v - *u).cross(q - *u).dot(n) >= -1e-12);
-    if inside { h.abs() } else { [(a, b), (b, c), (c, a)].iter().map(|(u, v)| p.dist_to_segment(*u, *v)).fold(f64::INFINITY, f64::min) }
 }
 
 /// The same computed sketch preview is drawn over both native GPU and CPU viewports.
@@ -1222,7 +1213,7 @@ mod tests {
     fn brute_force_on_surface(m: &Mesh, p: Vec3) -> bool {
         let bb = m.bounds();
         let tol = (bb.diagonal() * 2e-3).max(1e-4);
-        m.triangles.iter().filter_map(|t| m.tri(t)).any(|[a, b, c]| point_triangle_dist(p, a, b, c) < tol)
+        m.triangles.iter().filter_map(|t| m.tri(t)).any(|[a, b, c]| p.dist_to_triangle(a, b, c) < tol)
     }
 
     /// A flat sheet of `n × n` squares, two triangles and one face each, lifted by `z`.

@@ -990,7 +990,14 @@ fn a_hole_is_patterned_as_a_feature() {
     let st = app.session.model.state();
     let m = st.bodies[0].mesh();
     let face_at = |p: Vec3| {
-        let t = m.triangles.iter().position(|t| super::dialogs::point_tri_dist(p, m.tri(t).unwrap()) < 0.05).unwrap();
+        let t = m
+            .triangles
+            .iter()
+            .position(|t| {
+                let [a, b, c] = m.tri(t).unwrap();
+                p.dist_to_triangle(a, b, c) < 0.05
+            })
+            .unwrap();
         let [a, b, c] = m.tri(&m.triangles[t]).unwrap();
         crate::viewport::Hit::Face { body: "Body1".into(), index: m.tri_face[t] as usize, point: (a + b + c) * (1.0 / 3.0) }
     };
@@ -2194,7 +2201,14 @@ fn split_body_by_a_curved_face_sends_it_as_a_tool() {
     let m = cyl.mesh();
     // A point on the round side.
     let p = Vec3::new(30.0, 15.0, 5.0);
-    let t = m.triangles.iter().position(|t| crate::dialogs::point_tri_dist(p, m.tri(t).unwrap()) < 0.3).unwrap();
+    let t = m
+        .triangles
+        .iter()
+        .position(|t| {
+            let [a, b, c] = m.tri(t).unwrap();
+            p.dist_to_triangle(a, b, c) < 0.3
+        })
+        .unwrap();
     let side = Sel::Face { body: cyl.name.clone(), index: m.tri_face[t] as usize, point: p };
     drop(st);
     let mut d = start(&mut app, vec![], "solid.split_body");

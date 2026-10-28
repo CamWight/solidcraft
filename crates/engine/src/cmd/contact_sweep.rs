@@ -545,10 +545,10 @@ fn tri_distance(a: &[Vec3; 3], b: &[Vec3; 3]) -> (f64, Vec3, Vec3) {
         }
     };
     for p in a {
-        keep(*p, super::closest(*p, b[0], b[1], b[2]));
+        keep(*p, p.closest_on_triangle(b[0], b[1], b[2]));
     }
     for q in b {
-        keep(super::closest(*q, a[0], a[1], a[2]), *q);
+        keep(q.closest_on_triangle(a[0], a[1], a[2]), *q);
     }
     for i in 0..3 {
         for j in 0..3 {
