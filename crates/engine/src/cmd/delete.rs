@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use solidcraft_doc::FeatureKind;
 use solidcraft_geom::Vec3;
 
-use super::CommandSpec;
+use super::{CommandSpec, sketch_store};
 use crate::params::{bad, bool_};
 use crate::{EngineError, Result, Sel, Session};
 
@@ -119,7 +119,7 @@ fn apply(s: &mut Session, p: &Value) -> Result<Value> {
             // whole text, so no counters are left behind.
             Sel::Profile { sketch, index } if s.active_sketch == Some(*sketch) => {
                 let st = s.model.state();
-                let (Some(ss), Ok(sk)) = (st.sketch(*sketch), s.doc.sketch(*sketch)) else {
+                let (Some(ss), Ok(sk)) = (st.sketch(*sketch), sketch_store::read(&s.doc, *sketch)) else {
                     skip("nothing around that profile can be deleted".into());
                     continue;
                 };

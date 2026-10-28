@@ -423,7 +423,7 @@ fn toggle_diameter(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "sketch.toggle_diameter";
     let cid = str_(p, "constraint").ok_or_else(|| bad(cmd, "`constraint` must be a dimension id"))?.to_string();
     let want = crate::params::bool_(p, "diameter");
-    let sketch = super::sketch::target_sketch(s, p, cmd)?;
+    let sketch = sketch_store::target(s, p, cmd)?;
     let (diameter, info) = edit(s, p, cmd, true, |sk, doc| {
         let c = sk.constraints.iter().find(|c| c.id == cid).cloned().ok_or_else(|| bad(cmd, format!("no constraint `{cid}`")))?;
         let round = |curve: usize| matches!(sk.curves.get(curve).map(|c| &c.kind), Some(CurveKind::Circle { .. } | CurveKind::Arc { .. }));
