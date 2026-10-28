@@ -15,8 +15,8 @@ mod dimensioned;
 mod drag;
 #[path = "sketch_face.rs"]
 pub(super) mod face;
-pub use dimensioned::dimension_roles;
 use super::sketch_store;
+pub use dimensioned::dimension_roles;
 use dimensioned::draw as draw_dimensioned;
 use drag::drag_entity;
 
