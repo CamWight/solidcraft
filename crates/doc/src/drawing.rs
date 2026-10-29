@@ -18,6 +18,8 @@
 //!   interface's is. **Properties** follow [`Metadata`]'s rules.
 //! - **Views** of its designs on its sheets, base and projected ([`view`]), and the **projection**
 //!   (first or third angle) every projected view follows.
+//! - **Revisions**: one revision record for the whole drawing ([`RevisionRecord`]), its rows in the
+//!   order they were added, the newest last.
 //!
 //! The rules, which every later kind of record (views, annotations, tables) keeps too:
 //! - Every object has an id of [`crate::ids`]: random, so objects added side by side never take
@@ -42,6 +44,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile};
+use solidcraft_geom::revision::RevisionRecord;
 use solidcraft_geom::{Aabb2, Vec2};
 
 use crate::format::DRAWING;
@@ -103,6 +106,9 @@ pub struct Drawing {
     /// In order, each behind its own `Arc`, as the sheets are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub views: Vec<Arc<View>>,
+    /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
+    #[serde(default, skip_serializing_if = "no_revisions")]
+    pub revisions: Arc<RevisionRecord>,
 }
 
 /// A design the drawing draws: the design the drawing is in. Views and sheets name it by its id,
@@ -211,6 +217,7 @@ impl Drawing {
             language: language.into(),
             sheets: vec![Arc::new(first)],
             views: Vec::new(),
+            revisions: Arc::default(),
         };
         drawing.validate()?;
         Ok(drawing)
@@ -273,6 +280,7 @@ impl Drawing {
             .chain(self.sources.iter().map(|s| s.id))
             .chain(self.sheets.iter().map(|s| s.id))
             .chain(self.views.iter().map(|v| v.id))
+            .chain(self.revisions.ids())
     }
 
     /// The record's rules (the module's notes): what reading a drawing checks, and what every edit
@@ -297,6 +305,9 @@ impl Drawing {
         for sheet in &self.sheets {
             self.check_sheet(sheet).map_err(|e| DocError::Invalid(format!("sheet {}: {e}", ids::encode(sheet.id))))?;
         }
+        // One record for the whole drawing until sheets keep their own (#3874).
+        require(!self.revisions.per_sheet, || "a drawing keeps one revision record for all its sheets".into())?;
+        self.revisions.validate().map_err(|e| DocError::Invalid(e.to_string()))?;
         self.check_views()
     }
 
@@ -350,6 +361,10 @@ pub fn check_count(count: usize) -> Result<()> {
 /// Whether the drawing has no properties, so its file leaves them out.
 fn no_properties(properties: &Arc<Metadata>) -> bool {
     properties.is_empty()
+}
+
+fn no_revisions(revisions: &Arc<RevisionRecord>) -> bool {
+    **revisions == RevisionRecord::default()
 }
 
 /// `Ok` when `ok`, else the rule `broken` names.
