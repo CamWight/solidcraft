@@ -78,7 +78,7 @@ pub(super) fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         crate::scenario::publish_target("prefs:sketch_conflict_colour", check.rect);
     });
     ui_kit::settings_section(ui, "selection", app.tr("prefs.selecting"), |ui| {
-        ui_kit::checkbox(ui, crate::i18n::tr_label("Click selects whole bodies"), &mut app.ui.pick_bodies);
+        crate::selection_mode::bodies_checkbox(app, ui, crate::i18n::tr_label("Click selects whole bodies"));
         ui_kit::checkbox(ui, app.tr("prefs.prefer_free_sketch_points"), &mut app.preferences.prefer_free_sketch_points);
         let click = app.tr("prefs.click");
         let shift = app.tr("prefs.shift");

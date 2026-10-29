@@ -228,6 +228,7 @@ scale	false
 screw	false
 section	false
 select	false
+select_faces_edges	false
 send	false
 settings	false
 settings_keyboard	false
