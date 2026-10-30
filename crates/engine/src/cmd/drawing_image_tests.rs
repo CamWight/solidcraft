@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use serde_json::json;
 use solidcraft_doc::canvas::base64_decode;
-use solidcraft_doc::drawing::image::MAX_IMAGE_PIXELS;
+use solidcraft_geom::paper::MAX_IMAGE_PIXELS;
 use solidcraft_io::vfs::{self, PathScope};
 
 use super::*;
