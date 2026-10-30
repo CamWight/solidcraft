@@ -91,16 +91,20 @@ pub struct Group {
 }
 
 impl Group {
-    /// The box round what the group draws, along its lines' paths and round its pictures. Text
-    /// isn't measured here: nothing on a sheet draws any yet, and its outlines need its font.
-    pub fn bounds(&self) -> Aabb2 {
+    /// The box round what the group draws: along its lines' paths and its text's outlines, in `fonts`,
+    /// and round its pictures.
+    pub fn bounds(&self, fonts: &[Font]) -> Aabb2 {
         let mut bounds = Aabb2::EMPTY;
         for item in &self.items {
             let mut add = |path: &[Seg2]| path.iter().for_each(|seg| bounds = bounds.union(&seg.bounds()));
             match item {
                 Item::Stroke { path, .. } => add(path),
                 Item::Fill { region } => region.loops().for_each(|ring| add(&ring.segs)),
-                Item::Text(_) => {}
+                Item::Text(run) => {
+                    if let Some(font) = text::font_in(fonts, &run.font) {
+                        run.outlines(font).for_each(|ring| add(&ring.segs));
+                    }
+                }
                 Item::Picture(picture) => bounds = bounds.union(&picture.rect),
             }
         }
