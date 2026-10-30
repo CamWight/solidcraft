@@ -15,7 +15,7 @@ use super::drawing_dimension::status_words;
 use crate::params::bad;
 use crate::schema::drawing_note::{AddParams, AnchorParam, EditParams, EditResult, InspectParams, NoteResult};
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const ADD: &str = "drawing.note.add";
 const ADD_CONTRACT: TypedContract<AddParams> = TypedContract::new();
@@ -114,7 +114,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(changed)
     })?;
     let reply = EditResult { note: ids::encode(id), changed, param_warnings: Vec::new() };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
@@ -133,7 +133,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let (status, why, candidates) = status_words(r.status);
     let reply = NoteResult {
         note: ids::encode(id),
-        record: serde_json::to_value(note).map_err(|e| EngineError::Other(e.to_string()))?,
+        record: crate::schema::reply(note)?,
         status: status.to_string(),
         why,
         point: r.point.map(|p| [p.x, p.y, p.z]),
@@ -141,7 +141,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
         candidates,
         param_warnings: Vec::new(),
     };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 #[cfg(test)]

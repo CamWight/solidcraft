@@ -22,7 +22,7 @@ use super::drawing_dimension::status_words;
 use crate::params::bad;
 use crate::schema::drawing_balloon::{AddParams, BalloonResult, EditParams, EditResult, InspectParams};
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const ADD: &str = "drawing.balloon.add";
 const ADD_CONTRACT: TypedContract<AddParams> = TypedContract::new();
@@ -105,7 +105,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(changed)
     })?;
     let reply = EditResult { balloon: ids::encode(id), changed, param_warnings: Vec::new() };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
@@ -126,7 +126,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let reply = BalloonResult {
         balloon: ids::encode(id),
         view: ids::encode(balloon.view),
-        record: serde_json::to_value(balloon).map_err(|e| EngineError::Other(e.to_string()))?,
+        record: crate::schema::reply(balloon)?,
         occurrence: balloon.occurrence().to_vec(),
         status: status.to_string(),
         why,
@@ -140,7 +140,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
         warnings,
         param_warnings: Vec::new(),
     };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 /// A balloon's row in the parts list it reads.

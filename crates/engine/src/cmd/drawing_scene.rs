@@ -21,7 +21,7 @@ use crate::schema::drawing_scene::{
     SheetLineResult, SheetPaperScene, SheetSceneDimension, SheetSceneParams, SheetSceneResult, ViewStatusResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const CONTRACT: TypedContract<SheetSceneParams> = TypedContract::new();
 const HIT: &str = "drawing.scene.hit";
@@ -83,7 +83,7 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
         .collect();
     let waiting = views.iter().filter(|v| v.status == "out_of_date").count();
     let reply = DrawingStatusResult { views, dimensions, waiting, param_warnings: Vec::new() };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 fn hit(s: &mut Session, p: &Value) -> Result<Value> {
@@ -96,7 +96,7 @@ fn hit(s: &mut Session, p: &Value) -> Result<Value> {
     let built = crate::drawing_scene::build(s, &d, sheet)?;
     let found = crate::drawing_scene::hit(&built.objects, request.point_mm.0, request.band_mm);
     let hit = found.map(|h| HitResult { object: ids::encode(h.object), kind: h.kind, on_edge: h.on_edge });
-    serde_json::to_value(SheetHitResult { hit, param_warnings: Vec::new() }).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(SheetHitResult { hit, param_warnings: Vec::new() })
 }
 
 fn line(s: &mut Session, p: &Value) -> Result<Value> {
@@ -122,7 +122,7 @@ fn line(s: &mut Session, p: &Value) -> Result<Value> {
         source: l.source.into(),
         distance_mm: l.distance_mm,
     });
-    serde_json::to_value(SheetLineResult { line, param_warnings: Vec::new() }).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(SheetLineResult { line, param_warnings: Vec::new() })
 }
 
 /// Each dimension of a scene in the words of a reply.
@@ -150,5 +150,5 @@ fn scene(s: &mut Session, p: &Value) -> Result<Value> {
     let dimensions = dimension_results(built.dimensions);
     let reply =
         SheetSceneResult { sheet: ids::encode(sheet), scene: SheetPaperScene(built.scene), views, objects, dimensions, param_warnings: Vec::new() };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }

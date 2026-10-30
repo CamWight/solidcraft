@@ -21,7 +21,7 @@ use crate::schema::drawing_dimension::{
     MemberResult, SilhouetteParam,
 };
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const ADD: &str = "drawing.dimension.add";
 const ADD_CONTRACT: TypedContract<AddParams> = TypedContract::new();
@@ -163,7 +163,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     let id = request.dimension.0;
     let changed = s.edit_drawing(EDIT, |d| change(d, id, &request.set))?;
     let reply = EditResult { dimension: ids::encode(id), changed, param_warnings: Vec::new() };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 /// A new radial dimension's default from its arc as read (its centre, start and middle): a diameter
@@ -300,7 +300,7 @@ fn answer(s: &mut Session, cmd: &str, id: u64) -> Result<Value> {
     let reply = DimensionResult {
         dimension: ids::encode(id),
         view: ids::encode(dimension.view),
-        record: serde_json::to_value(dimension).map_err(|e| EngineError::Other(e.to_string()))?,
+        record: crate::schema::reply(dimension)?,
         status: status.to_string(),
         why,
         value: r.measured.map(|m| shown(m.value)),
@@ -312,7 +312,7 @@ fn answer(s: &mut Session, cmd: &str, id: u64) -> Result<Value> {
         candidates,
         param_warnings: Vec::new(),
     };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 /// How a command's answer says where a reference stands with the model: the status's word, why
