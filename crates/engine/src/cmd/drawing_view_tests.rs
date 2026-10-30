@@ -1440,7 +1440,9 @@ fn a_dragged_view_keeps_its_line_up_and_its_followers_follow() {
         assert_eq!(centre_of(&s, right), [300.0, 155.0]);
         assert_eq!(centre_of(&s, top), [170.0, 220.0]);
         assert_eq!(reply["place"], json!({"at": [170.0, 155.0]}), "{reply}");
-        assert_eq!(reply["followers"], json!([ids::encode(right), ids::encode(top)]), "{reply}");
+        let mut followers = [right, top];
+        followers.sort_unstable();
+        assert_eq!(reply["followers"], json!(followers.map(ids::encode)), "{reply}");
         run(&mut s, "edit.undo", json!({}));
         assert_eq!((centre_of(&s, front), centre_of(&s, right), centre_of(&s, top)), ([150.0, 150.0], [300.0, 150.0], [150.0, 220.0]));
 
