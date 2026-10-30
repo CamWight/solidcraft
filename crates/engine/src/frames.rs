@@ -377,6 +377,13 @@ pub fn mapped() -> bool {
     MAPPED.with(std::cell::Cell::get)
 }
 
+/// Whether command `id`'s coordinates are mapped, as if it were the outermost command: for one that
+/// runs another on its caller's behalf, whose own table says nothing about it. Restores the enclosing
+/// command's mapping state, including on an error.
+pub(crate) fn mapped_as(id: &str) -> LocalGeometry {
+    LocalGeometry(MAPPED.with(|m| m.replace(!table(id).is_empty())))
+}
+
 /// Author generated geometry directly in the active component's local frame.
 /// Restores the enclosing command's mapping state, including on an error.
 pub(crate) fn local_geometry() -> LocalGeometry {

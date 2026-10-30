@@ -933,3 +933,16 @@ fn a_views_dimensions_swap_with_its_lines() {
     assert_eq!(bytes_of(group_of(&edited.scene, front)), bytes_of(group_of(&end.scene, front)));
     assert_ne!(bytes_of(group_of(&edited.scene, id)), bytes_of(group_of(&end.scene, id)));
 }
+
+/// A model edit from the open drawing marks the views it changes stale, and the next steps draw them.
+#[test]
+fn a_model_edit_from_the_drawing_makes_its_views_stale() {
+    let (mut s, sheet, [front, _]) = front_and_top();
+    settled(&mut s, sheet);
+    assert!(extract(&mut s, sheet).unwrap().stale.is_empty());
+    let block = s.doc.features[0].id;
+    run(&mut s, "drawing.source.execute", json!({"command": "timeline.edit", "params": {"feature": block.to_string(), "set": {"height": 40}}}));
+    assert!(extract(&mut s, sheet).unwrap().stale.contains(&front));
+    settled(&mut s, sheet);
+    assert!(extract(&mut s, sheet).unwrap().stale.is_empty());
+}
