@@ -1197,12 +1197,12 @@ mod tests {
     #[test]
     fn a_model_cache_too_big_for_the_file_is_left_out_not_a_failed_save() {
         let doc = document();
-        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, 70_000).unwrap();
+        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, &SheetCaches::default(), 70_000).unwrap();
         assert!(!parts(&bytes).contains_key("cache/model.json") && !parts(&bytes).contains_key("cache/bodies.bin"));
         assert!(read_design_geometry(&bytes).is_none());
         assert_eq!(crate::read_design(&bytes).unwrap().to_json(), doc.to_json());
         // With room for it, the same model is kept.
-        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, crate::MAX_DESIGN_BYTES).unwrap();
+        let bytes = write_container(&doc, DesignCompression::Fast, None, Some(&native_geometry()), None, &SheetCaches::default(), crate::MAX_DESIGN_BYTES).unwrap();
         assert!(read_design_geometry(&bytes).is_some());
     }
 

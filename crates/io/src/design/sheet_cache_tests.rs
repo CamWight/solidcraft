@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::io::Write as _;
 
 use serde_json::{Value, json};
 use solidcraft_doc::drawing::{Drawing, Source};
@@ -8,6 +7,7 @@ use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
 use solidcraft_geom::paper::Item;
 
 use super::*;
+use crate::MAX_DESIGN_BYTES;
 
 /// A design with two drawings.
 fn design() -> Document {
@@ -48,7 +48,7 @@ fn read_from(bytes: &[u8], drawing: u64, document: &str) -> Option<ReadLines> {
 
 fn parts(bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
-    let names: Vec<String> = zip.file_names().map(String::from).collect();
+    let names: Vec<String> = zip.file_names().map(|name| name.unwrap().into_owned()).collect();
     names
         .into_iter()
         .map(|name| {
