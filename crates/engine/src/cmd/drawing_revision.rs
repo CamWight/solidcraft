@@ -20,7 +20,7 @@ use crate::schema::drawing_revision::{
     TagEditParams, TagResult, VersionResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const ADD: &str = "drawing.revision.add";
 const ADD_CONTRACT: TypedContract<RevisionAddParams> = TypedContract::new();
@@ -250,7 +250,7 @@ fn row<'a>(record: &'a RevisionRecord, id: u64, cmd: &str) -> Result<&'a Revisio
 fn answer(s: &Session, cmd: &str, reply: RevisionsResult) -> Result<Value> {
     let record = &s.drawing(cmd)?.revisions;
     let reply = RevisionsResult { rows: rows(record), next: record.next_revision(None), issued: issued(record), tags: tags(record), ..reply };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 fn row_result(r: &RevisionRow) -> RowResult {

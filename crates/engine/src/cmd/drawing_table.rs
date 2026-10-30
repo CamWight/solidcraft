@@ -19,7 +19,7 @@ use crate::drawing_scene::sheet_id;
 use crate::params::bad;
 use crate::schema::drawing_table::{AddParams, DeleteParams, DeleteResult, EditParams, KindParam, ListSet, TableResult, TableSet};
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const ADD: &str = "drawing.table.add";
 const ADD_CONTRACT: TypedContract<AddParams> = TypedContract::new();
@@ -108,7 +108,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         d.remove_objects(&OnSheet { tables: vec![id], ..Default::default() });
         Ok(named)
     })?;
-    serde_json::to_value(DeleteResult { table: ids::encode(id), balloons }).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(DeleteResult { table: ids::encode(id), balloons })
 }
 
 /// The list a parts list on `sheet` starts with: what its sheet documents, else the design.
@@ -179,7 +179,7 @@ fn apply_list(s: &Session, list: &mut PartsList, set: ListSet, cmd: &str) -> Res
 
 /// `record` with `fields`, those given, in place of its own: the record's own reader judges them.
 fn merged<T: serde::Serialize + serde::de::DeserializeOwned, const N: usize>(record: &T, fields: [(&str, Option<Value>); N], cmd: &str) -> Result<T> {
-    let mut v = serde_json::to_value(record).map_err(|e| EngineError::Other(e.to_string()))?;
+    let mut v = crate::schema::reply(record)?;
     if let Some(saved) = v.as_object_mut() {
         saved.extend(fields.into_iter().filter_map(|(key, value)| Some((key.to_string(), value?))));
     }
@@ -196,13 +196,8 @@ fn answer(s: &mut Session, cmd: &str, id: u64, list: Option<PartsList>) -> Resul
     }
     let d = s.drawing(cmd)?;
     let table = d.tables.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no table {}", ids::encode(id))))?;
-    let reply = TableResult {
-        table: ids::encode(id),
-        sheet: ids::encode(table.sheet),
-        record: serde_json::to_value(table).map_err(|e| EngineError::Other(e.to_string()))?,
-        warnings,
-    };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    let reply = TableResult { table: ids::encode(id), sheet: ids::encode(table.sheet), record: crate::schema::reply(table)?, warnings };
+    crate::schema::reply(reply)
 }
 
 #[cfg(test)]
