@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_doc::drawing::{self, Drawing};
+use solidcraft_doc::ids;
 use solidcraft_doc::{Document, Feature, FeatureKind};
 
 use super::CommandSpec;
