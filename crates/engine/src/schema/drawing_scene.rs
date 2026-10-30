@@ -80,6 +80,44 @@ impl From<SheetObject> for SheetObjectResult {
     }
 }
 
+/// Where the drawing open stands. It takes nothing.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct DrawingStatusParams {}
+
+/// One view: `current`, `out_of_date`, `placeholder` or `failed`, with why for the last two.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ViewStatusResult {
+    pub view: String,
+    pub sheet: String,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// One dimension, in the words `drawing.dimension.inspect` uses.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DimensionStatusResult {
+    pub dimension: String,
+    pub status: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// What `drawing.status` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DrawingStatusResult {
+    /// Each view of the drawing, in id order.
+    pub views: Vec<ViewStatusResult>,
+    /// Each dimension, in id order.
+    pub dimensions: Vec<DimensionStatusResult>,
+    /// How many views are out of date.
+    pub waiting: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
 /// What `drawing.scene` returns.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SheetSceneResult {
