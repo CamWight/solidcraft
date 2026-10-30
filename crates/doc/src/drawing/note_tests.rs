@@ -32,7 +32,7 @@ fn noted() -> (Drawing, [u64; 3]) {
         sheet,
         kind,
         place: ViewPlace::At([150.0, 150.0]),
-        settings: ViewOverrides::default(),
+        settings: ViewOverrides { scale: Some("1:2".parse().unwrap()), ..ViewOverrides::default() },
         reference_margin_mm: 0.0,
     })]);
     let edge = ModelEdge { body: "Bolt".into(), origin_feature: 4, name: "F1:side|F2:head".into(), path: vec![3] };
