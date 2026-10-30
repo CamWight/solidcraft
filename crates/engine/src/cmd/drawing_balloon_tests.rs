@@ -349,7 +349,7 @@ fn a_balloon_follows_its_row_through_the_model() {
     assert_eq!(read(&mut s, &balloon)["item"], json!("7"), "undone");
 
     with_drawing_closed(&mut s, "occurrence.bom_type", json!({"occurrence": occurrence, "bom_type": "phantom"}));
-    assert_eq!(read(&mut s, &balloon)["row_status"], json!("no_row"), "a phantom with its bodies counts as its parts");
+    assert_eq!(read(&mut s, &balloon)["row_status"], json!("ok"), "a phantom's own bodies are a row of their own");
     with_drawing_closed(&mut s, "edit.undo", json!({}));
 
     with_drawing_closed(&mut s, "component.delete", json!({"component": component}));
