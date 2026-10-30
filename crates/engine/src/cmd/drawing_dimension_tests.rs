@@ -440,6 +440,27 @@ fn a_dimension_that_cant_be_measured_gives_its_last_good_value() {
     assert!(run(&mut fresh, INSPECT, json!({"dimension": added["dimension"]})).get("last_good").is_none());
 }
 
+/// A dimension on a hole a model undo took away stays lost when the next hole is made. Today that
+/// hole takes the undone one's feature id, so the dimension reads it as its own, without a word (#5308).
+#[test]
+#[ignore = "fails until #5308's first slice"]
+fn a_dimension_on_an_undone_hole_doesnt_attach_to_the_next_hole() {
+    let (mut s, view) = front_view();
+    let drawing = json!({"drawing": ids::encode(s.drawing("test").unwrap().id)});
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.cylinder", json!({"radius": 6, "height": 42, "base": [20, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"]}));
+    run(&mut s, "drawing.open", drawing.clone());
+    let hole = json!({"body": "Box", "index": round_index(&s, [20.0, 0.0, 15.0], 6.0)});
+    let added = add(&mut s, view, json!({"radial": {"edge": hole}}));
+    reads(&added, 12.0, "Ø12.00");
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "edit.undo", json!({}));
+    run(&mut s, "solid.cylinder", json!({"radius": 8, "height": 42, "base": [60, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"]}));
+    run(&mut s, "drawing.open", drawing);
+    let read = run(&mut s, INSPECT, json!({"dimension": added["dimension"]}));
+    assert_eq!((&read["status"], read.get("value")), (&json!("lost"), None), "{read}");
+}
+
 /// A setting its kind hasn't got, and a value the record would refuse, are refused with the
 /// drawing unchanged; an angle takes its other side.
 #[test]
