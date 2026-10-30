@@ -12,15 +12,14 @@
 //! [`Table::validate`]; its place is on paper ([`is_paper_coordinate`]); at most [`MAX_TABLES`],
 //! listed by id.
 
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::cell::{Content, Format, HAlign, Part, Source};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 use solidcraft_geom::table::{Column, Filter, Heading, Table};
 
-use super::{Drawing, SheetComponent, add_by_id, in_id_order, require};
+use super::by_id::Record;
+use super::{Drawing, SheetComponent, require};
 use crate::bom::{Group, Request, View};
 use crate::{DocError, Result, ids};
 
@@ -178,30 +177,16 @@ fn column(key: &str, heading: &str, align: HAlign) -> Column {
     Column { name: key.into(), heading: heading.into(), content, width_mm: None, align }
 }
 
+impl Record for SheetTable {
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
 impl Drawing {
-    /// Adds `tables`, each where its id puts it, as [`Drawing::add_balloons`] adds balloons.
-    pub fn add_tables(&mut self, tables: impl IntoIterator<Item = Arc<SheetTable>>) {
-        add_by_id(&mut self.tables, tables, |t| t.id);
-    }
-
-    /// Table `id`, found by halves in the tables' id order.
-    pub fn table(&self, id: u64) -> Option<&SheetTable> {
-        self.table_index(id).and_then(|i| self.tables.get(i)).map(|t| &**t)
-    }
-
-    /// Where table `id` is in [`Drawing::tables`].
-    pub fn table_index(&self, id: u64) -> Option<usize> {
-        self.tables.binary_search_by_key(&id, |t| t.id).ok()
-    }
-
     /// The tables' rules (the module's notes).
     pub(super) fn check_tables(&self) -> Result<()> {
-        require(self.tables.len() <= MAX_TABLES, || format!("a drawing has at most {MAX_TABLES} tables"))?;
-        require(in_id_order(&self.tables, |t| t.id), || "a drawing lists its tables by id".into())?;
-        for table in &self.tables {
-            self.check_table(table).map_err(|e| DocError::Invalid(format!("table {}: {e}", ids::encode(table.id))))?;
-        }
-        Ok(())
+        self.tables.check(MAX_TABLES, "table", |t| self.check_table(t))
     }
 
     fn check_table(&self, t: &SheetTable) -> Result<()> {

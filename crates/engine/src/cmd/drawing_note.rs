@@ -86,7 +86,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let id = record.allocate_id(&mut s.ids).map_err(|e| bad(ADD, e.to_string()))?;
     let note = Note { id, anchor, at: request.at, content: request.content.0, cap_mm: request.cap_mm };
     s.edit_drawing(ADD, |d| {
-        d.add_notes([Arc::new(note)]);
+        d.notes.add([Arc::new(note)]);
         Ok(())
     })?;
     answer(s, ADD, id)
@@ -96,7 +96,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     let request: EditParams = crate::schema::read(EDIT, p)?;
     let id = request.note.0;
     let changed = s.edit_drawing(EDIT, |d| {
-        let at = d.note_index(id).ok_or_else(|| bad(EDIT, format!("the drawing has no note {}", ids::encode(id))))?;
+        let at = d.notes.index_of(id).ok_or_else(|| bad(EDIT, format!("the drawing has no note {}", ids::encode(id))))?;
         let Some(note) = d.notes.get_mut(at).map(Arc::make_mut) else { return Ok(Vec::new()) };
         let mut changed = Vec::new();
         if let Some(place) = request.set.at.filter(|place| *place != note.at) {
@@ -125,7 +125,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 /// Note `id` of the open drawing as the model has it now.
 fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
-    let note = d.note(id).ok_or_else(|| bad(cmd, format!("the drawing has no note {}", ids::encode(id))))?;
+    let note = d.notes.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no note {}", ids::encode(id))))?;
     // A note on a sheet reads no model.
     let from = note.anchor.view().map_or(Ok(s), |view| s.drawn_by_view(d, view)).map_err(|why| bad(cmd, why.to_string()))?;
     let resolved = from.doc.resolve_notes(&from.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;

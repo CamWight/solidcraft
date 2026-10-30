@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use solidcraft_doc::MAX_PLACEMENT_DEPTH;
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
-use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
 use solidcraft_geom::Seg2;
+use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
 use solidcraft_geom::paper::ObjectKind;
 
 use super::*;

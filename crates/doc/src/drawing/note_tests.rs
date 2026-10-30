@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
@@ -40,7 +41,7 @@ fn noted() -> (Drawing, [u64; 3]) {
     let mut added = [0; 3];
     for (anchor, id) in anchors.into_iter().zip(&mut added) {
         *id = d.allocate_id(&mut id_source).unwrap();
-        d.add_notes([Arc::new(Note { id: *id, anchor, at: [40.0, 25.0], content: text("Break all edges"), cap_mm: None })]);
+        d.notes.add([Arc::new(Note { id: *id, anchor, at: [40.0, 25.0], content: text("Break all edges"), cap_mm: None })]);
     }
     d.validate().unwrap();
     (d, added)

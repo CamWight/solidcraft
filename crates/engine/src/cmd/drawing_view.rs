@@ -701,20 +701,20 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             .iter()
             .zip(&balloon_copies)
             .filter_map(|(old, new)| {
-                let original = d.balloon(*old)?;
+                let original = d.balloons.by_id(*old)?;
                 Some(Arc::new(Balloon { id: *new, view: copy_of(original.view)?, ..original.clone() }))
             })
             .collect();
-        d.add_balloons(copied);
+        d.balloons.add(copied);
         let copied: Vec<Arc<Note>> = noted
             .iter()
             .zip(&note_copies)
             .filter_map(|(old, new)| {
-                let original = d.note(*old)?;
+                let original = d.notes.by_id(*old)?;
                 Some(Arc::new(Note { id: *new, anchor: original.anchor.on_view(copy_of(original.anchor.view()?)?), ..original.clone() }))
             })
             .collect();
-        d.add_notes(copied);
+        d.notes.add(copied);
         Ok(sheet)
     })?;
     let first = copies.first().copied().unwrap_or_default();

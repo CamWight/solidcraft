@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
@@ -26,7 +27,7 @@ fn tabled() -> (Drawing, u64) {
     let first = d.allocate_id(&mut id_source).unwrap();
     let second = d.allocate_id(&mut id_source).unwrap();
     for (id, kind) in [(first, list), (second, Kind::Revision)] {
-        d.add_tables([Arc::new(SheetTable { id, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
+        d.tables.add([Arc::new(SheetTable { id, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
     }
     d.validate().unwrap();
     (d, first)
@@ -48,11 +49,11 @@ fn tables_save_and_read_back_by_id() {
     let mut v: Value = serde_json::from_str(&saved).unwrap();
     v["tables"].as_array_mut().unwrap().reverse();
     assert_eq!(Drawing::from_value(v).unwrap(), d, "in id order whatever the file's order");
-    assert!(d.table(first).is_some() && d.table(1).is_none());
-    let list = serde_json::to_value(d.table(first).unwrap()).unwrap();
+    assert!(d.tables.by_id(first).is_some() && d.tables.by_id(1).is_none());
+    let list = serde_json::to_value(d.tables.by_id(first).unwrap()).unwrap();
     assert_eq!(list["kind"]["parts_list"]["levels"], json!("flat"));
     assert_eq!(list["kind"]["parts_list"].get("group_children"), None);
-    let no_tables: Value = serde_json::from_str(&Drawing { tables: Vec::new(), ..d.clone() }.to_json().unwrap()).unwrap();
+    let no_tables: Value = serde_json::from_str(&Drawing { tables: Default::default(), ..d.clone() }.to_json().unwrap()).unwrap();
     assert_eq!(no_tables.get("tables"), None, "a drawing with none saves as it did");
 }
 
@@ -99,7 +100,7 @@ fn a_table_shares_the_drawings_ids_and_goes_with_its_sheet() {
     let mut one = d.clone();
     one.remove_objects(&OnSheet { tables: vec![first], ..Default::default() });
     assert_eq!(one.tables.len(), 1);
-    assert!(one.table(first).is_none());
+    assert!(one.tables.by_id(first).is_none());
     one.validate().unwrap();
 }
 
@@ -127,8 +128,9 @@ fn a_damaged_table_is_refused() {
 #[test]
 fn the_tables_cap_holds() {
     let (mut d, first) = tabled();
-    let one = d.table(first).unwrap().clone();
-    d.tables = (0..=MAX_TABLES as u64).map(|i| Arc::new(SheetTable { id: 1 << 45 | i, ..one.clone() })).collect();
+    let one = d.tables.by_id(first).unwrap().clone();
+    d.tables.clear();
+    d.tables.extend((0..=MAX_TABLES as u64).map(|i| Arc::new(SheetTable { id: 1 << 45 | i, ..one.clone() })));
     assert!(d.validate().unwrap_err().to_string().contains("at most 1000 tables"));
     d.tables.truncate(MAX_TABLES);
     d.validate().unwrap();
