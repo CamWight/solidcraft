@@ -265,6 +265,10 @@ drawings of its own too, is damage: the design is refused. Plain JSON holds the 
 A drawing saves what is authored: its sheets, views, dimensions and other annotations, each naming
 what it measures by persistent name. Nothing derived is saved.
 
+A drawing's source with no `path` is the design it is in. One with a `path` is the design in another
+file, relative to this one, with `/`, once this one has a file: a session holds it whole, as it holds
+a component link's. Listing a file's sources opens no other design.
+
 ## Sheet cache
 
 A warm save may add each drawing's last lines, so opening it draws nothing that hasn't changed:
