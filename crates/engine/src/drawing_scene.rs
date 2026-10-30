@@ -1,8 +1,9 @@
 //! The sheet scene (#4890 W10, #3890 W15): everything drawn on one sheet of a drawing as one paper
 //! scene ([`Scene`]), for the sheet page and every export, so the screen and the files draw the
 //! same thing. In paint order: the sheet's drawing border ([`SheetLayout::paper`]), then each view
-//! on the sheet by id, its visible lines as [`paper_group`] makes them. Text, the title block,
-//! tables, hidden lines and shaded views each join as one more kind of group.
+//! on the sheet by id, its visible lines as [`paper_group`] makes them, then the dimensions of those
+//! views, by view and id ([`crate::drawing_dimension_paper`]). Text, the title block, tables, hidden
+//! lines and shaded views each join as one more kind of group.
 //!
 //! [`build`] draws a sheet at once, each view the one way: its lines worked out centred on the view,
 //! then moved to its centre, so the same lines on the same centre are the same bytes however they
@@ -10,8 +11,10 @@
 //!
 //! The sheet page draws through the provider instead, which keeps each view's lines between frames:
 //! [`extract`] returns the last scene at once and says which views are out of date, and [`step`]
-//! brings one of them up to date, a short piece of work for the UI's tick. A view moved across its
-//! sheet is moved, never projected again. The provider evaluates no model either. Its cache is the
+//! brings one of them up to date, a short piece of work for the UI's tick: a view's projection, or,
+//! once the views are, the dimensions of one view that changed. A view moved across its sheet is
+//! moved, never projected again, and an edited dimension is read again alone. The provider
+//! evaluates no model either. Its cache is the
 //! session's view state, beside the drawing: never saved, never an undo step, and dropped when its
 //! drawing closes.
 //!
@@ -22,10 +25,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
 use solidcraft_doc::{DocError, ModelState, ids};
+use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Scene};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
 
@@ -72,6 +77,20 @@ pub struct ViewState {
     pub stats: Option<Stats>,
 }
 
+/// One dimension of a sheet scene.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DimensionState {
+    pub dimension: u64,
+    pub view: u64,
+    /// Where it stands with the model.
+    pub status: dimension::Status,
+    /// Whether its lines are in the scene. A dimension that isn't found again has none, and neither
+    /// has one whose view isn't drawn.
+    pub drawn: bool,
+    /// Why not, when its status doesn't say.
+    pub why: Option<String>,
+}
+
 /// Where one object of a sheet's scene sits on paper, for picking and marking it. Beside the scene,
 /// not in it, so no writer sees it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -91,8 +110,10 @@ pub struct SheetScene {
     pub scene: Scene,
     /// Each view on the sheet, in id order.
     pub views: Vec<ViewState>,
-    /// The sheet's border, then each view on it, in paint order.
+    /// The sheet's border, then each view on it, then each dimension drawn, in paint order.
     pub objects: Vec<SheetObject>,
+    /// Each dimension of a view on the sheet, by view and id.
+    pub dimensions: Vec<DimensionState>,
 }
 
 /// One sheet as the provider last drew it ([`extract`]).
@@ -106,8 +127,12 @@ pub struct SheetView {
     /// The views out of date, in id order: not drawn yet, or drawn from another model or with other
     /// settings than they have now. Their last lines stay in the scene until [`step`] draws them.
     pub stale: Vec<u64>,
-    /// The sheet's border, then each view drawn so far, where it was last drawn.
+    /// The sheet's border, then each view and dimension drawn so far, where it was last drawn.
     pub objects: Arc<[SheetObject]>,
+    /// Each dimension of a view on the sheet read so far, by view and id, as it last was.
+    pub dimensions: Vec<DimensionState>,
+    /// The dimensions out of date whose views aren't: [`step`] reads them once the views are done.
+    pub stale_dimensions: Vec<u64>,
 }
 
 /// The id of the sheet `named` names in `drawing` (its id or its one name), refused as `cmd`: the
@@ -127,8 +152,14 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
     // placed as they are drawn, so at most one view's are held beside the scene.
     let shown = crate::drawing_view::shown(s);
     let drawn = on.iter().map(|(id, view, centre)| (*id, *centre, draw(s, &shown, *id, view)));
-    let (scene, views, objects) = assemble(record, drawn)?;
-    Ok(SheetScene { scene, views, objects })
+    let mut assembly = assemble(record, drawn)?;
+    // After the views, as they need the views' frames: one read for the sheet's dimensions.
+    let frames: BTreeMap<u64, ViewFrame> = assembly.placed.iter().map(|(view, (frame, _))| (*view, *frame)).collect();
+    let wanted = dimensions_on(drawing, on.iter().map(|(id, ..)| *id));
+    let dimensions = draw_dimensions(s, drawing, &wanted, |view| frames.get(&view).copied());
+    assembly.add_dimensions(dimensions.iter());
+    let (scene, views, objects, dimensions) = assembly.finish()?;
+    Ok(SheetScene { scene, views, objects, dimensions })
 }
 
 /// A view's lines for a sheet scene, centred on the view, or why it has none.
@@ -139,6 +170,18 @@ struct Drawn {
     stats: Option<Stats>,
     /// Its boundary, centred on the view as its lines are.
     boundary: Option<Aabb2>,
+    /// The frame its lines were drawn through, for its dimensions.
+    frame: Option<ViewFrame>,
+}
+
+/// A dimension's lines for a sheet scene, centred on its view, and how it read.
+#[derive(Clone, Debug)]
+struct DrawnDimension {
+    dimension: u64,
+    view: u64,
+    status: dimension::Status,
+    group: Option<Group>,
+    why: Option<String>,
 }
 
 /// View `id`, drawing as `view` does, of the bodies `shown` holds: its visible lines, sampled at
@@ -149,7 +192,7 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
     let measured = shown.as_ref().map_err(|why| *why).and_then(|set| crate::drawing_view::measure(set, &view.basis).map(|e| (set, e)));
     let extents = measured.as_ref().map(|(_, extents)| *extents).map_err(|why| *why);
     let boundary = crate::drawing_view::placed(view, extents, Vec2::ZERO, CMD).ok().map(|placed| placed.boundary);
-    let none = |status| Drawn { group: None, status, stats: None, boundary };
+    let none = |status| Drawn { group: None, status, stats: None, boundary, frame: None };
     // A style that draws hidden lines is refused here too, so the lines below are visible ones.
     if let Some(why) = crate::drawing_view::not_drawable(view.display_style.value, view.reference_style.value, true) {
         return none(Status::Failed(why.into()));
@@ -163,74 +206,165 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
     let tangent_edges = view.tangent_edges.value == TangentEdges::Show;
     // The margin keeps the mesh's chord at or above its floor once divided back by the factor.
     let chord_mm = CHORD_MM.max(MIN_MODEL_CHORD_MM * view.scale.value.factor() * (1.0 + 1e-9));
-    let lines = crate::drawing_view::frame(view.basis, view.scale.value, &around, Vec2::ZERO, CMD)
-        .and_then(|frame| crate::drawing_view::lines(s, set, &frame, false, tangent_edges, chord_mm, CMD));
-    match lines {
+    let frame = match crate::drawing_view::frame(view.basis, view.scale.value, &around, Vec2::ZERO, CMD) {
+        Ok(frame) => frame,
+        Err(e) => return none(Status::Failed(reason(e))),
+    };
+    match crate::drawing_view::lines(s, set, &frame, false, tangent_edges, chord_mm, CMD) {
         Ok(lines) => {
             let group = paper_group(&lines, id);
             if group.records() > MAX_RECORDS {
                 return none(Status::Failed(format!("its lines are more than a paper scene's {MAX_RECORDS} records: choose a smaller scale")));
             }
-            Drawn { group: Some(group), status: Status::Drawn, stats: Some(lines.stats), boundary }
+            Drawn { group: Some(group), status: Status::Drawn, stats: Some(lines.stats), boundary, frame: Some(frame) }
         }
         Err(e) => none(Status::Failed(reason(e))),
+    }
+}
+
+/// The records of `wanted` read once, each drawn through its view's frame (`None`: its view isn't
+/// drawn), in `wanted`'s order. A record that can't be read says so instead.
+fn draw_dimensions(s: &Session, d: &Drawing, wanted: &[Arc<Dimension>], frame: impl Fn(u64) -> Option<ViewFrame>) -> Vec<DrawnDimension> {
+    let ids: Vec<u64> = wanted.iter().map(|record| record.id).collect();
+    let read = s.doc.resolve_dimensions(&s.model, d, &ids);
+    let one = |at: usize, record: &Arc<Dimension>| match read.as_ref().map(|all| all.get(at)) {
+        Ok(Some(resolved)) => {
+            let group = frame(record.view).and_then(|frame| crate::drawing_dimension_paper::paper_group(record, resolved, &frame));
+            let nothing = group.is_none() && !resolved.points.is_empty() && frame(record.view).is_some();
+            let why = nothing.then(|| "what it measures has no place to draw on its view".to_string());
+            DrawnDimension { dimension: record.id, view: record.view, status: resolved.status.clone(), group, why }
+        }
+        Ok(None) | Err(_) => {
+            let status = dimension::Status::Unmeasurable(format!("dimension {} can't be read", ids::encode(record.id)));
+            DrawnDimension { dimension: record.id, view: record.view, status, group: None, why: None }
+        }
+    };
+    wanted.iter().enumerate().map(|(at, record)| one(at, record)).collect()
+}
+
+/// The dimensions of `views` of `d`, by view and id.
+fn dimensions_on(d: &Drawing, views: impl Iterator<Item = u64>) -> Vec<Arc<Dimension>> {
+    let views: BTreeSet<u64> = views.collect();
+    let mut on: Vec<Arc<Dimension>> = d.dimensions.iter().filter(|record| views.contains(&record.view)).cloned().collect();
+    on.sort_by_key(|record| (record.view, record.id));
+    on
+}
+
+/// A sheet's scene being put together: what [`assemble`] gives, for its dimensions to join.
+struct Assembly {
+    scene: Scene,
+    /// The groups in the scene, as a paper scene counts them.
+    records: usize,
+    /// One group checked alone on the sheet before it joins, so one past the limits leaves out only
+    /// itself, and checking costs one pass over each group.
+    alone: Scene,
+    states: Vec<ViewState>,
+    objects: Vec<SheetObject>,
+    /// The frame and centre of each view whose lines are in the scene.
+    placed: BTreeMap<u64, (ViewFrame, Vec2)>,
+    dimensions: Vec<DimensionState>,
+}
+
+/// Why a group stayed out of a scene.
+enum LeftOut {
+    TooManyRecords,
+    Invalid(String),
+}
+
+impl Assembly {
+    /// Puts `group` in the scene moved to `centre`, and gives the box round it there.
+    fn add(&mut self, group: &Group, centre: Vec2) -> std::result::Result<Aabb2, LeftOut> {
+        let more = group.records();
+        if self.records.saturating_add(more) > MAX_RECORDS {
+            return Err(LeftOut::TooManyRecords);
+        }
+        self.alone.groups.push(moved(group, centre));
+        if let Err(e) = self.alone.validate() {
+            self.alone.groups.clear();
+            return Err(LeftOut::Invalid(e.to_string()));
+        }
+        self.records += more;
+        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, group_bounds);
+        self.scene.groups.append(&mut self.alone.groups);
+        Ok(bounds)
+    }
+
+    /// Adds `dimensions` after the views, each moved to its view's centre. One whose view isn't in
+    /// the scene or that would take it past a paper scene's limits is left out and says why.
+    fn add_dimensions<'a>(&mut self, dimensions: impl Iterator<Item = &'a DrawnDimension>) {
+        for one in dimensions {
+            let mut why = one.why.clone();
+            let mut drawn = false;
+            match (self.placed.get(&one.view).map(|(_, centre)| *centre), &one.group) {
+                (None, _) => why = Some("its view isn't drawn".into()),
+                (Some(centre), Some(group)) => match self.add(group, centre) {
+                    Ok(bounds_mm) => {
+                        drawn = true;
+                        self.objects.push(SheetObject { object: one.dimension, kind: ObjectKind::Dimension, bounds_mm, boundary_mm: None });
+                    }
+                    Err(LeftOut::TooManyRecords) => {
+                        why = Some(format!("with its lines the sheet is more than a paper scene's {MAX_RECORDS} records"))
+                    }
+                    Err(LeftOut::Invalid(e)) => why = Some(e),
+                },
+                (Some(_), None) => {}
+            }
+            self.dimensions.push(DimensionState { dimension: one.dimension, view: one.view, status: one.status.clone(), drawn, why });
+        }
+    }
+
+    fn finish(self) -> Result<(Scene, Vec<ViewState>, Vec<SheetObject>, Vec<DimensionState>)> {
+        self.scene.validate().map_err(|e| bad(CMD, e.to_string()))?;
+        Ok((self.scene, self.states, self.objects, self.dimensions))
     }
 }
 
 /// The scene of sheet `record`: its border, then each of `views` (its id, centre and lines, in id
 /// order) moved to its centre. A view that would take the scene past a paper scene's limits is left
 /// out and says why, and the views after it are still drawn when they fit.
-fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, Vec2, D)>) -> Result<(Scene, Vec<ViewState>, Vec<SheetObject>)> {
+fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, Vec2, D)>) -> Result<Assembly> {
     let size_mm = record.sheet.size_mm().map_err(|e| bad(CMD, e.to_string()))?;
     let border = match &record.border {
         Some(border) => border.layout(&record.sheet).map_err(|e| bad(CMD, e.to_string()))?.paper(record.id),
         None => Vec::new(),
     };
-    let mut records = border.iter().map(Group::records).fold(0usize, usize::saturating_add);
+    let records = border.iter().map(Group::records).fold(0usize, usize::saturating_add);
     let mut objects = Vec::new();
     if !border.is_empty() {
         // The border's groups are one object.
         let bounds_mm = border.iter().map(group_bounds).fold(Aabb2::EMPTY, |all, one| all.union(&one));
         objects.push(SheetObject { object: record.id, kind: ObjectKind::DrawingBorder, bounds_mm, boundary_mm: None });
     }
-    let mut scene = Scene { size_mm, groups: border };
-    // Each view's group is counted onto the scene and checked alone on the sheet first, so one past
-    // the limits leaves out only itself, and checking costs one pass over each group.
-    let mut alone = Scene { size_mm, groups: Vec::with_capacity(1) };
-    let mut states = Vec::new();
+    let scene = Scene { size_mm, groups: border };
+    let alone = Scene { size_mm, groups: Vec::with_capacity(1) };
+    let mut assembly = Assembly { scene, records, alone, states: Vec::new(), objects, placed: BTreeMap::new(), dimensions: Vec::new() };
     for (view, centre, drawn) in views {
         let drawn: &Drawn = drawn.borrow();
         let mut status = drawn.status.clone();
         let mut lines = None;
         if let Some(group) = &drawn.group {
-            let more = group.records();
-            if records.saturating_add(more) > MAX_RECORDS {
-                status = Status::Failed(format!(
-                    "with its lines the sheet is more than a paper scene's {MAX_RECORDS} records: put it on another sheet, or choose a smaller scale"
-                ));
-            } else {
-                alone.groups.push(moved(group, centre));
-                match alone.validate() {
-                    Ok(()) => {
-                        records += more;
-                        lines = alone.groups.first().map(group_bounds);
-                        scene.groups.append(&mut alone.groups);
-                    }
-                    Err(e) => {
-                        alone.groups.clear();
-                        status = Status::Failed(format!("{e}: choose a smaller scale"));
+            match assembly.add(group, centre) {
+                Ok(bounds) => {
+                    lines = Some(bounds);
+                    if let Some(frame) = drawn.frame {
+                        assembly.placed.insert(view, (frame, centre));
                     }
                 }
+                Err(LeftOut::TooManyRecords) => {
+                    status = Status::Failed(format!(
+                        "with its lines the sheet is more than a paper scene's {MAX_RECORDS} records: put it on another sheet, or choose a smaller scale"
+                    ));
+                }
+                Err(LeftOut::Invalid(e)) => status = Status::Failed(format!("{e}: choose a smaller scale")),
             }
         }
         let boundary_mm = drawn.boundary.map(|b| Aabb2 { min: b.min + centre, max: b.max + centre });
         if let Some(bounds_mm) = lines.filter(|b| !b.is_empty()).or(boundary_mm) {
-            objects.push(SheetObject { object: view, kind: ObjectKind::View, bounds_mm, boundary_mm });
+            assembly.objects.push(SheetObject { object: view, kind: ObjectKind::View, bounds_mm, boundary_mm });
         }
-        states.push(ViewState { view, status, stats: drawn.stats });
+        assembly.states.push(ViewState { view, status, stats: drawn.stats });
     }
-    scene.validate().map_err(|e| bad(CMD, e.to_string()))?;
-    Ok((scene, states, objects))
+    Ok(assembly)
 }
 
 /// The box round what `group` draws, along its lines' paths.
@@ -298,10 +432,13 @@ pub struct Cache {
     sheet: Option<u64>,
     /// Each view's last drawing, by id.
     views: BTreeMap<u64, Entry>,
+    /// Each dimension's last drawing, by id.
+    dimensions: BTreeMap<u64, DimensionEntry>,
     /// The shown set of the world state views were last drawn from, worked out once for it.
     shown: Option<(Arc<ModelState>, std::result::Result<ShownSet, Unmeasured>)>,
     last: Option<Assembled>,
-    /// Numbers each view drawn, so a scene is assembled again only when one of its views was.
+    /// Numbers each view drawn and each read of dimensions, so a scene is assembled again only when
+    /// one of its views or dimensions was.
     serial: u64,
     /// Views drawn, for tests: a move draws none.
     #[cfg(test)]
@@ -317,20 +454,33 @@ struct Entry {
     serial: u64,
 }
 
-/// What a scene is assembled from: the sheet's record, and each view on it with its entry's serial
-/// (0: not drawn yet) and its centre.
+/// A dimension's last drawing, and what it was drawn from: its record, the world state, its view's
+/// drawing (by serial, which holds its frame) and the drawing's units.
+struct DimensionEntry {
+    state: Arc<ModelState>,
+    record: Arc<Dimension>,
+    view_serial: u64,
+    units: String,
+    drawn: DrawnDimension,
+    serial: u64,
+}
+
+/// What a scene is assembled from: the sheet's record, each view on it with its entry's serial
+/// (0: not drawn yet) and its centre, and each dimension read so far with its entry's serial.
 #[derive(PartialEq)]
 struct Inputs {
     sheet: Sheet,
     views: Vec<(u64, u64, Vec2)>,
+    dimensions: Vec<(u64, u64)>,
 }
 
-/// The last answer of [`extract`], for the sheet, drawing, world state and serial it was for: the
-/// same four again return it as it is.
+/// The last answer of [`extract`], for the sheet, drawing, world state, units and serial it was for:
+/// the same five again return it as it is.
 struct Assembled {
     sheet: u64,
     drawing: Arc<Drawing>,
     state: Arc<ModelState>,
+    units: String,
     serial: u64,
     inputs: Inputs,
     answer: SheetView,
@@ -340,6 +490,21 @@ impl Cache {
     /// Whether view `id`, drawing as `view` now, was last drawn so, from `state`.
     fn fresh(&self, id: u64, state: &Arc<ModelState>, view: &ResolvedView) -> bool {
         self.views.get(&id).is_some_and(|e| Arc::ptr_eq(&e.state, state) && e.view == *view)
+    }
+
+    /// The dimensions of the views `on`, by view and id, to read again: each whose view is up to
+    /// date, last drawn from another record, model, drawing of its view, or units.
+    fn stale_dimensions(&self, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], state: &Arc<ModelState>, units: &str) -> Vec<Arc<Dimension>> {
+        let fresh = on.iter().filter(|(id, view, _)| self.fresh(*id, state, view));
+        let serials: BTreeMap<u64, u64> = fresh.filter_map(|(id, ..)| self.views.get(id).map(|e| (*id, e.serial))).collect();
+        let current = |record: &Arc<Dimension>, serial: u64| {
+            self.dimensions
+                .get(&record.id)
+                .is_some_and(|e| Arc::ptr_eq(&e.record, record) && Arc::ptr_eq(&e.state, state) && e.view_serial == serial && e.units == units)
+        };
+        let mut stale = dimensions_on(d, serials.keys().copied());
+        stale.retain(|record| serials.get(&record.view).is_some_and(|serial| !current(record, *serial)));
+        stale
     }
 }
 
@@ -385,10 +550,12 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     forget_closed(s);
     let d = s.drawing(CMD)?.clone();
     let state = s.world_state();
+    let units = s.doc.drawing_units(&d).to_string();
     let cache = &mut s.drawing_scenes;
     if let Some(last) = &cache.last
         && last.sheet == sheet
         && last.serial == cache.serial
+        && last.units == units
         && Arc::ptr_eq(&last.drawing, &d)
         && Arc::ptr_eq(&last.state, &state)
     {
@@ -399,34 +566,48 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     cache.drawing = Some(d.id);
     cache.sheet = Some(sheet);
     let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &state, view)).map(|(id, ..)| *id).collect();
+    let stale_dimensions = cache.stale_dimensions(&d, &on, &state, &units).iter().map(|record| record.id).collect();
     let serial = |id: &u64| cache.views.get(id).map_or(0, |e| e.serial);
-    let inputs = Inputs { sheet: record.clone(), views: on.iter().map(|(id, _, centre)| (*id, serial(id), *centre)).collect() };
-    let (scene, views, objects, generation) = match cache.last.take() {
-        Some(last) if last.inputs == inputs => (last.answer.scene, last.answer.views, last.answer.objects, last.answer.generation),
+    let read = dimensions_on(&d, on.iter().map(|(id, ..)| *id));
+    let read: Vec<u64> = read.iter().map(|record| record.id).filter(|id| cache.dimensions.contains_key(id)).collect();
+    let inputs = Inputs {
+        sheet: record.clone(),
+        views: on.iter().map(|(id, _, centre)| (*id, serial(id), *centre)).collect(),
+        dimensions: read.iter().map(|id| (*id, cache.dimensions.get(id).map_or(0, |e| e.serial))).collect(),
+    };
+    let (scene, views, objects, dimensions, generation) = match cache.last.take() {
+        Some(last) if last.inputs == inputs => {
+            (last.answer.scene, last.answer.views, last.answer.objects, last.answer.dimensions, last.answer.generation)
+        }
         _ => {
-            // Views no longer in the drawing are forgotten: each holds a world state.
+            // Views and dimensions no longer in the drawing are forgotten: each holds a world state.
             let kept: BTreeSet<u64> = d.views.iter().map(|v| v.id).collect();
             cache.views.retain(|id, _| kept.contains(id));
+            cache.dimensions.retain(|id, _| d.dimension(*id).is_some());
             let drawn = on.iter().filter_map(|(id, _, centre)| cache.views.get(id).map(|e| (*id, *centre, &e.drawn)));
-            let (scene, views, objects) = assemble(record, drawn)?;
-            (Arc::new(scene), views, objects.into(), GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
+            let mut assembly = assemble(record, drawn)?;
+            assembly.add_dimensions(read.iter().filter_map(|id| cache.dimensions.get(id).map(|e| &e.drawn)));
+            let (scene, views, objects, dimensions) = assembly.finish()?;
+            (Arc::new(scene), views, objects.into(), dimensions, GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
         }
     };
-    let answer = SheetView { scene, generation, views, stale, objects };
-    cache.last = Some(Assembled { sheet, drawing: d, state, serial: cache.serial, inputs, answer: answer.clone() });
+    let answer = SheetView { scene, generation, views, stale, objects, dimensions, stale_dimensions };
+    cache.last = Some(Assembled { sheet, drawing: d, state, units, serial: cache.serial, inputs, answer: answer.clone() });
     Ok(answer)
 }
 
-/// Draws the first view out of date on the sheet last extracted, and says whether more are
-/// waiting: a short piece of work for the UI's tick, one view's projection.
+/// Draws the first view out of date on the sheet last extracted or, with none, reads the dimensions
+/// out of date of one view, and says whether more are waiting: a short piece of work for the UI's
+/// tick, one view's projection or one read of a view's dimensions.
 pub fn step(s: &mut Session) -> bool {
     forget_closed(s);
     let (Ok(d), Some(sheet)) = (s.drawing(CMD).cloned(), s.drawing_scenes.sheet) else { return false };
     let Ok(on) = views_on(&d, sheet) else { return false };
     let state = s.world_state();
+    let units = s.doc.drawing_units(&d).to_string();
     let waiting: Vec<(u64, ResolvedView)> =
-        on.into_iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &state, view)).map(|(id, view, _)| (id, view)).collect();
-    let Some(&(id, view)) = waiting.first() else { return false };
+        on.iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &state, view)).map(|(id, view, _)| (*id, *view)).collect();
+    let Some(&(id, view)) = waiting.first() else { return step_dimensions(s, &d, &on, &state, units) };
     let shown = match s.drawing_scenes.shown.take() {
         Some((was, shown)) if Arc::ptr_eq(&was, &state) => shown,
         _ => crate::drawing_view::shown(s),
@@ -435,12 +616,31 @@ pub fn step(s: &mut Session) -> bool {
     let cache = &mut s.drawing_scenes;
     cache.shown = Some((state.clone(), shown));
     cache.serial += 1;
-    cache.views.insert(id, Entry { state, view, drawn, serial: cache.serial });
+    cache.views.insert(id, Entry { state: state.clone(), view, drawn, serial: cache.serial });
     #[cfg(test)]
     {
         cache.projections += 1;
     }
-    waiting.len() > 1
+    waiting.len() > 1 || !cache.stale_dimensions(&d, &on, &state, &units).is_empty()
+}
+
+/// Reads the dimensions out of date of the first view that has any, through its frame, and says
+/// whether another view's are waiting.
+fn step_dimensions(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], state: &Arc<ModelState>, units: String) -> bool {
+    let stale = s.drawing_scenes.stale_dimensions(d, on, state, &units);
+    let Some(view) = stale.first().map(|record| record.view) else { return false };
+    let (these, others): (Vec<_>, Vec<_>) = stale.into_iter().partition(|record| record.view == view);
+    let entry = s.drawing_scenes.views.get(&view);
+    let (frame, view_serial) = (entry.and_then(|e| e.drawn.frame), entry.map_or(0, |e| e.serial));
+    let drawn = draw_dimensions(s, d, &these, |_| frame);
+    let cache = &mut s.drawing_scenes;
+    cache.serial += 1;
+    let serial = cache.serial;
+    for (record, drawn) in these.into_iter().zip(drawn) {
+        let entry = DimensionEntry { state: state.clone(), record, view_serial, units: units.clone(), drawn, serial };
+        cache.dimensions.insert(entry.record.id, entry);
+    }
+    !others.is_empty()
 }
 
 /// Drops the cache once its drawing isn't the one open: closing a drawing (or opening another) ends

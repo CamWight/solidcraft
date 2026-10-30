@@ -98,6 +98,8 @@ pub enum ObjectKind {
     RevisionTable,
     /// A drawing view's lines.
     View,
+    /// A dimension's lines and arrowheads.
+    Dimension,
 }
 
 impl ObjectKind {
@@ -111,6 +113,7 @@ impl ObjectKind {
             ObjectKind::PartsList => "PARTS_LIST",
             ObjectKind::RevisionTable => "REVISION_TABLE",
             ObjectKind::View => "VIEW",
+            ObjectKind::Dimension => "DIMENSION",
         }
     }
 }
