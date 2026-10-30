@@ -7,7 +7,7 @@ use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
 use solidcraft_geom::paper::text::TextRun;
-use solidcraft_geom::paper::{NoPictures, ObjectKind, Picture};
+use solidcraft_geom::paper::{Item, NoPictures, ObjectKind, Picture};
 use solidcraft_geom::{Loop2, Region2, Seg2};
 
 use super::*;
