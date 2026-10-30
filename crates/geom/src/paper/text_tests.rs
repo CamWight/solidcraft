@@ -233,6 +233,28 @@ fn groups_fonts_are_joined_by_id() {
     assert_eq!(scene.fonts[0], font());
 }
 
+/// What a table would gain: a new font in full, a known one only the glyphs it doesn't hold, and a
+/// run's reach is where its last glyph ends. Its group's box runs round its outlines.
+#[test]
+fn a_tables_new_records_and_a_runs_size() {
+    let scene_with = |glyphs: &[u16]| {
+        let mut held = font();
+        held.glyphs.retain(|id, _| glyphs.contains(id));
+        let mut scene = Scene::new(p(420.0, 297.0), vec![]);
+        scene.add_fonts([held]);
+        scene
+    };
+    assert_eq!(Scene::new(p(420.0, 297.0), vec![]).font_records_beyond(&[font()]), 12);
+    assert_eq!(scene_with(&[1, 2]).font_records_beyond(&[font()]), 0);
+    // Glyph 2 alone: itself, its loop and its 3 pieces.
+    assert_eq!(scene_with(&[1]).font_records_beyond(&[font()]), 5);
+    assert_eq!(run().reach(), 5.5);
+    let group = Group { object: 1, kind: ObjectKind::TitleBlock, items: vec![Item::Text(run())] };
+    let bounds = group.bounds(&[font()]);
+    assert!(bounds.min.y == 30.0 && (bounds.max.y - 33.5).abs() < 1e-9 && bounds.max.x > 22.5, "{bounds:?}");
+    assert_eq!(group.bounds(&[]), crate::Aabb2::EMPTY, "no font: no outline");
+}
+
 /// A scene's fonts count toward its records with its groups: the run's scene is 6 records of group
 /// and 12 of font, and a stroke beside it takes the rest up to the limit exactly.
 #[test]

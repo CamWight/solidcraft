@@ -6,6 +6,7 @@ use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::Seg2;
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
+use solidcraft_geom::paper::text::TextRun;
 use solidcraft_geom::paper::{Item, ObjectKind};
 
 use super::*;
@@ -654,7 +655,7 @@ fn a_dimension_is_drawn_after_the_views_on_the_sheet() {
         .iter()
         .filter_map(|item| match item {
             Item::Fill { region } => Some(region.outer.segs[0].start()),
-            Item::Stroke { .. } => None,
+            Item::Stroke { .. } | Item::Text(_) => None,
         })
         .collect();
     assert_eq!(tips.len(), 2);
@@ -796,6 +797,7 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
         view: Some(front),
         status: solidcraft_doc::drawing::dimension::Status::Ok,
         group: Some(Group { object: id, kind: ObjectKind::Dimension, items }),
+        fonts: Vec::new(),
         why: None,
     };
     let too_many = dimension(1, vec![stroke(Vec2::X); MAX_RECORDS + 1]);
@@ -808,6 +810,86 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
     assert!(states[2].drawn && states[2].why.is_none(), "{:?}", states[2]);
     assert!(scene.groups.iter().any(|g| g.object == 3) && !scene.groups.iter().any(|g| g.object == 1 || g.object == 2));
     assert!(objects.iter().any(|o| o.object == 3 && o.kind == ObjectKind::Dimension));
+}
+
+/// Two dimensions' text shares one font table holding the glyphs of both, a dimension left out adds
+/// none of its own, and a font's records count: the group that would pass the limit only with its
+/// font is left out. The scene takes what joined.
+#[test]
+fn dimensions_share_one_font_table_and_one_left_out_adds_nothing() {
+    let (s, sheet, [front, _]) = front_and_top();
+    let d = s.drawing("test").unwrap().clone();
+    let record = sheet_of(&d, sheet).unwrap();
+    let frame = ViewFrame::new(solidcraft_geom::Plane::XY, "1:1".parse().unwrap(), Vec2::ZERO, Vec2::ZERO).unwrap();
+    let view = Drawn {
+        owners: None,
+        group: Some(Arc::new(Group { object: front, kind: ObjectKind::View, items: Vec::new() })),
+        status: Status::Drawn,
+        stats: None,
+        boundary: None,
+        frame: Some(frame),
+    };
+    let text = |id, text: &str, more: usize| {
+        let (runs, fonts) =
+            solidcraft_sketch::paper_text(text, None, Vec2::ZERO, 3.5, 0.0, &solidcraft_sketch::TextStyle::default()).unwrap().unwrap();
+        let line = Item::Stroke { path: vec![Seg2::Line { a: Vec2::ZERO, b: Vec2::X }], closed: false, width_mm: 0.25 };
+        let items = runs.into_iter().map(Item::Text).chain(std::iter::repeat_n(line, more)).collect();
+        DrawnAnnotation {
+            object: id,
+            kind: ObjectKind::Dimension,
+            view: Some(front),
+            status: solidcraft_doc::drawing::dimension::Status::Ok,
+            group: Some(Group { object: id, kind: ObjectKind::Dimension, items }),
+            fonts,
+            why: None,
+        }
+    };
+    let glyphs = |one: &DrawnAnnotation| one.fonts[0].glyphs.len();
+    let (a, b, too_big) = (text(1, "11", 0), text(2, "22", 0), text(3, "77", MAX_RECORDS));
+    let shared = glyphs(&a) + glyphs(&b);
+    let mut assembly = assemble(record, std::iter::once((front, Vec2::new(100.0, 100.0), view.clone()))).unwrap();
+    assembly.add_annotations([&a, &too_big, &b].into_iter());
+    let (scene, _, objects, states) = assembly.finish().unwrap();
+    assert!(states[0].drawn && !states[1].drawn && states[2].drawn, "{states:?}");
+    assert_eq!(scene.fonts.len(), 1);
+    assert_eq!(scene.fonts[0].glyphs.len(), shared, "its 7 stays out");
+    scene.validate().unwrap();
+    // The text moved with its group, and its box is the box round its glyphs.
+    let bounds = objects.iter().find(|o| o.object == 1).unwrap().bounds_mm;
+    assert!(bounds.min.x >= 100.0 && bounds.min.y >= 100.0 && bounds.max.y > 102.0 && bounds.max.y < 104.0, "{bounds:?}");
+
+    // Past the limit only with its font's records: its group alone would fit. Without them, it joins.
+    let mut assembly = assemble(record, std::iter::once((front, Vec2::new(100.0, 100.0), view))).unwrap();
+    let room = MAX_RECORDS - assembly.records;
+    let records = |one: &DrawnAnnotation| one.group.as_ref().unwrap().records();
+    let (bare, per_line) = (text(4, "8", 0), records(&text(4, "8", 1)) - records(&text(4, "8", 0)));
+    let fonts = assembly.scene.font_records_beyond(&bare.fonts);
+    let over = text(4, "8", (room - records(&bare)) / per_line);
+    let fits = text(5, "8", (room - records(&bare) - fonts) / per_line);
+    assert!(records(&over) <= room);
+    assembly.add_annotations([&over, &fits].into_iter());
+    let (_, _, _, states) = assembly.finish().unwrap();
+    assert!(!states[0].drawn && states[0].why.as_deref().is_some_and(|why| why.contains("records")), "{:?}", states[0]);
+    assert!(states[1].drawn, "{:?}", states[1]);
+}
+
+/// A run of text is in a scene's reply as its schema says, with the font it names and never the
+/// font's bytes, and an export writes it.
+#[test]
+fn a_dimensions_text_is_in_the_reply_and_the_export() {
+    let (mut s, sheet, [front, _]) = front_and_top();
+    let id = top_edge(&mut s, front);
+    let reply = run(&mut s, "drawing.scene", json!({"sheet": ids::encode(sheet)}));
+    let schema = output_schema_for::<SheetSceneResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    let groups = reply["scene"]["groups"].as_array().unwrap();
+    let group = groups.iter().find(|g| g["object"] == json!(id)).unwrap();
+    let text = group["items"].as_array().unwrap().iter().find(|item| item["kind"] == json!("text")).unwrap();
+    assert_eq!(text["text"], json!("100.00"), "{text}");
+    assert_eq!(reply["scene"]["fonts"][0]["id"], text["font"]);
+    assert!(reply["scene"]["fonts"][0].get("bytes").is_none());
+    let exported = run(&mut s, "drawing.export", json!({"sheet": ids::encode(sheet)}));
+    assert_eq!(exported["dimensions"][0]["drawn"], json!(true), "{exported}");
 }
 
 /// The scene's reply lists its dimensions in its schema, with a dimension's group in the scene, and
@@ -946,7 +1028,7 @@ fn a_views_dimensions_swap_with_its_lines() {
         .iter()
         .filter_map(|item| match item {
             Item::Fill { region } => Some(region.outer.segs[0].start().y),
-            Item::Stroke { .. } => None,
+            Item::Stroke { .. } | Item::Text(_) => None,
         })
         .collect();
     assert!(tips.iter().all(|y| (y - 170.0).abs() < 1e-9), "{tips:?}");

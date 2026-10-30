@@ -110,7 +110,10 @@ pub(super) fn write(writer: &mut PackageWriter, doc: &Document, caches: &SheetCa
     if keep.is_empty() {
         return Ok(());
     }
-    let Some(mut old) = caches.keep_from.as_deref().and_then(|path| open_regular_file(path).ok()).and_then(|source| PackageReader::new(source).ok()) else { return Ok(()) };
+    let Some(mut old) = caches.keep_from.as_deref().and_then(|path| open_regular_file(path).ok()).and_then(|source| PackageReader::new(source).ok())
+    else {
+        return Ok(());
+    };
     keep.into_iter().try_for_each(|drawing| keep_drawing(writer, &mut old, drawing, budget))
 }
 
@@ -200,8 +203,7 @@ fn view_from(bytes: &[u8], view: u64, key: String) -> Option<SavedView> {
     if ![x0, y0, x1, y1, ox, oy].into_iter().all(f64::is_finite) || saved.group.object != view || saved.group.kind != ObjectKind::View {
         return None;
     }
-    let mut scene =
-        Scene { size_mm: Vec2 { x: solidcraft_geom::paper::MAX_SIDE_MM, y: solidcraft_geom::paper::MAX_SIDE_MM }, groups: vec![saved.group] };
+    let mut scene = Scene::new(Vec2 { x: solidcraft_geom::paper::MAX_SIDE_MM, y: solidcraft_geom::paper::MAX_SIDE_MM }, vec![saved.group]);
     scene.validate().ok()?;
     let group = Arc::new(scene.groups.pop()?);
     Some(SavedView { view, key, group, boundary: Aabb2 { min: Vec2 { x: x0, y: y0 }, max: Vec2 { x: x1, y: y1 } }, origin_mm: Vec2 { x: ox, y: oy } })

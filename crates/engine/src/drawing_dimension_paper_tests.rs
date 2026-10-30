@@ -3,6 +3,7 @@ use solidcraft_geom::drawing_measure::{Measured, Reading, SilhouetteSide};
 use solidcraft_geom::drawing_view::{NamedView, Scale};
 use solidcraft_geom::paper::Scene;
 use solidcraft_geom::{Aabb2, Vec3};
+use solidcraft_sketch::{TextMetrics, font_data};
 
 use super::*;
 
@@ -59,7 +60,24 @@ fn length(direction: LinearDirection) -> DimensionKind {
 
 fn drawn(kind: DimensionKind, offset: f64, points: &[[f64; 2]], text: &str, scale: &str) -> Group {
     let resolved = read(&kind, points, text);
-    paper_group(&dimension(kind, offset, TextPlace::Centred), &resolved, &view_at(scale)).unwrap()
+    paper_group(&dimension(kind, offset, TextPlace::Centred), &resolved, &view_at(scale)).unwrap().group
+}
+
+/// A group's text, run by run.
+fn runs(group: &Group) -> Vec<&TextRun> {
+    group
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Text(run) => Some(run),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A line of `text`'s width in the drawing font, measured by the rule sketch text is drawn with.
+fn measured(text: &str) -> f64 {
+    TextMetrics::new(&font_data(None).unwrap(), &TextStyle::default()).unwrap().line_width(text, TEXT_MM).unwrap()
 }
 
 /// A group's lines, each point by point, and its arrowheads' tips.
@@ -73,6 +91,7 @@ fn parts(group: &Group) -> (Vec<Vec<Vec2>>, Vec<Vec2>) {
                 lines.push(line);
             }
             Item::Fill { region } => tips.push(region.outer.segs[0].start()),
+            Item::Text(_) => {}
         }
     }
     (lines, tips)
@@ -233,7 +252,9 @@ fn a_chain_is_one_line_with_each_extension_line_once() {
     let mut r = read(&kind, &[[0.0, 0.0], [10.0, 5.0], [30.0, 0.0], [60.0, 8.0]], "60");
     r.text = None;
     r.members = vec![member("10.00"), member("20.00"), member("30.00")];
-    let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap();
+    let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap().group;
+    let texts: Vec<&str> = runs(&group).iter().map(|run| run.text.as_str()).collect();
+    assert_eq!(texts, ["10.00", "20.00", "30.00"], "each member's own");
     let (lines, tips) = parts(&group);
     let line_y = 4.0 + 10.0;
     assert!(tips.iter().all(|t| close(t.y, line_y)), "{tips:?}");
@@ -249,10 +270,89 @@ fn a_chain_of_the_most_points_lays_out() {
     let points: Vec<[f64; 2]> = (0..64).map(|i| [i as f64 * 1.5, 0.0]).collect();
     let mut r = read(&kind, &points, "");
     r.text = None;
-    let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap();
+    let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap().group;
     assert_eq!(parts(&group).1.len(), 2 * 63);
-    let scene = Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![group] };
-    assert!(scene.validate().is_ok());
+    assert!(Scene::new(Vec2::new(420.0, 297.0), vec![group]).validate().is_ok());
+}
+
+/// The arrows go inside at the text's measured length and outside just short of it: a span of the
+/// arrows, a gap each side and the text. Two texts of five characters flip at their own widths.
+#[test]
+fn arrows_flip_at_the_measured_length() {
+    let tails = |text: &str, span: f64| {
+        let (lines, tips) = parts(&drawn(length(LinearDirection::Horizontal), 10.0, &[[0.0, 0.0], [span, 0.0]], text, "1:1"));
+        assert_eq!(tips.len(), 2);
+        lines.iter().flatten().any(|p| p.x < -1.0 || p.x > span + 1.0)
+    };
+    for text in ["80.00", "11111", "WWWWW"] {
+        let fits = measured(text) + 2.0 * SIZES.gap + 2.0 * SIZES.arrow;
+        assert!(!tails(text, fits + 0.01), "{text}: inside just past {fits}");
+        assert!(tails(text, fits - 0.01), "{text}: outside just short of {fits}");
+    }
+    assert!(measured("WWWWW") > measured("11111") + 1.0, "they differ");
+}
+
+/// Set along its line at 0, 45, 90 and 135 degrees: the text reads along the line from the bottom of
+/// the sheet, or from the right when it is upright, its middle over the line's and a gap clear of
+/// it, and it is as wide as sketch text measures it.
+#[test]
+fn text_runs_along_its_line_and_reads_from_the_bottom_or_the_right() {
+    let width = measured("80.00");
+    let s = std::f64::consts::FRAC_1_SQRT_2;
+    let lines = [
+        ([[0.0, 0.0], [80.0, 0.0]], Vec2::X),
+        ([[0.0, 0.0], [80.0, 80.0]], Vec2::new(s, s)),
+        ([[0.0, 0.0], [0.0, 80.0]], Vec2::new(0.0, 1.0)),
+        ([[80.0, 0.0], [0.0, 80.0]], Vec2::new(s, -s)),
+    ];
+    for (points, dir) in lines {
+        let group = drawn(length(LinearDirection::Aligned), 10.0, &points, "80.00", "1:1");
+        let texts = runs(&group);
+        assert_eq!(texts.len(), 1);
+        let run = texts[0];
+        assert_eq!(run.text, "80.00");
+        assert!((run.reach() - width).abs() < 1e-9, "{}", run.reach());
+        assert!(close(run.angle, dir.angle()), "{} for {dir:?}", run.angle);
+        let middle = Vec2::new(points[0][0] + points[1][0], points[0][1] + points[1][1]) * 0.5;
+        let start = middle + dir.perp() * (10.0 + SIZES.gap) - dir * (width * 0.5);
+        assert!(run.origin.dist(start) < 1e-9, "{:?} for {start:?}", run.origin);
+    }
+    // Upright, its start is its lower end, so it reads from the right.
+    let group = drawn(length(LinearDirection::Aligned), 10.0, &[[0.0, 80.0], [0.0, 0.0]], "80.00", "1:1");
+    assert!(close(runs(&group)[0].angle, std::f64::consts::FRAC_PI_2) && runs(&group)[0].origin.y < 40.0, "{:?}", runs(&group));
+}
+
+/// A text of two lines stands above the line with its last line's baseline a gap clear of it.
+#[test]
+fn a_text_of_two_lines_stands_clear_of_its_line() {
+    let group = drawn(length(LinearDirection::Horizontal), 10.0, &[[0.0, 0.0], [80.0, 0.0]], "80\n00", "1:1");
+    let texts = runs(&group);
+    assert_eq!(texts.len(), 2);
+    assert!(texts[0].origin.y > texts[1].origin.y, "{texts:?}");
+    assert!(close(texts[1].origin.y, 10.0 + SIZES.gap), "{texts:?}");
+}
+
+/// The marks a dimension needs are in the drawing font: its Ø, its ° and its R are set as they read,
+/// and the fonts it names hold each glyph. One it hasn't is said by name and keeps the lines.
+#[test]
+fn the_marks_are_found_in_the_font_and_a_missing_glyph_is_reported() {
+    let circle = DimensionKind::Radial { edge: edge(), diameter: true };
+    let points = [[0.0, 0.0], [6.0, 0.0], [-6.0, 0.0], [6.0, 0.0]];
+    let angle = DimensionKind::Angle { a: edge(), b: edge(), reading: Reading::Projected, other_side: false };
+    let lines = [[0.0, 0.0], [30.0, 0.0], [0.0, 0.0], [20.0, 20.0]];
+    let radius = DimensionKind::Radial { edge: edge(), diameter: false };
+    for (kind, points, text) in [(circle.clone(), &points, "Ø12.00"), (angle, &lines, "45.00°"), (radius, &points, "R6.00")] {
+        let on = paper_group(&dimension(kind.clone(), 10.0, TextPlace::Centred), &read(&kind, points, text), &view_at("1:1")).unwrap();
+        assert_eq!(on.why, None, "{text}");
+        assert_eq!(runs(&on.group)[0].text, text);
+        let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![on.group.moved(Vec2::new(100.0, 100.0))]);
+        scene.add_fonts(on.fonts);
+        scene.validate().unwrap();
+    }
+    let on = paper_group(&dimension(circle.clone(), 10.0, TextPlace::Centred), &read(&circle, &points, "\u{4e2d}"), &view_at("1:1")).unwrap();
+    assert!(on.why.as_deref().is_some_and(|why| why.contains("no glyph for '\u{4e2d}'")), "{:?}", on.why);
+    assert!(runs(&on.group).is_empty() && on.fonts.is_empty());
+    assert_eq!(parts(&on.group).1.len(), 2, "its arrows");
 }
 
 /// A cylinder's dimension runs straight across its silhouettes, beyond the end on its offset's side.
@@ -301,7 +401,8 @@ fn a_texts_place_keeps_the_span() {
         &read(&length(LinearDirection::Horizontal), &[[0.0, 0.0], [40.0, 0.0]], "40.00"),
         &view_at("1:1"),
     )
-    .unwrap();
+    .unwrap()
+    .group;
     let tips = parts(&group).1;
     assert!(close((tips[1].x - tips[0].x).abs(), 40.0) && close(tips[0].y, 10.0), "{tips:?}");
 }
@@ -337,8 +438,10 @@ fn hostile_points_and_offsets_never_panic() {
         for kind in kinds {
             let resolved = read(&kind, &points, "1");
             let d = dimension(kind, offset, text.clone());
-            if let Some(group) = paper_group(&d, &resolved, &view_at("1:5")) {
-                let _ = (Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![group] }).validate();
+            if let Some(on) = paper_group(&d, &resolved, &view_at("1:5")) {
+                let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![on.group]);
+                scene.add_fonts(on.fonts);
+                let _ = scene.validate();
             }
         }
     }
