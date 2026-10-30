@@ -800,3 +800,84 @@ fn replies_list_the_dimensions_and_an_export_reports_a_lost_one() {
     assert_eq!((&exported["dimensions"][0]["drawn"], &exported["dimensions"][0]["status"]), (&json!(false), &json!("lost")), "{exported}");
     assert!(exported["svg"].as_str().is_some_and(|svg| svg.contains("<svg")), "still written");
 }
+
+/// An object of a scene with `b` as its box.
+fn object_at(object: u64, kind: ObjectKind, min: [f64; 2], max: [f64; 2]) -> SheetObject {
+    let b = Aabb2 { min: Vec2::new(min[0], min[1]), max: Vec2::new(max[0], max[1]) };
+    let boundary_mm = (kind == ObjectKind::View).then_some(b);
+    SheetObject { object, kind, bounds_mm: if kind == ObjectKind::View { Aabb2::EMPTY } else { b }, boundary_mm }
+}
+
+/// The smallest box holding the point wins, then the topmost: nested, overlapping and equal boxes,
+/// exactly on an edge, within a band and just past it. The sheet's border is never hit, and a point or
+/// band that isn't a number hits nothing.
+#[test]
+fn a_point_hits_the_smallest_box_then_the_topmost() {
+    let big = object_at(1, ObjectKind::View, [0.0, 0.0], [100.0, 100.0]);
+    let small = object_at(2, ObjectKind::View, [40.0, 40.0], [60.0, 60.0]);
+    let dimension = object_at(3, ObjectKind::Dimension, [45.0, 45.0], [55.0, 50.0]);
+    let border = object_at(9, ObjectKind::DrawingBorder, [-10.0, -10.0], [500.0, 500.0]);
+    let at = |x: f64, y: f64| Vec2::new(x, y);
+    let id = |objects: &[SheetObject], p: Vec2, band: f64| hit(objects, p, band).map(|h| h.object);
+
+    let nested = [border, big, small, dimension];
+    assert_eq!(id(&nested, at(50.0, 47.0), 0.0), Some(3), "the dimension on the small view");
+    assert_eq!(id(&nested, at(50.0, 55.0), 0.0), Some(2));
+    assert_eq!(id(&nested, at(10.0, 10.0), 0.0), Some(1));
+    assert_eq!(id(&nested, at(200.0, 200.0), 0.0), None, "the border is no object to pick");
+    // Whichever order they paint in, the smaller wins.
+    assert_eq!(id(&[small, big], at(50.0, 50.0), 0.0), Some(2));
+    // Two the same size: the one painted last.
+    let twin = object_at(4, ObjectKind::View, [40.0, 40.0], [60.0, 60.0]);
+    assert_eq!(id(&[small, twin], at(50.0, 50.0), 0.0), Some(4));
+    assert_eq!(id(&[twin, small], at(50.0, 50.0), 0.0), Some(2));
+
+    let on = |p: Vec2, band: f64| hit(&[small], p, band).map(|h| h.on_edge);
+    assert_eq!(on(at(40.0, 50.0), 0.0), Some(true), "exactly on an edge, with no band");
+    assert_eq!(on(at(50.0, 50.0), 0.0), Some(false));
+    assert_eq!(on(at(39.0, 50.0), 2.0), Some(true), "outside, within the band");
+    assert_eq!(on(at(37.0, 50.0), 2.0), None);
+    assert_eq!(on(at(42.0, 50.0), 2.0), Some(true), "inside, within the band");
+    assert_eq!(on(at(43.0, 50.0), 2.0), Some(false));
+
+    for (p, band) in [
+        (at(f64::NAN, 50.0), 0.0),
+        (at(50.0, f64::INFINITY), 0.0),
+        (at(50.0, 50.0), f64::NAN),
+        (at(50.0, 50.0), f64::INFINITY),
+        (at(50.0, 50.0), -1.0),
+    ] {
+        assert_eq!(on(p, band), None, "{p:?} {band}");
+    }
+    assert_eq!(hit(&[], at(0.0, 0.0), 0.0), None);
+}
+
+/// The command answers from the sheet as drawn, evaluating nothing: a view, a dimension on it, and
+/// nothing; a band that isn't one is refused. A view that can't be drawn is still there to pick.
+#[test]
+fn hit_says_what_is_under_a_point_of_a_sheet() {
+    let (mut s, sheet, [front, top]) = front_and_top();
+    let id = top_edge(&mut s, front);
+    let sheet_id = ids::encode(sheet);
+    let evaluations = s.evaluations;
+    let ask =
+        |s: &mut Session, point: [f64; 2], band: f64| run(s, "drawing.scene.hit", json!({"sheet": sheet_id, "point_mm": point, "band_mm": band}));
+    let schema = output_schema_for::<crate::schema::drawing_scene::SheetHitResult>();
+
+    let on_view = ask(&mut s, [150.0, 150.0], 0.0);
+    assert!(conforms(schema.as_value(), schema.as_value(), &on_view), "{on_view}");
+    assert_eq!(on_view["hit"], json!({"object": ids::encode(front), "kind": "view", "on_edge": false}));
+    assert_eq!(ask(&mut s, [150.0, 165.0], 0.0)["hit"]["object"], json!(ids::encode(id)), "the dimension's line");
+    let nothing = ask(&mut s, [10.0, 10.0], 0.0);
+    assert!(conforms(schema.as_value(), schema.as_value(), &nothing), "{nothing}");
+    assert_eq!(nothing["hit"], Value::Null);
+    assert_eq!(s.evaluations, evaluations);
+
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(top), "set": {"display_style": "shaded"}}));
+    assert_eq!(ask(&mut s, [150.0, 220.0], 0.0)["hit"]["object"], json!(ids::encode(top)), "a view with no lines");
+    for band in [-1.0, 1e308 * 10.0] {
+        let p = json!({"sheet": sheet_id, "point_mm": [150.0, 150.0], "band_mm": band});
+        assert!(s.execute("drawing.scene.hit", &p).is_err() || band > 0.0, "{band}");
+    }
+    assert!(s.execute("drawing.scene.hit", &json!({"sheet": "no such", "point_mm": [0.0, 0.0]})).is_err());
+}
