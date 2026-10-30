@@ -356,7 +356,7 @@ fn closing_the_drawing_drops_its_scenes() {
     assert_eq!(s.drawing_scenes.views.len(), 2);
     run(&mut s, "drawing.close", json!({}));
     let cache = &s.drawing_scenes;
-    assert!(cache.views.is_empty() && cache.last.is_none() && cache.shown.is_none() && cache.drawing.is_none());
+    assert!(cache.views.is_empty() && cache.last.is_none() && cache.shown.is_empty() && cache.drawing.is_none());
     assert!(!step(&mut s));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
     let reopened = extract(&mut s, sheet).unwrap();
