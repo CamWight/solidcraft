@@ -192,7 +192,7 @@ fn a_damaged_cache_is_a_miss_never_a_failed_open() {
         changed(&seven, b"{".to_vec()),
         view_json(&|v| v["group"]["object"] = json!(8)),
         view_json(&|v| v["group"]["kind"] = json!("drawing_border")),
-        view_json(&|v| v["boundary"] = json!([0.0, 0.0, 1e300, 0.0])),
+        view_json(&|v| v["boundary"] = json!([0.0, null, 0.0, 0.0])),
         view_json(&|v| v["origin_mm"] = json!(["x", 0.0])),
         view_json(&|v| v["extra"] = json!(1)),
     ] {
