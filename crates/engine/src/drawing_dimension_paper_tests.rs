@@ -296,7 +296,7 @@ fn hostile_points_and_offsets_never_panic() {
         state
     };
     let values = [0.0, -0.0, 1e-300, 1e-9, -1e-9, 1.0, -1.0, 3.0, 6.0, 1e5, -1e5, 1e12, f64::MAX, f64::MIN, f64::NAN, f64::INFINITY];
-    let mut pick = |next: &mut dyn FnMut() -> u64| values[(next() % values.len() as u64) as usize];
+    let pick = |next: &mut dyn FnMut() -> u64| values[(next() % values.len() as u64) as usize];
     for _ in 0..4000 {
         let count = (next() % 7) as usize;
         let points: Vec<[f64; 2]> = (0..count).map(|_| [pick(&mut next), pick(&mut next)]).collect();
