@@ -153,7 +153,7 @@ pub fn shown(s: &Session) -> std::result::Result<ShownSet, Unmeasured> {
 
 /// A saved view on its sheet.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OnSheet {
+pub struct PlacedView {
     /// Its box on the sheet, in paper millimetres.
     pub boundary: Aabb2,
     /// Its design's extents on its plane; with nothing to measure, the placeholder's box there,
@@ -224,7 +224,7 @@ pub fn frame(basis: Plane, scale: Scale, model: &Aabb2, centre: Vec2, cmd: &str)
 /// middle on its centre ([`Drawing::view_centre`]); with nothing to
 /// measure, a placeholder [`PLACEHOLDER_MM`] each way round its centre. It reads the model as it
 /// is evaluated: no model is evaluated.
-pub fn on_sheet(s: &Session, drawing: &Drawing, id: u64, cmd: &str) -> Result<OnSheet> {
+pub fn on_sheet(s: &Session, drawing: &Drawing, id: u64, cmd: &str) -> Result<PlacedView> {
     let view = drawing.resolve_view(id).map_err(|e| bad(cmd, e.to_string()))?;
     let centre = drawing.view_centre(id).map_err(|e| bad(cmd, e.to_string()))?;
     let measured = match s.drawn(drawing, view.source) {
@@ -236,7 +236,7 @@ pub fn on_sheet(s: &Session, drawing: &Drawing, id: u64, cmd: &str) -> Result<On
 
 /// A view drawing as `view` does on its sheet, from what [`measure`] and [`shows`] said of it, with the
 /// model's middle on `centre`; with nothing to measure, the placeholder.
-pub fn placed(view: &ResolvedView, measured: std::result::Result<(Extents, Aabb2), Unmeasured>, centre: Vec2, cmd: &str) -> Result<OnSheet> {
+pub fn placed(view: &ResolvedView, measured: std::result::Result<(Extents, Aabb2), Unmeasured>, centre: Vec2, cmd: &str) -> Result<PlacedView> {
     let scale = view.scale.value;
     let (extents, shows, unmeasured) = match measured {
         Ok((extents, shows)) => (extents, shows, None),
@@ -247,13 +247,13 @@ pub fn placed(view: &ResolvedView, measured: std::result::Result<(Extents, Aabb2
         }
     };
     let boundary = frame(view.basis, scale, &extents.model, centre, cmd)?.boundary(&shows).map_err(|e| bad(cmd, e.to_string()))?;
-    Ok(OnSheet { boundary, extents, unmeasured })
+    Ok(PlacedView { boundary, extents, unmeasured })
 }
 
 /// Each of `views` of `drawing` (one of `s`'s design's) whose boundary leaves its sheet's drawing
 /// space ([`Sheet::drawing_space`]), sides included, with where it sits:
 /// what a change of paper or a move to another sheet leaves outside. Nothing is moved.
-pub fn outside(s: &Session, drawing: &Drawing, views: &[u64], cmd: &str) -> Result<Vec<(u64, OnSheet)>> {
+pub fn outside(s: &Session, drawing: &Drawing, views: &[u64], cmd: &str) -> Result<Vec<(u64, PlacedView)>> {
     let mut out = Vec::new();
     for &id in views {
         let view = drawing.view(id).ok_or_else(|| bad(cmd, format!("no view {}", ids::encode(id))))?;
@@ -272,7 +272,7 @@ pub fn sheet<'a>(drawing: &'a Drawing, id: u64, cmd: &str) -> Result<&'a Sheet> 
 
 /// Whether a view `placed` on `sheet` leaves its drawing space
 /// ([`Sheet::drawing_space`]), sides included: [`outside`]'s rule.
-pub fn leaves(sheet: &Sheet, placed: &OnSheet, cmd: &str) -> Result<bool> {
+pub fn leaves(sheet: &Sheet, placed: &PlacedView, cmd: &str) -> Result<bool> {
     // A view drawn up to the border, its sides on it, is inside: the margin takes rounding.
     let space = sheet.drawing_space().map_err(|e| bad(cmd, e.to_string()))?.inflated(EPS);
     Ok(!(space.contains(placed.boundary.min) && space.contains(placed.boundary.max)))
