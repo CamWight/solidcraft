@@ -15,7 +15,7 @@ fn base_dir(path: Option<&str>) -> Option<PathBuf> {
 }
 
 /// A path as given, made absolute when the platform can, with `.` and `..` worked out.
-pub(super) fn absolute(p: &Path) -> PathBuf {
+pub(crate) fn absolute(p: &Path) -> PathBuf {
     let full = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
     let mut out = PathBuf::new();
     for c in full.components() {
