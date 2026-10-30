@@ -521,7 +521,8 @@ fn a_renamed_body_keeps_its_references() {
     let mut f = boxed();
     let front = f.front;
     let across = f.linear(front, [0.0, 0.0, 0.0], [80.0, 0.0, 0.0], LinearDirection::Horizontal, Reading::Projected);
-    let kind = DimensionKind::Length { edge: f.edge([0.0, 0.0, 30.0], [80.0, 0.0, 30.0]), direction: LinearDirection::Aligned, reading: Reading::Projected };
+    let kind =
+        DimensionKind::Length { edge: f.edge([0.0, 0.0, 30.0], [80.0, 0.0, 30.0]), direction: LinearDirection::Aligned, reading: Reading::Projected };
     let length = f.add(front, kind, None);
     let record = f.d.clone();
     run(&mut f.s, "body.rename", json!({"body": "Box", "name": "Lid"}));
@@ -562,7 +563,12 @@ fn two_bodies_of_a_feature_never_choose_for_a_renamed_one() {
     assert_eq!(box_body.feature, other.feature, "one feature made both");
     let (other_name, feature) = (other.name.clone(), box_body.feature);
     let line = |b: &ModelBody| {
-        let bounds = b.mesh().edges.iter().position(|line| line.len() == 2 && (line[0].z - line[1].z).abs() < 1e-9 && line[0].y == 0.0 && line[1].y == 0.0).unwrap();
+        let bounds = b
+            .mesh()
+            .edges
+            .iter()
+            .position(|line| line.len() == 2 && (line[0].z - line[1].z).abs() < 1e-9 && line[0].y == 0.0 && line[1].y == 0.0)
+            .unwrap();
         (edge_names(b)[bounds].clone(), (b.mesh().edges[bounds][0].x - b.mesh().edges[bounds][1].x).abs())
     };
     let (name, length) = line(box_body);
@@ -595,13 +601,17 @@ fn two_bodies_of_a_feature_never_choose_for_a_renamed_one() {
 fn a_balloon_and_a_cylinder_follow_a_renamed_body() {
     let mut f = boxed();
     let (front, right) = (f.front, f.right);
-    run(&mut f.s, "solid.cylinder", json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"], "name": "Hole"}));
+    run(
+        &mut f.s,
+        "solid.cylinder",
+        json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"], "name": "Hole"}),
+    );
     let kind = DimensionKind::Cylinder { face: f.face([46.0, 20.0, 15.0]) };
     let across = f.add(right, kind, None);
     let round = f.round([40.0, 0.0, 15.0], 6.0);
     let radial = f.add(front, DimensionKind::Radial { edge: round.clone(), diameter: true }, None);
     let id = f.d.allocate_id(&mut f.ids).unwrap();
-    f.d.add_balloons([Arc::new(solidcraft_doc::drawing::balloon::Balloon { id, view: front, edge: round, at: [60.0, 60.0] , parts_list: None })]);
+    f.d.add_balloons([Arc::new(solidcraft_doc::drawing::balloon::Balloon { id, view: front, edge: round, at: [60.0, 60.0], parts_list: None })]);
     run(&mut f.s, "body.rename", json!({"body": "Box", "name": "Lid"}));
     assert_reads(&f.resolve(across), 12.0, false);
     assert_reads(&f.resolve(radial), 12.0, false);
