@@ -16,6 +16,7 @@ pub mod control_auth;
 pub mod control_pending;
 pub mod cosmetic_threads;
 pub mod crash;
+pub mod drawing_annotation_paper;
 pub mod drawing_dimension_paper;
 pub mod drawing_scene;
 mod drawing_scene_hit;
