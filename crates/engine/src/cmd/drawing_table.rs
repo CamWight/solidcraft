@@ -90,7 +90,10 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     apply(s, &record, &mut table, request.set, EDIT)?;
     let list = listed(&table).filter(|list| Some(*list) != before);
     s.edit_drawing(EDIT, |d| {
-        d.add_tables([Arc::new(table)]);
+        let at = d.table_index(id).ok_or_else(|| bad(EDIT, format!("the drawing has no table {}", ids::encode(id))))?;
+        if let Some(old) = d.tables.get_mut(at) {
+            *old = Arc::new(table);
+        }
         Ok(())
     })?;
     answer(s, EDIT, id, list)
