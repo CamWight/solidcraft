@@ -113,9 +113,7 @@ impl Document {
                 let b = drawing.balloon(*id).ok_or_else(|| DocError::Unknown(format!("balloon {}", ids::encode(*id))))?;
                 Ok(match lookup.edges(&b.edge) {
                     // A split edge has no one middle: the pieces are listed, and none is chosen.
-                    Ok(found) if !found.whole => {
-                        Resolved { status: Status::Ambiguous(edge_candidates(&b.edge.body, &found)), point: None, exact: false }
-                    }
+                    Ok(found) if !found.whole => Resolved { status: Status::Ambiguous(edge_candidates(&found)), point: None, exact: false },
                     Ok(found) => {
                         let point = found.pieces.first().and_then(|(_, line)| crate::joints::edge::middle(line)).map(|(p, _)| p);
                         let status = if point.is_some() { Status::Ok } else { Status::Lost(format!("edge `{}` has no length", b.edge.name)) };
