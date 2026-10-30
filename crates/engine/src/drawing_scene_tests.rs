@@ -78,6 +78,11 @@ fn border(s: &Session, sheet: u64) -> Vec<Group> {
     record.border.as_ref().unwrap().layout(&record.sheet).unwrap().paper(sheet)
 }
 
+/// `group` without its text: a title block's lines and symbol, as its layout draws them.
+fn lines(group: &Group) -> Group {
+    Group { items: group.items.iter().filter(|item| !matches!(item, Item::Text(_))).cloned().collect(), ..group.clone() }
+}
+
 /// The box round the ends of `group`'s stroke pieces, and how long they are in all.
 fn reach(group: &Group) -> (Vec2, Vec2, f64) {
     let (mut lo, mut hi, mut length) = (Vec2::new(f64::INFINITY, f64::INFINITY), Vec2::new(f64::NEG_INFINITY, f64::NEG_INFINITY), 0.0);
@@ -197,7 +202,7 @@ fn a_sheets_title_block_is_drawn_after_its_views() {
     let d = s.drawing("test").unwrap();
     let record = d.sheets.iter().find(|x| x.id == sheet).unwrap();
     let drawn = block.layout(&record.border.as_ref().unwrap().layout(&record.sheet).unwrap()).unwrap().paper(sheet, Projection::Third);
-    assert_eq!(serde_json::to_string(scene.groups.last().unwrap()).unwrap(), serde_json::to_string(&drawn).unwrap());
+    assert_eq!(serde_json::to_string(&lines(scene.groups.last().unwrap())).unwrap(), serde_json::to_string(&drawn).unwrap());
     let reply = run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}));
     let schema = output_schema_for::<SheetSceneResult>();
     assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
@@ -225,11 +230,11 @@ fn the_title_blocks_symbol_follows_the_drawings_projection() {
         serde_json::to_string(&record.title_block.as_ref().unwrap().layout(&border).unwrap().paper(sheet, projection)).unwrap()
     };
     let third = settled(&mut s, sheet);
-    assert_eq!(serde_json::to_string(third.scene.groups.last().unwrap()).unwrap(), block_of(&s, Projection::Third));
+    assert_eq!(serde_json::to_string(&lines(third.scene.groups.last().unwrap())).unwrap(), block_of(&s, Projection::Third));
     run(&mut s, "drawing.set", json!({"projection": "first"}));
     let at_once = extract(&mut s, sheet).unwrap();
     assert!(at_once.generation > third.generation && !at_once.stale.is_empty());
-    assert_eq!(serde_json::to_string(at_once.scene.groups.last().unwrap()).unwrap(), block_of(&s, Projection::First));
+    assert_eq!(serde_json::to_string(&lines(at_once.scene.groups.last().unwrap())).unwrap(), block_of(&s, Projection::First));
     let first = settled(&mut s, sheet);
     assert_ne!(block_of(&s, Projection::First), block_of(&s, Projection::Third));
     assert_eq!(bytes(&first.scene), bytes(&built(&s, sheet).scene));
@@ -418,16 +423,18 @@ fn a_view_past_the_sheets_records_leaves_out_only_itself() {
     };
     for title_block in [None, Some(solidcraft_geom::title_block::default_block())] {
         let record = Sheet { title_block, ..(**d.sheets.iter().find(|x| x.id == sheet).unwrap()).clone() };
-        let (empty, _) = assemble(&record, Projection::Third, std::iter::empty::<(u64, Vec2, Drawn)>()).unwrap();
+        let (empty, _) = assemble(&record, Projection::Third, "", &[], std::iter::empty::<(u64, Vec2, Drawn)>()).unwrap();
         assert_eq!(empty.groups.len(), if record.title_block.is_some() { 4 } else { 3 });
-        let left = MAX_RECORDS - empty.groups.iter().map(Group::records).sum::<usize>();
+        // The block's text and its fonts count too.
+        let fonts = |scene: &Scene| Scene::new(scene.size_mm, Vec::new()).font_records_beyond(&scene.fonts);
+        let left = MAX_RECORDS - empty.groups.iter().map(Group::records).sum::<usize>() - fonts(&empty);
         // The first leaves 20 records; the second needs 32; the third takes the last 20.
         let views = [lines(left - 22), lines(30), lines(18)];
         let centre = Vec2::new(100.0, 100.0);
-        let (scene, states) = assemble(&record, Projection::Third, views.iter().enumerate().map(|(i, v)| (i as u64, centre, v))).unwrap();
+        let (scene, states) = assemble(&record, Projection::Third, "", &[], views.iter().enumerate().map(|(i, v)| (i as u64, centre, v))).unwrap();
         let statuses: Vec<&'static str> = states.iter().map(|v| v.status.name()).collect();
         assert_eq!(statuses, ["drawn", "failed", "drawn"]);
-        let records = scene.groups.iter().map(Group::records).sum::<usize>();
+        let records = scene.groups.iter().map(Group::records).sum::<usize>() + fonts(&scene);
         assert_eq!((scene.groups.len(), records), (empty.groups.len() + 2, MAX_RECORDS));
         assert!(matches!(&states[1].status, Status::Failed(why) if why.contains("put it on another sheet")), "{:?}", states[1]);
     }

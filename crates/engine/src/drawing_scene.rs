@@ -2,8 +2,9 @@
 //! scene ([`Scene`]), for the sheet page and every export, so the screen and the files draw the
 //! same thing. In paint order: the sheet's drawing border ([`SheetLayout::paper`]), then each view
 //! on the sheet by id, its visible lines as [`paper_group`] makes them, then its title block's lines
-//! and projection symbol, in the drawing's projection ([`TitleBlockLayout::paper`]). Text, tables,
-//! hidden lines and shaded views each join as one more kind of group.
+//! and projection symbol, in the drawing's projection ([`TitleBlockLayout::paper`]), with its
+//! labels and values set on them ([`title_block_text`]). Tables, hidden lines and shaded views each
+//! join as one more kind of group.
 //!
 //! [`build`] draws a sheet at once, each view the one way: its lines worked out centred on the view,
 //! then moved to its centre, so the same lines on the same centre are the same bytes however they
@@ -24,17 +25,19 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use solidcraft_doc::bom::Tree;
 use solidcraft_doc::drawing::view::ResolvedView;
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
 use solidcraft_doc::{DocError, ModelState, ids};
-use solidcraft_geom::cell::Projection;
+use solidcraft_geom::cell::{Projection, Shown};
 use solidcraft_geom::paper::text::TextRun;
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, Scene};
 use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
 
 use crate::drawing_view::{CHORD_MM, MIN_MODEL_CHORD_MM, ShownSet, Stats, Unmeasured, paper_group};
 use crate::params::bad;
+use crate::title_block_text;
 use crate::{EngineError, Result, Session};
 
 /// The command the sheet scene answers for, in its errors.
@@ -114,7 +117,7 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
     // placed as they are drawn, so at most one view's are held beside the scene.
     let shown = crate::drawing_view::shown(s);
     let drawn = on.iter().map(|(id, view, centre)| (*id, *centre, draw(s, &shown, *id, view)));
-    let (scene, views) = assemble(record, drawing.projection, drawn)?;
+    let (scene, views) = assemble(record, drawing.projection, &drawing.font, &texts(s, drawing, sheet), drawn)?;
     Ok(SheetScene { scene, views })
 }
 
@@ -161,12 +164,14 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
 }
 
 /// The scene of sheet `record`: its border, then each of `views` (its id, centre and lines, in id
-/// order) moved to its centre, then its title block, its symbol in `projection`. A view that would
-/// take the scene past a paper scene's limits is left out and says why, and the views after it are
-/// still drawn when they fit.
+/// order) moved to its centre, then its title block, its symbol in `projection` and its cells'
+/// text as `texts` gives it, in the font `font` (the drawing's). A view that would take the scene past a paper scene's limits is left
+/// out and says why, and the views after it are still drawn when they fit.
 fn assemble<D: Borrow<Drawn>>(
     record: &Sheet,
     projection: Projection,
+    font: &str,
+    texts: &[(String, Shown)],
     views: impl Iterator<Item = (u64, Vec2, D)>,
 ) -> Result<(Scene, Vec<ViewState>)> {
     let size_mm = record.sheet.size_mm().map_err(|e| bad(CMD, e.to_string()))?;
@@ -174,11 +179,24 @@ fn assemble<D: Borrow<Drawn>>(
         Some(border) => border.layout(&record.sheet).map_err(|e| bad(CMD, e.to_string()))?.paper(record.id),
         None => Vec::new(),
     };
-    // The block sits on the border. It's painted over the views, but counted with the border, so no
-    // view takes its records.
-    let block = record.title_block_layout().map_err(|e| bad(CMD, e.to_string()))?.map(|placed| placed.paper(record.id, projection));
-    let mut records = border.iter().chain(&block).map(Group::records).fold(0usize, usize::saturating_add);
+    // The block sits on the border. It's painted over the views, but counted with the border (its
+    // text's fonts too), so no view takes its records.
+    let (block, fonts) = match (&record.title_block, record.title_block_layout().map_err(|e| bad(CMD, e.to_string()))?) {
+        (Some(block), Some(placed)) => {
+            let mut group = placed.paper(record.id, projection);
+            let text = title_block_text::lay(block, &placed, font, texts).set();
+            group.items.extend(text.runs.into_iter().map(Item::Text));
+            (Some(group), text.fonts)
+        }
+        _ => (None, Vec::new()),
+    };
     let mut scene = Scene::new(size_mm, border);
+    let mut records = scene.groups.iter().chain(&block).map(Group::records).fold(0usize, usize::saturating_add);
+    // The block's text lists a font once a text: each adds what the table doesn't hold yet.
+    for font in fonts {
+        records = records.saturating_add(scene.font_records_beyond(std::slice::from_ref(&font)));
+        scene.add_fonts([font]);
+    }
     // Each view's group is counted onto the scene and checked alone on the sheet first, so one past
     // the limits leaves out only itself, and checking costs one pass over each group.
     let mut alone = Scene::new(size_mm, Vec::with_capacity(1));
@@ -233,6 +251,13 @@ fn moved(group: &Group, by: Vec2) -> Group {
     Group { object: group.object, kind: group.kind, items: items.collect() }
 }
 
+/// The text cells of sheet `sheet` of `d` as `s`'s design shows them ([`title_block_text::shown`]).
+fn texts(s: &Session, d: &Drawing, sheet: u64) -> Vec<(String, Shown)> {
+    let Some(at) = d.sheets.iter().position(|x| x.id == sheet && x.title_block.is_some()) else { return Vec::new() };
+    let state = s.model.state();
+    title_block_text::shown(&s.doc, &mut Tree::new(&s.doc, &state), d, at)
+}
+
 /// Sheet `sheet` of `d`.
 fn sheet_of(d: &Drawing, sheet: u64) -> Result<&Sheet> {
     d.sheets.iter().map(|s| &**s).find(|s| s.id == sheet).ok_or_else(|| bad(CMD, format!("the drawing has no sheet {}", ids::encode(sheet))))
@@ -268,6 +293,8 @@ pub struct Cache {
     views: BTreeMap<u64, Entry>,
     /// The shown set of the world state views were last drawn from, worked out once for it.
     shown: Option<(Arc<ModelState>, std::result::Result<ShownSet, Unmeasured>)>,
+    /// The title block text of the sheet last extracted, and the drawing and model it was read from.
+    texts: Option<(u64, Arc<Drawing>, Arc<ModelState>, Vec<(String, Shown)>)>,
     last: Option<Assembled>,
     /// Numbers each view drawn, so a scene is assembled again only when one of its views was.
     serial: u64,
@@ -286,11 +313,13 @@ struct Entry {
 }
 
 /// What a scene is assembled from: the sheet's record, the drawing's projection (its title block's
-/// symbol), and each view on it with its entry's serial (0: not drawn yet) and its centre.
+/// symbol) and font, its title block's text, and each view on it with its entry's serial (0: not drawn yet) and its centre.
 #[derive(PartialEq)]
 struct Inputs {
     sheet: Sheet,
     projection: Projection,
+    font: String,
+    texts: Vec<(String, Shown)>,
     views: Vec<(u64, u64, Vec2)>,
 }
 
@@ -327,14 +356,22 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     {
         return Ok(last.answer.clone());
     }
+    // The fields are read again only when the drawing or the model changed, not for each view drawn.
+    let model = s.model.state();
+    let texts = match s.drawing_scenes.texts.take() {
+        Some((was, drawing, state, texts)) if was == sheet && Arc::ptr_eq(&drawing, &d) && Arc::ptr_eq(&state, &model) => texts,
+        _ => texts(s, &d, sheet),
+    };
+    let cache = &mut s.drawing_scenes;
+    cache.texts = Some((sheet, d.clone(), model, texts.clone()));
     let record = sheet_of(&d, sheet)?;
     let on = views_on(&d, sheet)?;
     cache.drawing = Some(d.id);
     cache.sheet = Some(sheet);
     let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &state, view)).map(|(id, ..)| *id).collect();
     let serial = |id: &u64| cache.views.get(id).map_or(0, |e| e.serial);
-    let inputs =
-        Inputs { sheet: record.clone(), projection: d.projection, views: on.iter().map(|(id, _, centre)| (*id, serial(id), *centre)).collect() };
+    let views = on.iter().map(|(id, _, centre)| (*id, serial(id), *centre)).collect();
+    let inputs = Inputs { sheet: record.clone(), projection: d.projection, font: d.font.clone(), texts, views };
     let (scene, views, generation) = match cache.last.take() {
         Some(last) if last.inputs == inputs => (last.answer.scene, last.answer.views, last.answer.generation),
         _ => {
@@ -342,7 +379,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
             let kept: BTreeSet<u64> = d.views.iter().map(|v| v.id).collect();
             cache.views.retain(|id, _| kept.contains(id));
             let drawn = on.iter().filter_map(|(id, _, centre)| cache.views.get(id).map(|e| (*id, *centre, &e.drawn)));
-            let (scene, views) = assemble(record, d.projection, drawn)?;
+            let (scene, views) = assemble(record, d.projection, &inputs.font, &inputs.texts, drawn)?;
             (Arc::new(scene), views, GENERATION.fetch_add(1, Ordering::Relaxed).wrapping_add(1))
         }
     };

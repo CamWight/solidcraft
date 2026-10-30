@@ -9,16 +9,16 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use solidcraft_doc::bom::{Mass, Tree};
-use solidcraft_doc::drawing::fields::{Component, Values};
+use solidcraft_doc::bom::Tree;
 use solidcraft_doc::drawing::{self, Drawing, Source, Units};
 use solidcraft_doc::{Document, ids};
-use solidcraft_geom::cell::{Content, Projection, Shown};
+use solidcraft_geom::cell::{Projection, Shown, Warning};
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Orientation, PaperSize, Sheet};
-use solidcraft_geom::title_block::{self, CellKind};
+use solidcraft_geom::title_block;
 
 use super::CommandSpec;
 use crate::params::{bad, str_};
+use crate::title_block_text::{self, Note};
 use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
@@ -47,7 +47,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         "drawing: id → deleted: its id; closed when it was open (one undo step of the model)",
     ),
     CommandSpec::new("drawing.inspect", "Inspect Drawing", inspect).in_drawing().icon("inspect").noundo().doc_only().params(
-        "→ {id, name, units, projection, language, font, font_note: why its text is set in the built-in font instead (the font isn't on this computer, or can't be set on paper), or null, properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, title_block (its definition, or null), title_block_cells: [{name, text, value?}] (each text cell as the sheet shows it: its fields' values, \"-\" for one with none, or the text typed over it with the value it hides as `value`), title_block_overrides, dpi, documents, excluded}], revisions: {rows: [{row, revision, description, designer, checker, date, hidden}], the oldest first (the newest is the drawing's revision), next: the revision a new row gets}}. Read-only.",
+        "→ {id, name, units, projection, language, font, font_note: why its text is set in the built-in font instead (the font isn't on this computer, or can't be set on paper), or null, properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, title_block (its definition, or null), title_block_cells: [{name, text, value?, notes?}] (each text cell as the sheet shows it: its fields' values, \"-\" for one with none, or the text typed over it with the value it hides as `value`; `notes` are what doesn't fit on paper, each {fit: chars (with count and max), height or width}, shown whole, or {refused: why} for a label or value the drawing's font can't set, left off the sheet), title_block_overrides, dpi, documents, excluded}], revisions: {rows: [{row, revision, description, designer, checker, date, hidden}], the oldest first (the newest is the drawing's revision), next: the revision a new row gets}}. Read-only.",
     ),
     CommandSpec::new("drawing.set", "Drawing Settings", set)
         .in_drawing()
@@ -206,36 +206,31 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
     }))
 }
 
-/// The text cells of sheet `at`'s title block as the sheet shows them (`drawing.inspect`).
+/// The text cells of sheet `at`'s title block as the sheet shows them (`drawing.inspect`), each
+/// with what doesn't fit on paper or why its text is off the sheet.
 fn title_block_cells(doc: &Document, tree: &mut Tree<'_>, d: &Drawing, at: usize) -> Vec<Value> {
-    let Some(sheet) = d.sheets.get(at) else { return Vec::new() };
-    let Some(block) = &sheet.title_block else { return Vec::new() };
-    // What the model says of the component it documents: a component since deleted has nothing.
-    let id = sheet.documents.map(|documents| documents.component);
-    let (mass, materials) = id.and_then(|id| tree.component(id).ok()).unzip();
-    let mass = mass.and_then(|mass| if let Mass::Grams(grams) = mass { Some(grams) } else { None });
-    let material = materials.filter(|m| !m.is_empty()).map(|m| m.join("; "));
-    let component = id.and_then(|id| documented(doc, id, material.as_deref(), mass));
-    let values = Values { drawing: d, sheet: at, component };
-    let cell = |name: &str, content: &Content| {
-        let shown = Shown::over(values.text(content), sheet.title_block_overrides.get(name).map(String::as_str));
+    let shown = title_block_text::shown(doc, tree, d, at);
+    // Measured, not set: the notes need the lines, not the glyphs' outlines.
+    let block = d.sheets.get(at).and_then(|sheet| Some((sheet.title_block.as_ref()?, sheet.title_block_layout().ok().flatten()?)));
+    let notes = block.map(|(block, placed)| title_block_text::lay(block, &placed, &d.font, &shown).notes).unwrap_or_default();
+    let note = |note: &Note| match note {
+        Note::Fit(Warning::Chars { count, max }) => json!({"fit": "chars", "count": count, "max": max}),
+        Note::Fit(Warning::Height) => json!({"fit": "height"}),
+        Note::Fit(Warning::Width) => json!({"fit": "width"}),
+        Note::Refused(why) => json!({"refused": why}),
+    };
+    let cell = |(name, shown): &(String, Shown)| {
         let mut cell = json!({"name": name, "text": shown.text});
-        if let Some(value) = shown.replaced {
+        if let Some(value) = &shown.replaced {
             cell["value"] = json!(value);
+        }
+        let notes: Vec<Value> = notes.iter().filter(|(cell, _)| cell == name).map(|(_, n)| note(n)).collect();
+        if !notes.is_empty() {
+            cell["notes"] = json!(notes);
         }
         cell
     };
-    block.cells.iter().filter_map(|c| if let CellKind::Text(text) = &c.kind { Some(cell(&c.name, &text.content)) } else { None }).collect()
-}
-
-/// Component `id` of the design (0: the design itself) as a title block's fields read it, with
-/// what the model says of it; none when the design has no such component.
-fn documented<'a>(doc: &'a Document, id: u64, material: Option<&'a str>, mass: Option<f64>) -> Option<Component<'a>> {
-    if id == 0 {
-        return Some(Component { name: &doc.name, metadata: &doc.metadata, properties: None, material, mass });
-    }
-    let c = doc.components.iter().find(|c| c.id == id)?;
-    Some(Component { name: &c.name, metadata: &c.metadata, properties: Some(&c.properties), material, mass })
+    shown.iter().map(cell).collect()
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {

@@ -38,6 +38,7 @@ pub mod slicers;
 pub mod snap;
 pub mod status_items;
 pub mod timing;
+pub mod title_block_text;
 pub mod view;
 
 use std::sync::Arc;

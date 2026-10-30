@@ -21,7 +21,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Draw Sheet", crat
     .doc_only()
     .contract(&CONTRACT)
     .output(output_schema_for::<SheetSceneResult>)
-    .params("sheet: id or name → {sheet, scene: {size_mm, groups: [{object, kind: drawing_border|view|title_block, items: [{kind: stroke, path, closed, width_mm} or {kind: fill, region}]}]} in paint order: the sheet's drawing border (object: the sheet), then each view on it by id (object: the view; its visible lines only for now), then its title block's lines (object: the sheet), views: [{view, status: drawn|placeholder|failed, reason?, stats?}]}. A view with nothing to measure, or one that can't be drawn yet, is left out and says why. Read-only; no model is evaluated.")];
+    .params("sheet: id or name → {sheet, scene: {size_mm, groups: [{object, kind: drawing_border|view|title_block, items: [{kind: stroke, path, closed, width_mm} or {kind: fill, region} or {kind: text, font, scale, origin, angle, slant, glyphs, text, clusters, rtl}]}], fonts?: [the drawing fonts its text is set in, each with the glyphs the text places]} in paint order: the sheet's drawing border (object: the sheet), then each view on it by id (object: the view; its visible lines only for now), then its title block's lines and text (object: the sheet), views: [{view, status: drawn|placeholder|failed, reason?, stats?}]}. A view with nothing to measure, or one that can't be drawn yet, is left out and says why. Read-only; no model is evaluated.")];
 
 fn scene(s: &mut Session, p: &Value) -> Result<Value> {
     let request: SheetSceneParams = crate::schema::read(CMD, p)?;
