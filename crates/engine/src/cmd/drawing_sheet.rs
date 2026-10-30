@@ -21,7 +21,7 @@ use crate::params::{bad, num, str_};
 use crate::schema::drawing_sheet::{SheetAddParams, SheetDeleteParams, SheetName, SheetReorderParams, SheetSetParams, SheetsResult};
 use crate::schema::drawing_view::OutsideResult;
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session};
+use crate::{Result, Session};
 
 const ADD: TypedContract<SheetAddParams> = TypedContract::new();
 const SET: TypedContract<SheetSetParams> = TypedContract::new();
@@ -76,7 +76,7 @@ pub static COMMANDS: &[CommandSpec] = &[
 fn answer(s: &Session, cmd: &str, sheet: Option<u64>, outside: Vec<OutsideResult>) -> Result<Value> {
     let sheets = s.drawing(cmd)?.sheets.iter().map(|sheet| SheetName { id: ids::encode(sheet.id), name: sheet.name.clone() }).collect();
     let reply = SheetsResult { sheet: sheet.map(ids::encode), sheets, outside, param_warnings: Vec::new() };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 /// At most this many ids of a kind in a message.

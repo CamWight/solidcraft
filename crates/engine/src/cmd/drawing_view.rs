@@ -42,7 +42,7 @@ use solidcraft_geom::{Aabb2, Vec2};
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
-use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Unmeasured};
+use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS, MAX_PATHS, PlacedView, ShownSet, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, AlongParam, AngleFromParam, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult,
@@ -513,8 +513,8 @@ fn changed_fields(a: &View, b: &View) -> Vec<String> {
 
 /// Extents as the replies give them: measured on the display mesh, or a placeholder's and why.
 /// The views [`crate::drawing_view::outside`] lists, as the commands answer them.
-pub(super) fn outside_results(outside: Vec<(u64, OnSheet)>) -> Vec<OutsideResult> {
-    let result = |(id, placed): (u64, OnSheet)| OutsideResult {
+pub(super) fn outside_results(outside: Vec<(u64, PlacedView)>) -> Vec<OutsideResult> {
+    let result = |(id, placed): (u64, PlacedView)| OutsideResult {
         view: ids::encode(id),
         boundary_mm: BoxResult { min: placed.boundary.min.into(), max: placed.boundary.max.into() },
         unmeasured: placed.unmeasured.map(Unmeasured::name),
@@ -722,7 +722,7 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     to_sheet_answer(first, sheet, &copies, outside)
 }
 
-fn to_sheet_answer(view: u64, sheet: u64, views: &[u64], outside: Vec<(u64, OnSheet)>) -> Result<Value> {
+fn to_sheet_answer(view: u64, sheet: u64, views: &[u64], outside: Vec<(u64, PlacedView)>) -> Result<Value> {
     let reply = ToSheetResult {
         view: ids::encode(view),
         sheet: ids::encode(sheet),

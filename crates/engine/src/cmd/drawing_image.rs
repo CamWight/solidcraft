@@ -59,7 +59,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         d.to_json().map_err(|e| bad(ADD, e.to_string()))?;
         Ok(())
     })?;
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 #[cfg(test)]

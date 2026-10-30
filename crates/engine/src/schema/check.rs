@@ -7,13 +7,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use schemars::generate::SchemaSettings;
 use schemars::{JsonSchema, Schema};
+use serde::Serialize;
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
 use super::record;
 use crate::cmd::Run;
 use crate::params::bad;
-use crate::{Result, Session};
+use crate::{EngineError, Result, Session};
 
 /// How a session treats calls that break a command's contract.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -249,6 +250,11 @@ fn nearest(key: &str, allowed: &BTreeSet<String>) -> Option<String> {
 /// check uses, so the handler and the check say the same thing about the same mistake.
 pub(crate) fn read<P: DeserializeOwned>(cmd: &str, p: &Value) -> Result<P> {
     serde_path_to_error::deserialize(p).map_err(|e| bad(cmd, parse_issue(&e).message))
+}
+
+/// A command's answer as JSON: the other way from [`read`].
+pub(crate) fn reply<T: Serialize>(answer: T) -> Result<Value> {
+    serde_json::to_value(answer).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 /// A deserialization failure as an issue, in the engine's style.

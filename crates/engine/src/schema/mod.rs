@@ -80,8 +80,8 @@ pub mod sketch_create;
 pub mod sketch_equation;
 pub mod view_navigation;
 
-pub(crate) use check::read;
 pub use check::{Contract, Issue, ParamCheck, TypedContract, input_schema_for, issues, output_schema_for, run_checked, run_checked_as};
+pub(crate) use check::{read, reply};
 pub use types::*;
 
 /// A command's `run` that checks the call against the contract command `$id` publishes
