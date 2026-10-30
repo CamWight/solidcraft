@@ -18,7 +18,7 @@ fn design() -> Document {
         let taken = doc.drawings.iter().map(|d| d.id).collect();
         let mut d = Drawing::new(name, "en", "Sheet 1", a3, None, &taken, &mut ids).unwrap();
         let id = d.allocate_id(&mut ids).unwrap();
-        d.sources.push(Source { id });
+        d.sources.push(Source { id, path: None });
         doc.drawings.push(Arc::new(d));
     }
     doc
