@@ -301,6 +301,8 @@ impl Drawing {
             dimensions: Vec::new(),
             balloons: Vec::new(),
             tables: Vec::new(),
+            notes: Vec::new(),
+            images: Vec::new(),
             revisions: Arc::default(),
         };
         drawing.validate()?;

@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
 
 use super::*;
-use crate::drawing::Source as DrawingSource;
+use crate::drawing::{OnSheet, Source as DrawingSource};
 use crate::ids::IdSource;
 
 /// A drawing of one design on one A3 sheet with a parts list and a revision table, and the first's id.
