@@ -257,6 +257,10 @@ dimensions the next time they are drawn, and what a dimension can no longer find
 the two apart: undo in a drawing undoes the drawing's steps and leaves the model, and undo in the
 model leaves the drawings.
 
+A drawing can also draw the design in another file. That design is read-only from the drawing: open it
+to change it. If its file can't be found, the drawing still opens, says which file it wants, and keeps
+each view's last lines until you relink it or find the file for this session.
+
 ## Designs in shared or synced folders
 
 A design kept on a network share or in a synced folder (Dropbox, OneDrive, Syncthing, Google
