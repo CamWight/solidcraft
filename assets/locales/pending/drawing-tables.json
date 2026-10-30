@@ -1,0 +1,42 @@
+{
+  "en": {
+    "cmd.drawing_table_add": "Add Table",
+    "cmd.drawing_table_edit": "Edit Table",
+    "cmd.drawing_table_delete": "Delete Table"
+  },
+  "ar": {
+    "cmd.drawing_table_add": "إضافة جدول",
+    "cmd.drawing_table_edit": "تحرير الجدول",
+    "cmd.drawing_table_delete": "حذف الجدول"
+  },
+  "de": {
+    "cmd.drawing_table_add": "Tabelle hinzufügen",
+    "cmd.drawing_table_edit": "Tabelle bearbeiten",
+    "cmd.drawing_table_delete": "Tabelle löschen"
+  },
+  "he": {
+    "cmd.drawing_table_add": "הוספת טבלה",
+    "cmd.drawing_table_edit": "עריכת טבלה",
+    "cmd.drawing_table_delete": "מחיקת טבלה"
+  },
+  "ja": {
+    "cmd.drawing_table_add": "表を追加",
+    "cmd.drawing_table_edit": "表を編集",
+    "cmd.drawing_table_delete": "表を削除"
+  },
+  "ko": {
+    "cmd.drawing_table_add": "표 추가",
+    "cmd.drawing_table_edit": "표 편집",
+    "cmd.drawing_table_delete": "표 삭제"
+  },
+  "vi": {
+    "cmd.drawing_table_add": "Thêm bảng",
+    "cmd.drawing_table_edit": "Sửa bảng",
+    "cmd.drawing_table_delete": "Xóa bảng"
+  },
+  "zh": {
+    "cmd.drawing_table_add": "添加表格",
+    "cmd.drawing_table_edit": "编辑表格",
+    "cmd.drawing_table_delete": "删除表格"
+  }
+}
