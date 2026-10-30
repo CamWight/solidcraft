@@ -8,12 +8,12 @@
 
 use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 
-use solidcraft_doc::drawing::dimension::{Dimension, DimensionKind, Resolved, TextPlace};
+use solidcraft_doc::drawing::dimension::{Dimension, Geometry, Resolved, TextPlace};
 use solidcraft_geom::drawing_measure::LinearDirection;
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::paper::annotate::{ArrowShape, Terminator};
 use solidcraft_geom::paper::{Group, Item, ObjectKind};
-use solidcraft_geom::{Seg2, Vec2};
+use solidcraft_geom::{Seg2, Vec2, Vec3};
 use solidcraft_sketch::{DimFrame, DimSizes, dim_layout_sized};
 
 /// A dimension's sizes on paper, with its text above an unbroken line (ISO 129-1).
@@ -40,10 +40,9 @@ struct Piece {
 /// or `None` when what it measures has no place to draw on the view: it wasn't found again, or it
 /// is a single point there.
 pub fn paper_group(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame) -> Option<Group> {
-    let on: Vec<Vec2> = resolved.points.iter().map(|p| frame.to_paper(*p)).collect();
     let mut lines: Vec<Vec<Vec2>> = Vec::new();
     let mut arrows = Vec::new();
-    for piece in pieces(dimension, resolved, &on)? {
+    for piece in pieces(dimension, resolved, frame)? {
         let layout = dim_layout_sized(&piece.frame, Some(piece.at), &SIZES, piece.half, [None, None]);
         // A chain's neighbours share an extension line.
         for line in layout.lines {
@@ -63,26 +62,27 @@ pub fn paper_group(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame
     Some(Group { object: dimension.id, kind: ObjectKind::Dimension, items })
 }
 
-/// What `dimension` lays out, from what it measures on paper (`on`, as [`Resolved::points`] orders
-/// them).
-fn pieces(dimension: &Dimension, resolved: &Resolved, on: &[Vec2]) -> Option<Vec<Piece>> {
+/// What `dimension` lays out, from what it measures, on paper through `frame`.
+fn pieces(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame) -> Option<Vec<Piece>> {
     let (offset, place) = (dimension.offset_mm, &dimension.text);
     let half = half_text(resolved.text.as_deref());
-    match (&dimension.kind, on) {
-        (DimensionKind::Linear { direction, .. } | DimensionKind::Length { direction, .. }, &[a, b]) => {
+    let paper = |p: Vec3| frame.to_paper(p);
+    let ends = |[p, q]: [Vec3; 2]| [paper(p), paper(q)];
+    match resolved.geometry.as_ref()? {
+        Geometry::Line { a, b, direction } => {
+            let (a, b) = (paper(*a), paper(*b));
             let dir = line_direction(*direction, b - a)?;
             Some(vec![linear(a, b, dir, offset, place, half)])
         }
-        (DimensionKind::Angle { other_side, .. }, &[a0, a1, b0, b1]) => Some(vec![angular([a0, a1], [b0, b1], *other_side, offset, place, half)?]),
-        (DimensionKind::Radial { diameter, .. }, &[centre, start, mid, end]) => {
-            Some(vec![radial(centre, [start, mid, end], *diameter, offset, place, half)?])
+        Geometry::Angle { a, b, other_side } => Some(vec![angular(ends(*a), ends(*b), *other_side, offset, place, half)?]),
+        Geometry::Arc { centre, start, middle, end, diameter } => {
+            Some(vec![radial(paper(*centre), [paper(*start), paper(*middle), paper(*end)], *diameter, offset, place, half)?])
         }
-        (DimensionKind::Chain { direction, .. }, points) => chain(points, *direction, offset, resolved),
-        (DimensionKind::Cylinder { .. }, &[a0, a1, b0, b1]) => across([a0, a1], [b0, b1], LinearDirection::Aligned, offset, place, half),
-        (DimensionKind::Silhouettes { direction, .. } | DimensionKind::Faces { direction, .. }, &[a0, a1, b0, b1]) => {
-            across([a0, a1], [b0, b1], *direction, offset, place, half)
+        Geometry::Chain { points, direction } => {
+            let on: Vec<Vec2> = points.iter().map(|p| paper(*p)).collect();
+            chain(&on, *direction, offset, resolved)
         }
-        _ => None,
+        Geometry::Across { a, b, direction } => across(ends(*a), ends(*b), *direction, offset, place, half),
     }
 }
 

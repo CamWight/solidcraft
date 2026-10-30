@@ -388,18 +388,31 @@ pub struct Resolved {
     pub members: Vec<Member>,
     /// Every name it measures was found by exact history, each as one edge.
     pub exact: bool,
-    /// What it measures, in the design's frame: a linear dimension's two points, an angle's two
-    /// lines (four points, each line from its first to its second), a radial dimension's
-    /// centre and its arc's start, middle and end, a chain's points, or the ends of each silhouette
-    /// measured (a cylinder's two, from its faces' one end along its axis to the other). Empty
-    /// unless measured.
-    pub points: Vec<Vec3>,
+    /// What it measures, in the design's frame, for its lines: unless measured, none.
+    pub geometry: Option<Geometry>,
+}
+
+/// What a dimension measures, in the design's frame, each way of measuring with what its lines need.
+/// A new way joins here, and whatever draws them can't compile without it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Geometry {
+    /// Between two points, a linear dimension's or a straight edge's ends.
+    Line { a: Vec3, b: Vec3, direction: LinearDirection },
+    /// Between two lines, each from its first point to its second.
+    Angle { a: [Vec3; 2], b: [Vec3; 2], other_side: bool },
+    /// A circle or an arc: its centre and its start, middle and end.
+    Arc { centre: Vec3, start: Vec3, middle: Vec3, end: Vec3, diameter: bool },
+    /// From each point to the next.
+    Chain { points: Vec<Vec3>, direction: LinearDirection },
+    /// Between two silhouettes or two faces, each from its one end to its other: a cylinder's two
+    /// run along its axis.
+    Across { a: [Vec3; 2], b: [Vec3; 2], direction: LinearDirection },
 }
 
 impl Resolved {
     /// A dimension with nothing to read it from: why.
     pub fn lost(why: String) -> Resolved {
-        Resolved { status: Status::Lost(why), measured: None, text: None, members: Vec::new(), exact: false, points: Vec::new() }
+        Resolved { status: Status::Lost(why), measured: None, text: None, members: Vec::new(), exact: false, geometry: None }
     }
 }
 
@@ -650,7 +663,7 @@ impl OnPlane {
 struct Found {
     measured: Measured,
     members: Vec<Measured>,
-    points: Vec<Vec3>,
+    geometry: Geometry,
     exact: bool,
 }
 
@@ -726,13 +739,13 @@ impl<'a> Lookup<'a> {
             };
             Some(reading_label(kind, m.value, units, d.decimals))
         };
-        let (members, points, exact) = found.map_or_else(Default::default, |f| (f.members, f.points, f.exact));
+        let (members, geometry, exact) = found.map_or_else(Default::default, |f| (f.members, Some(f.geometry), f.exact));
         Resolved {
             status,
             text: d.override_text.clone().or_else(|| measured.and_then(number)),
             members: members.into_iter().map(|m| Member { measured: m, text: length(m) }).collect(),
             exact,
-            points,
+            geometry,
             measured,
         }
     }
@@ -745,7 +758,7 @@ impl<'a> Lookup<'a> {
                 let (a, exact_a) = self.corner(a)?;
                 let (b, exact_b) = self.corner(b)?;
                 let measured = drawing_measure::linear(basis, a, b, *direction, *reading).map_err(unmeasurable)?;
-                Ok(Found { measured, members: Vec::new(), points: vec![a, b], exact: exact_a && exact_b })
+                Ok(Found { measured, members: Vec::new(), geometry: Geometry::Line { a, b, direction: *direction }, exact: exact_a && exact_b })
             }
             DimensionKind::Length { edge, direction, reading } => {
                 let found = self.edges(edge)?;
@@ -756,28 +769,29 @@ impl<'a> Lookup<'a> {
                 let ends = found.pieces.first().and_then(|(_, line)| straight(line));
                 let [a, b] = ends.ok_or_else(|| Status::Unmeasurable(format!("edge `{}` isn't straight", edge.name)))?;
                 let measured = drawing_measure::linear(basis, a, b, *direction, *reading).map_err(unmeasurable)?;
-                Ok(Found { measured, members: Vec::new(), points: vec![a, b], exact: found.exact })
+                Ok(Found { measured, members: Vec::new(), geometry: Geometry::Line { a, b, direction: *direction }, exact: found.exact })
             }
             DimensionKind::Angle { a, b, reading, other_side } => {
                 let (a, exact_a) = self.line(a)?;
                 let (b, exact_b) = self.line(b)?;
                 let between = drawing_measure::angle(basis, (a[0], a[1]), AngleFrom::Edge(b[0], b[1]), *reading).map_err(unmeasurable)?;
                 let value = between_lines(between.value, *other_side);
-                let points = vec![a[0], a[1], b[0], b[1]];
-                Ok(Found { measured: Measured { value, ..between }, members: Vec::new(), points, exact: exact_a && exact_b })
+                let geometry = Geometry::Angle { a, b, other_side: *other_side };
+                Ok(Found { measured: Measured { value, ..between }, members: Vec::new(), geometry, exact: exact_a && exact_b })
             }
             DimensionKind::Radial { edge, diameter } => {
-                let (radius, points, exact) = self.whole_arc(edge, basis)?;
+                let (radius, [centre, start, middle, end], exact) = self.whole_arc(edge, basis)?;
                 let value = if *diameter { 2.0 * radius } else { radius };
                 let measured = Measured { value, foreshortened: false };
-                Ok(Found { measured, members: Vec::new(), points: points.to_vec(), exact })
+                let geometry = Geometry::Arc { centre, start, middle, end, diameter: *diameter };
+                Ok(Found { measured, members: Vec::new(), geometry, exact })
             }
             DimensionKind::Chain { points, direction } => {
                 let found = points.iter().map(|p| self.corner(p)).collect::<std::result::Result<Vec<_>, _>>()?;
                 let exact = found.iter().all(|(_, exact)| *exact);
                 let points: Vec<Vec3> = found.into_iter().map(|(p, _)| p).collect();
                 let chain = drawing_measure::chain(basis, &points, *direction).map_err(unmeasurable)?;
-                Ok(Found { measured: chain.overall, members: chain.members, points, exact })
+                Ok(Found { measured: chain.overall, members: chain.members, geometry: Geometry::Chain { points, direction: *direction }, exact })
             }
             DimensionKind::Cylinder { face } => self.cylinder(face, basis),
             DimensionKind::Silhouettes { a, b, direction } => self.silhouettes(a, b, *direction, basis),
@@ -1007,7 +1021,8 @@ impl<'a> Lookup<'a> {
             )));
         }
         let measured = Measured { value: 2.0 * on.cylinder.radius, foreshortened: false };
-        Ok(Found { measured, members: Vec::new(), points: [on.ends(side), on.ends(-side)].concat(), exact: on.exact })
+        let geometry = Geometry::Across { a: on.ends(side), b: on.ends(-side), direction: LinearDirection::Aligned };
+        Ok(Found { measured, members: Vec::new(), geometry, exact: on.exact })
     }
 
     /// The distance between silhouettes `a` and `b` on the view through `basis`, each on its
@@ -1022,8 +1037,8 @@ impl<'a> Lookup<'a> {
                 return Err(Status::Unmeasurable(format!("face `{}`'s {side} silhouette in this view isn't on it", s.face.name)));
             }
         }
-        let points = [on_a.ends(way_a), on_b.ends(way_b)].concat();
-        Ok(Found { measured, members: Vec::new(), points, exact: on_a.exact && on_b.exact })
+        let geometry = Geometry::Across { a: on_a.ends(way_a), b: on_b.ends(way_b), direction };
+        Ok(Found { measured, members: Vec::new(), geometry, exact: on_a.exact && on_b.exact })
     }
 
     /// The flat face `face` names, or the pieces it was cut into, all on one oriented plane. A face
@@ -1050,8 +1065,8 @@ impl<'a> Lookup<'a> {
         let between = drawing_measure::between_faces(basis, (on_a.origin, on_a.normal), (on_b.origin, on_b.normal), direction);
         let measured = between.map_err(|e| Status::Unmeasurable(e.0.to_string()))?;
         let ends = |on: &OnPlane, face: &ModelFace| on.ends(basis).ok_or_else(|| Status::Unmeasurable(format!("face `{}` has no mesh", face.name)));
-        let points = [ends(&on_a, a)?, ends(&on_b, b)?].concat();
-        Ok(Found { measured, members: Vec::new(), points, exact: on_a.exact && on_b.exact })
+        let geometry = Geometry::Across { a: ends(&on_a, a)?, b: ends(&on_b, b)?, direction };
+        Ok(Found { measured, members: Vec::new(), geometry, exact: on_a.exact && on_b.exact })
     }
 }
 

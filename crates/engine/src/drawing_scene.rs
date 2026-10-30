@@ -407,7 +407,7 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
         match read.as_ref().map(|all| all.get(at)) {
             Ok(Some(resolved)) => {
                 let group = frame(record.view).and_then(|frame| crate::drawing_dimension_paper::paper_group(record, resolved, &frame));
-                let nothing = group.is_none() && !resolved.points.is_empty() && frame(record.view).is_some();
+                let nothing = group.is_none() && resolved.geometry.is_some() && frame(record.view).is_some();
                 let why = nothing.then(|| "what it measures has no place to draw on its view".to_string());
                 drawn(resolved.status.clone(), group, why)
             }

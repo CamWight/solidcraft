@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use solidcraft_doc::ModelBody;
 use solidcraft_doc::appearance::face_index_at;
 use solidcraft_doc::drawing::dimension::{
-    Candidate, Dimension, DimensionKind, ModelEdge, ModelFace, ModelPoint, Resolved, Silhouette, Status, TextPlace,
+    Candidate, Dimension, DimensionKind, Geometry, ModelEdge, ModelFace, ModelPoint, Resolved, Silhouette, Status, TextPlace,
 };
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing::{Drawing, Source, Units};
@@ -153,6 +153,17 @@ fn assert_reads(r: &Resolved, value: f64, foreshortened: bool) {
 /// (80, 40, 0): projected horizontally 40, its true length √8000, foreshortened. The text is the
 /// number in the design's millimetres with the dimension's decimals, or in the drawing's own unit.
 /// Two names that share both ends of one edge name no one corner.
+/// What `r` measures as its points: each line or arc from its first to its last, `a` before `b`.
+fn points(r: &Resolved) -> Vec<Vec3> {
+    match r.geometry.as_ref() {
+        None => Vec::new(),
+        Some(Geometry::Line { a, b, .. }) => vec![*a, *b],
+        Some(Geometry::Angle { a, b, .. } | Geometry::Across { a, b, .. }) => [*a, *b].concat(),
+        Some(Geometry::Arc { centre, start, middle, end, .. }) => vec![*centre, *start, *middle, *end],
+        Some(Geometry::Chain { points, .. }) => points.clone(),
+    }
+}
+
 #[test]
 fn a_box_measures_as_its_views_show_it() {
     let mut f = boxed();
@@ -176,10 +187,10 @@ fn a_box_measures_as_its_views_show_it() {
         assert_reads(&r, value, foreshortened);
         assert_eq!(r.status, Status::Ok);
         assert!(r.exact, "{r:?}");
-        assert_eq!(r.points.len(), 2);
+        assert_eq!(points(&r).len(), 2);
     }
     assert_eq!(f.resolve(wide).text.as_deref(), Some("80.00"));
-    let ends = f.resolve(wide).points;
+    let ends = points(&f.resolve(wide));
     assert!(ends[0].dist(Vec3::ZERO) < EPS && ends[1].dist(Vec3::new(80.0, 0.0, 0.0)) < EPS, "{ends:?}");
     f.d.units = Units::Fixed { unit: "cm".into() };
     assert_eq!(f.resolve(wide).text.as_deref(), Some("8.00"), "the drawing's own unit");
@@ -237,7 +248,7 @@ fn an_angle_between_two_edges() {
     let r = f.resolve(near);
     assert_reads(&r, 45f64.to_radians(), false);
     assert_eq!(r.text.as_deref(), Some("45.00°"));
-    assert_eq!(r.points.len(), 4, "the two lines");
+    assert_eq!(points(&r).len(), 4, "the two lines");
     assert_reads(&f.resolve(far), 135f64.to_radians(), false);
     let r = f.resolve(end_on);
     assert!(matches!(&r.status, Status::Unmeasurable(why) if why.contains("end-on")), "{r:?}");
@@ -270,29 +281,29 @@ fn a_circle_and_an_arc_read_their_radius_and_diameter() {
     assert_eq!(r.text.as_deref(), Some("Ø12.00"));
     assert!(r.exact, "{r:?}");
     let centre = Vec3::new(40.0, 0.0, 15.0);
-    assert!(r.points[0].dist(centre) < EPS, "the centre: {r:?}");
-    assert!(r.points[1..].iter().all(|p| (p.dist(centre) - 6.0).abs() < EPS && p.y.abs() < EPS), "on the edge: {r:?}");
+    assert!(points(&r)[0].dist(centre) < EPS, "the centre: {r:?}");
+    assert!(points(&r)[1..].iter().all(|p| (p.dist(centre) - 6.0).abs() < EPS && p.y.abs() < EPS), "on the edge: {r:?}");
     let back_rim = f.round([40.0, 40.0, 15.0], 6.0);
     let back = f.add(front, radial(&back_rim, true), None);
     let r = f.resolve(back);
     assert_reads(&r, 12.0, false);
-    assert!(r.points.iter().all(|p| (p.y - 40.0).abs() < EPS), "on the back face: {r:?}");
+    assert!(points(&r).iter().all(|p| (p.y - 40.0).abs() < EPS), "on the back face: {r:?}");
     let r = f.resolve(half);
     assert_reads(&r, 6.0, false);
     assert_eq!(r.text.as_deref(), Some("R6.00"));
     let r = f.resolve(fillet);
     assert_reads(&r, 5.0, false);
     assert_eq!(r.text.as_deref(), Some("R5.00"));
-    let ends = [r.points[1], r.points[3]];
+    let ends = [points(&r)[1], points(&r)[3]];
     let at = |p: Vec3| ends.iter().any(|q| q.dist(p) < EPS);
     assert!(at(Vec3::new(80.0, 0.0, 25.0)) && at(Vec3::new(75.0, 0.0, 30.0)), "from the right face to the top: {r:?}");
     let diagonal = 5.0 * std::f64::consts::FRAC_1_SQRT_2;
-    assert!(r.points[2].dist(Vec3::new(75.0 + diagonal, 0.0, 25.0 + diagonal)) < EPS, "its middle: {r:?}");
+    assert!(points(&r)[2].dist(Vec3::new(75.0 + diagonal, 0.0, 25.0 + diagonal)) < EPS, "its middle: {r:?}");
     // End-on, and straight.
     let end_on = f.add(right, radial(&hole, true), None);
     let r = f.resolve(end_on);
     assert!(matches!(&r.status, Status::Unmeasurable(why) if why.ends_with("(it isn't parallel to it)")), "{r:?}");
-    assert_eq!((r.measured, r.text, r.points.is_empty()), (None, None, true));
+    assert_eq!((r.measured, r.text, r.geometry.is_none()), (None, None, true));
     let left = f.edge([0.0, 0.0, 0.0], [0.0, 0.0, 30.0]);
     let straight = f.add(front, radial(&left, false), None);
     let r = f.resolve(straight);
@@ -316,8 +327,8 @@ fn a_circle_and_an_arc_read_their_radius_and_diameter() {
     assert_reads(&r, 12.0, false);
     assert!(!r.exact, "{r:?}");
     let centre = Vec3::new(40.0, 0.0, 15.0);
-    assert!(r.points[0].dist(centre) < 1e-6, "{r:?}");
-    assert!(r.points[1..].iter().all(|p| (p.dist(centre) - 6.0).abs() < 1e-6 && (p.x - 40.0).abs() >= 1.0 - 1e-6), "{r:?}");
+    assert!(points(&r)[0].dist(centre) < 1e-6, "{r:?}");
+    assert!(points(&r)[1..].iter().all(|p| (p.dist(centre) - 6.0).abs() < 1e-6 && (p.x - 40.0).abs() >= 1.0 - 1e-6), "{r:?}");
 }
 
 /// A name saved from a face that was split finds the one edge on a body with the one face: it is
@@ -354,7 +365,7 @@ fn lost_and_suppressed_say_so_and_never_move_to_other_geometry() {
     run(&mut f.s, "solid.fillet", json!({"edges": [[40, 0, 30]], "radius": 5, "body": "Box"}));
     let r = f.resolve(length);
     assert!(matches!(&r.status, Status::Lost(why) if why.contains("no longer exists")), "{r:?}");
-    assert_eq!((r.measured, r.text.as_deref(), r.points.is_empty()), (None, None, true));
+    assert_eq!((r.measured, r.text.as_deref(), r.geometry.is_none()), (None, None, true));
     run(&mut f.s, "edit.undo", json!({}));
     assert_reads(&f.resolve(length), 80.0, false);
     // Suppressed, then back.
@@ -483,9 +494,9 @@ fn flat_faces_are_measured_when_their_corners_are_gone() {
     let aligned = f.add(f.front, kind(LinearDirection::Aligned), None);
     let r = f.resolve(aligned);
     assert_reads(&r, 80.0, false);
-    assert!(r.exact && r.points.len() == 4, "{r:?}");
+    assert!(r.exact && points(&r).len() == 4, "{r:?}");
     let spans = |p: &[Vec3], x: f64| p.iter().all(|q| (q.x - x).abs() < 1e-9) && (p[0].z - p[1].z).abs() > 30.0 - 1e-9;
-    assert!(spans(&r.points[..2], 0.0) && spans(&r.points[2..], 80.0), "{r:?}");
+    assert!(spans(&points(&r)[..2], 0.0) && spans(&points(&r)[2..], 80.0), "{r:?}");
     let along = f.add(f.front, kind(LinearDirection::Horizontal), None);
     assert_reads(&f.resolve(along), 80.0, false);
     let diagonal = f.add(f.front, kind(LinearDirection::Along(solidcraft_geom::Vec2::new(1.0, 1.0))), None);
@@ -547,9 +558,10 @@ fn a_cylinders_diameter_is_found_through_all_its_faces() {
     assert_reads(&r, 10.0, false);
     assert!(r.exact, "{r:?}");
     // Each silhouette from x = 80 to 100, one at z = 20 and the other at z = 10 (either way round).
-    let [a, b, c, d] = r.points.as_slice() else { panic!("{r:?}") };
+    let at = points(&r);
+    let [a, b, c, d] = at.as_slice() else { panic!("{r:?}") };
     let ends = |p: &Vec3, q: &Vec3| (p.x - 80.0).abs() < 1e-6 && (q.x - 100.0).abs() < 1e-6 && (p.z - q.z).abs() < 1e-9 && (p.y - 20.0).abs() < 1e-9;
-    assert!(ends(a, b) && ends(c, d) && ((a.z - c.z).abs() - 10.0).abs() < 1e-9 && (a.z + c.z - 30.0).abs() < 1e-9, "{:?}", r.points);
+    assert!(ends(a, b) && ends(c, d) && ((a.z - c.z).abs() - 10.0).abs() < 1e-9 && (a.z + c.z - 30.0).abs() < 1e-9, "{:?}", points(&r));
     let r = f.resolve(right);
     assert!(matches!(&r.status, Status::Unmeasurable(why) if why.contains("end-on")), "{r:?}");
     run(&mut f.s, "solid.box", json!({"length": 2, "width": 50, "height": 3, "corner": [89, -1, 18], "operation": "cut", "targets": ["Box"]}));
@@ -584,11 +596,12 @@ fn two_cylinders_silhouettes_are_found_on_their_faces() {
     let r = f.resolve(front);
     assert_reads(&r, 8.0, false);
     assert!(r.exact, "{r:?}");
-    let [a, b, c, d] = r.points.as_slice() else { panic!("{r:?}") };
+    let at = points(&r);
+    let [a, b, c, d] = at.as_slice() else { panic!("{r:?}") };
     // Each from one end of the faces along the axis to the other, whichever way the axis runs.
     let at = |p: &Vec3, x: f64, z: f64| (p.x - x).abs() < 1e-6 && (p.y - 20.0).abs() < 1e-9 && (p.z - z).abs() < 1e-9;
     let runs = |p, q, z| (at(p, 80.0, z) && at(q, 100.0, z)) || (at(p, 100.0, z) && at(q, 80.0, z));
-    assert!(runs(a, b, 20.0) && runs(c, d, 28.0), "{:?}", r.points);
+    assert!(runs(a, b, 20.0) && runs(c, d, 28.0), "{:?}", points(&r));
     let r = f.resolve(right);
     assert!(matches!(&r.status, Status::Unmeasurable(why) if why.contains("end-on")), "{r:?}");
     run(&mut f.s, "solid.box", json!({"length": 31, "width": 50, "height": 10, "corner": [79, -1, 27], "operation": "cut", "targets": ["Box"]}));

@@ -9,9 +9,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::drawing::dimension::{Candidate, Dimension, DimensionKind, Located, Silhouette, Status, TextPlace, check_chain_length};
+use solidcraft_doc::drawing::dimension::{Candidate, Dimension, DimensionKind, Geometry, Located, Silhouette, Status, TextPlace, check_chain_length};
 use solidcraft_doc::ids;
-use solidcraft_geom::Vec3;
 use solidcraft_geom::drawing_measure::{LinearDirection, Reading};
 
 use super::CommandSpec;
@@ -149,7 +148,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(ADD, why.clone()));
     }
     if choose_diameter && let DimensionKind::Radial { diameter, .. } = &mut dimension.kind {
-        *diameter = read.first().is_some_and(|r| diameter_by_default(&r.points));
+        *diameter = read.first().is_some_and(|r| diameter_by_default(r.geometry.as_ref()));
     }
     s.edit_drawing(ADD, |d| {
         d.add_dimensions([Arc::new(dimension)]);
@@ -169,8 +168,8 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
 /// A new radial dimension's default from its arc as read (its centre, start and middle): a diameter
 /// for a whole circle or an arc of half a turn or more, as a hole's rim is (the kernel makes it of
 /// two halves), else a radius.
-fn diameter_by_default(points: &[Vec3]) -> bool {
-    let [centre, start, middle, ..] = points else { return false };
+fn diameter_by_default(geometry: Option<&Geometry>) -> bool {
+    let Some(Geometry::Arc { centre, start, middle, .. }) = geometry else { return false };
     let (from, to) = (*start - *centre, *middle - *centre);
     // The middle is half the arc's turn from its start: a quarter turn or more away.
     from.dot(to) <= from.dot(from) * 1e-9
