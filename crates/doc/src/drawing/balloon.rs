@@ -28,7 +28,7 @@ use solidcraft_geom::Vec3;
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 
-use super::dimension::{Lookup, ModelEdge, Status, check_edge, edge_candidates};
+use super::dimension::{Lookup, ModelEdge, Status, check_edge};
 use super::table::{Kind, PartsList, SheetTable};
 use super::{Drawing, add_by_id, in_id_order, require};
 use crate::{DocError, Document, Model, Result, ids};
@@ -144,16 +144,8 @@ impl Document {
             .iter()
             .map(|id| {
                 let b = drawing.balloon(*id).ok_or_else(|| DocError::Unknown(format!("balloon {}", ids::encode(*id))))?;
-                Ok(match lookup.edges(&b.edge) {
-                    // A split edge has no one middle: the pieces are listed, and none is chosen.
-                    Ok(found) if !found.whole => Resolved { status: Status::Ambiguous(edge_candidates(&found)), point: None, exact: false },
-                    Ok(found) => {
-                        let point = found.pieces.first().and_then(|(_, line)| crate::joints::edge::middle(line)).map(|(p, _)| p);
-                        let status = if point.is_some() { Status::Ok } else { Status::Lost(format!("edge `{}` has no length", b.edge.name)) };
-                        Resolved { status, point, exact: found.exact }
-                    }
-                    Err(status) => Resolved { status, point: None, exact: false },
-                })
+                let (status, point, exact) = lookup.middle(&b.edge);
+                Ok(Resolved { status, point, exact })
             })
             .collect()
     }
