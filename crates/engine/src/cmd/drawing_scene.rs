@@ -26,7 +26,7 @@ const HIT_CONTRACT: TypedContract<SheetHitParams> = TypedContract::new();
 const STATUS: &str = "drawing.status";
 const STATUS_CONTRACT: TypedContract<DrawingStatusParams> = TypedContract::new();
 
-pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status", crate::checked!("drawing.status", STATUS_CONTRACT, status))
+pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status", crate::checked!("drawing.status", status))
     .icon("inspect")
     .in_drawing()
     .noundo()
@@ -34,7 +34,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
     .contract(&STATUS_CONTRACT)
     .output(output_schema_for::<DrawingStatusResult>)
     .params("→ {views: [{view, sheet, status: current|out_of_date|placeholder|failed, reason?}], dimensions: [{dimension, status: ok|overridden|ambiguous|suppressed|lost|unmeasurable, why?}], waiting: how many views are out of date}. Read-only: nothing is drawn, and each body a dimension names is read once for the call."),
-    CommandSpec::new(HIT, "What Is Under a Point", crate::checked!("drawing.scene.hit", HIT_CONTRACT, hit))
+    CommandSpec::new(HIT, "What Is Under a Point", crate::checked!("drawing.scene.hit", hit))
         .icon("inspect")
         .in_drawing()
         .noundo()
@@ -42,7 +42,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
         .contract(&HIT_CONTRACT)
         .output(output_schema_for::<SheetHitResult>)
         .params("sheet: id or name; point_mm: [x, y] on paper; band_mm?: how near a box's edge counts as on it (default 0) → {hit: {object, kind: view|dimension, on_edge} or null}: the smallest box round a view or a dimension that holds the point within the band, then the topmost. Read-only; no model is evaluated."),
-    CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", CONTRACT, scene))
+    CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", scene))
     .icon("export")
     .in_drawing()
     .noundo()

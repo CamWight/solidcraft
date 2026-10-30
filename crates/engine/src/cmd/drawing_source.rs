@@ -20,7 +20,7 @@ const EXECUTE: &str = "drawing.source.execute";
 const EXECUTE_CONTRACT: TypedContract<ExecuteParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] =
-    &[CommandSpec::new(EXECUTE, "Change the Model", crate::checked!("drawing.source.execute", EXECUTE_CONTRACT, execute))
+    &[CommandSpec::new(EXECUTE, "Change the Model", crate::checked!("drawing.source.execute", execute))
         .any_part()
         .icon("edit")
         .contract(&EXECUTE_CONTRACT)
