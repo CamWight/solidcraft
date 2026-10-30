@@ -326,7 +326,8 @@ fn a_circle_and_an_arc_read_their_radius_and_diameter() {
 fn one_piece_of_a_name_is_that_edge() {
     let mut f = boxed();
     run(&mut f.s, "solid.cylinder", json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"]}));
-    let piece = |e: ModelEdge| ModelEdge { name: format!("{}:c1#1", e.name), ..e };
+    // As a name reads once its second face was split by a face that has since gone.
+    let piece = |e: ModelEdge| ModelEdge { name: format!("{}#[F9:side]#1", e.name), ..e };
     let top = piece(f.edge([0.0, 0.0, 30.0], [80.0, 0.0, 30.0]));
     let rim = piece(f.round([40.0, 0.0, 15.0], 6.0));
     let length = f.add(f.front, DimensionKind::Length { edge: top, direction: LinearDirection::Aligned, reading: Reading::True }, None);
@@ -672,21 +673,26 @@ fn a_renamed_body_keeps_its_references() {
     assert!(matches!(&r.status, Status::Lost(why) if why.contains("another feature")), "{r:?}");
 }
 
-/// The two bodies a split makes come from one feature. A name that stays on one of them stays with
-/// it, whatever the other is called. Both renamed, what the dimension names decides, and when both
+/// The two bodies a STEP import makes come from one feature (a split's pieces don't: each has its
+/// own). A name that stays on one of them stays with it, whatever the other is called. Both renamed, what the dimension names decides, and when both
 /// have it they are ambiguous, with their names now: it never chooses.
 #[test]
 fn two_bodies_of_a_feature_never_choose_for_a_renamed_one() {
     let mut f = boxed();
     let front = f.front;
-    let plane = json!({"origin": [30, 0, 0], "normal": [1, 0, 0]});
-    run(&mut f.s, "solid.split_body", json!({"body": "Box", "plane": plane}));
+    let cube = |x: f64| solidcraft_kernel::box_solid(Vec3::new(x, 0.0, 0.0), Vec3::new(x + 10.0, 10.0, 10.0)).unwrap();
+    let step = solidcraft_kernel::step_export(&[&cube(200.0), &cube(300.0)], "two bodies").unwrap();
+    let owner = f.s.active_component;
+    let kind = solidcraft_doc::FeatureKind::Import { file: "fixture.step".into(), step: step.into(), components: vec![], skip: Vec::new() };
+    let feature = f.s.doc_mut().add_feature(kind, Some("Two")).unwrap();
+    let imported = f.s.doc_mut().feature_mut(feature).unwrap();
+    imported.body_names = vec!["Left".into(), "Right".into()];
+    imported.component = owner;
+    f.s.refresh();
     let state = f.s.model.state();
-    let mut made: Vec<&ModelBody> = state.bodies.iter().collect();
-    made.sort_by(|a, b| a.name.cmp(&b.name));
+    let made: Vec<&ModelBody> = state.bodies.iter().filter(|b| b.feature == feature).collect();
     let [box_body, other] = made.as_slice() else { panic!("{} bodies", made.len()) };
-    assert_eq!(box_body.feature, other.feature, "one feature made both");
-    let (other_name, feature) = (other.name.clone(), box_body.feature);
+    let other_name = other.name.clone();
     let line = |b: &ModelBody| {
         let bounds = b
             .mesh()
@@ -709,16 +715,11 @@ fn two_bodies_of_a_feature_never_choose_for_a_renamed_one() {
     run(&mut f.s, "body.rename", json!({"body": other_name, "name": "Second"}));
     assert_reads(&f.resolve(id), length, false);
     // Both: read from the one that has the edge, never from the other; if both have it, ambiguous.
-    run(&mut f.s, "body.rename", json!({"body": "Box", "name": "First"}));
+    run(&mut f.s, "body.rename", json!({"body": "Left", "name": "First"}));
     let r = f.resolve(id);
-    match &r.status {
-        Status::Ok => assert_reads(&r, length, false),
-        Status::Ambiguous(found) => {
-            let on: Vec<&str> = found.iter().map(|c| if let Candidate::Edge { body, .. } = c { body.as_str() } else { "" }).collect();
-            assert_eq!(on, ["First", "Second"], "{r:?}");
-        }
-        other => panic!("{other:?}"),
-    }
+    let Status::Ambiguous(found) = &r.status else { panic!("{r:?}") };
+    let on: Vec<&str> = found.iter().map(|c| if let Candidate::Edge { body, .. } = c { body.as_str() } else { "" }).collect();
+    assert_eq!(on, ["First", "Second"], "{r:?}");
 }
 
 /// A balloon and a face reference follow a rename too: both find their body the same way.
