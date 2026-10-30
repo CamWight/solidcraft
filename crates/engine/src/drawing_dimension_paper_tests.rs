@@ -91,7 +91,9 @@ fn a_dimension_is_the_same_size_on_paper_at_any_scale() {
         }
         for item in group.items.iter().filter(|item| matches!(item, Item::Fill { .. })) {
             let size = fill_box(item);
-            assert!(close(size.max.x - size.min.x, 3.0) && close(size.max.y - size.min.y, 1.0), "{scale}: {size:?}");
+            // 3 long, with a 20 degree point.
+            let wide = 2.0 * 3.0 * (std::f64::consts::PI / 18.0).tan();
+            assert!(close(size.max.x - size.min.x, 3.0) && close(size.max.y - size.min.y, wide), "{scale}: {size:?}");
         }
     }
 }
@@ -293,7 +295,7 @@ fn hostile_points_and_offsets_never_panic() {
         state
     };
     let values = [0.0, -0.0, 1e-300, 1e-9, -1e-9, 1.0, -1.0, 3.0, 6.0, 1e5, -1e5, 1e12, f64::MAX, f64::MIN, f64::NAN, f64::INFINITY];
-    let mut pick = |next: &mut dyn FnMut() -> u64| values[(next() % values.len() as u64) as usize];
+    let pick = |next: &mut dyn FnMut() -> u64| values[(next() % values.len() as u64) as usize];
     for _ in 0..4000 {
         let count = (next() % 7) as usize;
         let points: Vec<[f64; 2]> = (0..count).map(|_| [pick(&mut next), pick(&mut next)]).collect();
