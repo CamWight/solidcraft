@@ -17,7 +17,7 @@ const MAX_MANIFEST: usize = 32 << 20;
 
 /// The build that computed a cache: the same source, compiled for the same platform, computes the
 /// same numbers, so only its own caches are its results.
-fn build() -> String {
+pub(super) fn build() -> String {
     format!("{}/{}-{}", env!("SOLIDCRAFT_SOURCE_COMMIT"), std::env::consts::ARCH, std::env::consts::OS)
 }
 
