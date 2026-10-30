@@ -7,8 +7,10 @@ use std::sync::Arc;
 
 mod drawing;
 mod native_cache;
+mod sheet_cache;
 mod thumbnail;
 pub use native_cache::read_design_geometry;
+pub use sheet_cache::{ReadLines, SavedView, SheetCaches, SheetLines, design_bytes_digest, design_file_digest, read_sheet_lines};
 pub use thumbnail::{THUMBNAIL_SIZE, read_design_thumbnail, read_design_thumbnail_file};
 
 use serde_json::{Map, Value, json};
@@ -258,7 +260,19 @@ pub fn write_design_container_with_thumbnail(
     geometry: Option<&solidcraft_doc::SavedModel>,
     thumbnail: Option<&[u8]>,
 ) -> Result<Vec<u8>> {
-    write_container(doc, compression, preview, geometry, thumbnail, max_design())
+    write_container(doc, compression, preview, geometry, thumbnail, &SheetCaches::default(), max_design())
+}
+
+/// [`write_design_container_with_thumbnail`], with its drawings' last lines ([`SheetCaches`]).
+pub fn write_design_container_with_sheets(
+    doc: &Document,
+    compression: DesignCompression,
+    preview: Option<&DesignPreview>,
+    geometry: Option<&solidcraft_doc::SavedModel>,
+    thumbnail: Option<&[u8]>,
+    sheets: &SheetCaches,
+) -> Result<Vec<u8>> {
+    write_container(doc, compression, preview, geometry, thumbnail, sheets, max_design())
 }
 
 /// [`write_design_container_with_thumbnail`] within `budget` bytes for the optional caches (the
@@ -269,6 +283,7 @@ fn write_container(
     preview: Option<&DesignPreview>,
     geometry: Option<&solidcraft_doc::SavedModel>,
     thumbnail: Option<&[u8]>,
+    sheets: &SheetCaches,
     budget: usize,
 ) -> Result<Vec<u8>> {
     doc.render.validate().map_err(invalid)?;
@@ -369,6 +384,7 @@ fn write_container(
     if let Some(png) = thumbnail {
         thumbnail::write(&mut writer, png, &metadata)?;
     }
+    sheet_cache::write(&mut writer, doc, sheets, &metadata, budget)?;
     let bytes = writer.finish()?;
     if bytes.len() > max_design() {
         return Err(invalid(format!(
