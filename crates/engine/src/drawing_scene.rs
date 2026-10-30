@@ -19,6 +19,11 @@
 //! session's view state, beside the drawing: never saved, never an undo step, and dropped when its
 //! drawing closes. What a save keeps of it is apart, in [`KeptLines`].
 //!
+//! The first [`extract`] after a drawing opens takes the lines its file keeps
+//! ([`solidcraft_io::read_sheet_lines`]), so opening a design with many drawings costs nothing extra.
+//! Written by this build for this very model and as a view would draw now, a view's lines are fresh
+//! and nothing is drawn; otherwise they show, listed in `stale`, until they are drawn again.
+//!
 //! [`SheetLayout::paper`]: solidcraft_geom::drawing_sheet::SheetLayout::paper
 
 use std::borrow::Borrow;
@@ -596,6 +601,9 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     let d = s.drawing(CMD)?.clone();
     let state = s.world_state();
     let units = s.doc.drawing_units(&d).to_string();
+    if s.drawing_scenes.drawing != Some(d.id) {
+        take_last_lines(s, &d, &state);
+    }
     let cache = &mut s.drawing_scenes;
     if let Some(last) = &cache.last
         && last.sheet == sheet
@@ -692,6 +700,33 @@ fn step_dimensions(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)
     cache.serial += 1;
     cache.keep_dimensions(these, lines, state, view_serial, &units);
     !others.is_empty()
+}
+
+/// Fills the provider of the drawing `d`, just opened, with the lines its file keeps. Any failure is
+/// a miss: each view is then drawn as usual.
+fn take_last_lines(s: &mut Session, d: &Drawing, state: &Arc<ModelState>) {
+    let Some((path, digest)) = &s.file else { return };
+    let Some(read) = solidcraft_io::read_sheet_lines(path, d.id, digest) else { return };
+    // They were written for the file's model: an edit since, with the drawing closed, is another.
+    let model_same = Arc::ptr_eq(&s.doc, &s.saved) || *s.doc == *s.saved || s.doc.differs_only_in_drawings(&s.saved);
+    let current = read.current && model_same;
+    let out_of_date: Arc<ModelState> = Arc::default();
+    for saved in read.views {
+        let Ok(view) = d.resolve_view(saved.view) else { continue };
+        let factor = view.scale.value.factor();
+        let centre = Vec2 { x: -saved.origin_mm.x / factor, y: -saved.origin_mm.y / factor };
+        let Ok(frame) = ViewFrame::new(view.basis, view.scale.value, centre, Vec2::ZERO) else { continue };
+        let fresh = current && saved.key == lines_key(&view);
+        let cache = &mut s.drawing_scenes;
+        cache.serial += 1;
+        let drawn = Drawn { group: Some(saved.group), status: Status::Drawn, stats: None, boundary: Some(saved.boundary), frame: Some(frame) };
+        let lines_kept = fresh.then(|| KeptView::of(&view, state, &drawn)).flatten();
+        let serial = cache.serial;
+        cache.views.insert(saved.view, Entry { state: if fresh { state.clone() } else { out_of_date.clone() }, view, drawn, serial });
+        if let Some(kept) = lines_kept {
+            Arc::make_mut(&mut s.kept_lines).0.entry(d.id).or_default().insert(saved.view, kept);
+        }
+    }
 }
 
 /// Each drawing's last lines, by drawing and view: what a save can keep. A closed drawing's stay here

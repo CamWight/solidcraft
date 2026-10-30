@@ -1007,3 +1007,94 @@ fn a_closed_drawings_lines_keep_until_the_next_save() {
     let read = solidcraft_io::read_sheet_lines(&file, s.doc.drawings[0].id, &digest).unwrap();
     assert!(!read.current, "not for this model");
 }
+
+/// Saves `s` at `path` and opens it again with its drawing open.
+fn reopened(s: &mut Session, path: &str) -> u64 {
+    let drawing = ids::encode(s.doc.drawings[0].id);
+    let _ = s.execute("drawing.close", &json!({}));
+    run(s, "file.save_as", json!({"path": path, "format": "container"}));
+    run(s, "doc.open", json!({"path": path}));
+    run(s, "drawing.open", json!({"drawing": drawing}));
+    s.drawing("test").unwrap().sheets[0].id
+}
+
+/// A drawing reopened unchanged draws no view, and shows what it showed, byte for byte. A move draws
+/// none either. A later save without drawing anything keeps them.
+#[test]
+fn reopening_unchanged_draws_nothing() {
+    let folder = crate::tests::Folder::new();
+    let path = folder.path("again.solidcraft");
+    let (mut s, sheet, [front, _]) = saved_drawn(&path);
+    let before = settled(&mut s, sheet);
+
+    let sheet = reopened(&mut s, &path);
+    let first = extract(&mut s, sheet).unwrap();
+    assert!(first.stale.is_empty(), "{:?}", first.stale);
+    let after = settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.projections, 0, "no view is projected");
+    assert_eq!(bytes(&after.scene), bytes(&before.scene), "what it showed");
+
+    run(&mut s, "drawing.view.move", json!({"view": ids::encode(front), "to_mm": [170.0, 150.0]}));
+    settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.projections, 0, "a move draws none");
+
+    let sheet = reopened(&mut s, &path);
+    settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.projections, 0, "still kept");
+}
+
+/// One view's scale changed and saved: only it draws again, after a reopen. The other's lines stayed.
+#[test]
+fn only_the_view_that_changed_draws_again() {
+    let folder = crate::tests::Folder::new();
+    let path = folder.path("one.solidcraft");
+    let (mut s, _, [front, _]) = saved_drawn(&path);
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"scale": "1:4"}}));
+    let sheet = reopened(&mut s, &path);
+    let first = extract(&mut s, sheet).unwrap();
+    assert_eq!(first.stale.len(), 1, "{:?}", first.stale);
+    settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.projections, 1);
+}
+
+/// A model edited since it was opened shows the old lines, out of date, and draws them again; the
+/// saved edit, reopened, is right either way. A file with no cache is the same as drawing from scratch.
+#[test]
+fn an_edited_model_shows_the_last_lines_then_draws_them_again() {
+    let folder = crate::tests::Folder::new();
+    let path = folder.path("edited.solidcraft");
+    let (mut s, _, [front, top]) = saved_drawn(&path);
+    let sheet = reopened(&mut s, &path);
+    let shown = settled(&mut s, sheet);
+
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    run(&mut s, "drawing.close", json!({}));
+    let block = s.doc.features[0].id;
+    run(&mut s, "timeline.edit", json!({"feature": block.to_string(), "set": {"height": 40}}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let view = extract(&mut s, sheet).unwrap();
+    assert!(view.stale.contains(&front) && view.stale.contains(&top), "{:?}", view.stale);
+    let drawn = settled(&mut s, sheet);
+    assert_ne!(bytes(&drawn.scene), bytes(&shown.scene));
+    assert_eq!(bytes(&drawn.scene), bytes(&built(&s, sheet).scene), "redrawn as a fresh build draws it");
+
+    // Reopened after that edit and a save, it matches the model.
+    let sheet = reopened(&mut s, &path);
+    let after = settled(&mut s, sheet);
+    assert_eq!(bytes(&after.scene), bytes(&built(&s, sheet).scene));
+}
+
+/// Damaged or missing lines are the same as none: the drawing opens and draws.
+#[test]
+fn a_missing_cache_draws_as_ever() {
+    let folder = crate::tests::Folder::new();
+    let path = folder.path("none.solidcraft");
+    let (mut s, _, _) = saved_drawn(&path);
+    let sheet = reopened(&mut s, &path);
+    s.file = Some((format!("{path}.gone"), "digest".into()));
+    s.drawing_scenes = Default::default();
+    let first = extract(&mut s, sheet).unwrap();
+    assert_eq!(first.stale.len(), 2);
+    settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.projections, 2);
+}
