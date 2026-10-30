@@ -6,7 +6,8 @@ use solidcraft_doc::drawing::DEFAULT_DPI;
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::Seg2;
-use solidcraft_geom::paper::{NoPictures, ObjectKind};
+use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
+use solidcraft_geom::paper::{Item, NoPictures, ObjectKind};
 
 use super::*;
 use crate::schema::drawing_scene::SheetSceneResult;
