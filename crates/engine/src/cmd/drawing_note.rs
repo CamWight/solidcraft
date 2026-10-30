@@ -11,7 +11,7 @@ use solidcraft_doc::drawing::note::{Anchor, Note};
 use solidcraft_doc::ids;
 
 use super::CommandSpec;
-use super::drawing_dimension::located_result;
+use super::drawing_dimension::{located_result, set_field};
 use crate::params::bad;
 use crate::schema::drawing_note::{AddParams, AnchorParam, EditParams, EditResult, InspectParams, NoteResult};
 use crate::schema::{TypedContract, output_schema_for};
@@ -99,18 +99,9 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         let at = d.notes.index_of(id).ok_or_else(|| bad(EDIT, format!("the drawing has no note {}", ids::encode(id))))?;
         let Some(note) = d.notes.get_mut(at).map(Arc::make_mut) else { return Ok(Vec::new()) };
         let mut changed = Vec::new();
-        if let Some(place) = request.set.at.filter(|place| *place != note.at) {
-            note.at = place;
-            changed.push("at".to_string());
-        }
-        if let Some(content) = request.set.content.map(|content| content.0).filter(|content| *content != note.content) {
-            note.content = content;
-            changed.push("content".to_string());
-        }
-        if let Some(cap) = request.set.cap_mm.filter(|cap| *cap != note.cap_mm) {
-            note.cap_mm = cap;
-            changed.push("cap_mm".to_string());
-        }
+        set_field(&mut note.at, request.set.at, "at", &mut changed);
+        set_field(&mut note.content, request.set.content.map(|content| content.0), "content", &mut changed);
+        set_field(&mut note.cap_mm, request.set.cap_mm, "cap_mm", &mut changed);
         Ok(changed)
     })?;
     let reply = EditResult { note: ids::encode(id), changed, param_warnings: Vec::new() };
