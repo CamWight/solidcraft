@@ -18,6 +18,8 @@ pub mod cosmetic_threads;
 pub mod crash;
 pub mod drawing_dimension_paper;
 pub mod drawing_scene;
+mod drawing_scene_hit;
+mod drawing_scene_kept;
 pub mod drawing_sources;
 pub mod drawing_view;
 pub mod easyprint;
@@ -1419,8 +1421,12 @@ impl Session {
         for (host, _) in additional_jobs {
             self.register_render_job_host(host)?;
         }
-        // A command that closed the drawing, or opened another, ends its sheet scenes.
+        // A command that closed the drawing, or opened another, ends its sheet scenes, and with no
+        // drawing open nothing names a linked design.
         drawing_scene::forget_closed(self);
+        if self.open_drawing.is_none() {
+            self.linked.close();
+        }
         self.prune_drawing_selection();
         let crash_outcome = if outermost && crash::enabled() {
             let failed = r.as_ref().err().map(ToString::to_string);

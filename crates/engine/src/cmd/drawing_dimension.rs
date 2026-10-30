@@ -328,6 +328,14 @@ pub(super) fn status_words(status: Status) -> (&'static str, Option<String>, Vec
     }
 }
 
+/// Puts `new` in `field` when it is given and differs, and adds `name` to what changed.
+pub(super) fn set_field<T: PartialEq>(field: &mut T, new: Option<T>, name: &str, changed: &mut Vec<String>) {
+    if let Some(new) = new.filter(|new| new != field) {
+        *field = new;
+        changed.push(name.to_string());
+    }
+}
+
 /// What a balloon or a note points at, as its answer says it.
 pub(super) fn located_result(located: Located) -> LocatedResult {
     let (status, why, candidates) = status_words(located.status);

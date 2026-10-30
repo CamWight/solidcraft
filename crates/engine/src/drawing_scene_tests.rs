@@ -6,7 +6,7 @@ use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::Seg2;
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
-use solidcraft_geom::paper::ObjectKind;
+use solidcraft_geom::paper::{Item, ObjectKind};
 
 use super::*;
 use crate::schema::drawing_scene::SheetSceneResult;

@@ -18,7 +18,7 @@
 //! projected again, and an edited dimension is read again alone. The provider
 //! evaluates no model either. Its cache is the
 //! session's view state, beside the drawing: never saved, never an undo step, and dropped when its
-//! drawing closes. What a save keeps of it is apart, in [`KeptLines`].
+//! drawing closes. What a save keeps of it is apart, in [`KeptLines`]. Picking is [`hit`]'s.
 //!
 //! The first [`extract`] after a drawing opens takes the lines its file keeps
 //! ([`solidcraft_io::read_sheet_lines`]), so opening a design with many drawings costs nothing extra.
@@ -36,12 +36,17 @@ use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
-use solidcraft_doc::{DocError, Document, ModelState, ids};
+use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::hlr::Source;
-use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Scene};
+use solidcraft_geom::paper::{Group, MAX_RECORDS, ObjectKind, Scene};
 use solidcraft_geom::{Aabb2, Vec2};
 
+use crate::drawing_scene_hit::nearest_stroke;
+pub use crate::drawing_scene_hit::{Hit, SheetObject, hit};
+pub use crate::drawing_scene_kept::KeptLines;
+pub(crate) use crate::drawing_scene_kept::saved_lines;
+use crate::drawing_scene_kept::{KeptView, lines_key};
 use crate::drawing_sources::Unopened;
 use crate::drawing_view::{CHORD_MM, LineRequest, MIN_MODEL_CHORD_MM, Shown, ShownSet, Stats, Unmeasured, paper_lines};
 use crate::params::bad;
@@ -106,19 +111,6 @@ pub struct AnnotationState {
     pub why: Option<String>,
 }
 
-/// Where one object of a sheet's scene sits on paper, for picking and marking it. Beside the scene,
-/// not in it, so no writer sees it.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct SheetObject {
-    pub object: u64,
-    pub kind: ObjectKind,
-    /// The box round what it draws, along its lines' paths; with no lines, its boundary.
-    pub bounds_mm: Aabb2,
-    /// A view's boundary ([`crate::drawing_view::on_sheet`]), so a view that can't be drawn can
-    /// still be picked.
-    pub boundary_mm: Option<Aabb2>,
-}
-
 /// One sheet drawn at once ([`build`]).
 #[derive(Clone, Debug)]
 pub struct SheetScene {
@@ -150,41 +142,6 @@ pub struct SheetView {
     pub stale_annotations: Vec<u64>,
 }
 
-/// What is under a point of a sheet ([`hit`]).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Hit {
-    pub object: u64,
-    pub kind: ObjectKind,
-    /// The point is within the band of the box's edge: where a view is grabbed rather than clicked
-    /// through.
-    pub on_edge: bool,
-}
-
-/// The object of `objects`, in paint order, under `point_mm` on paper: the one whose box holds the
-/// point within `band_mm`, the smallest of them, then the topmost. A view's box is its boundary, so
-/// one that can't be drawn is still there; a dimension's is round its lines. The sheet's border is
-/// never hit. A point or a band that isn't a finite number (or a band below 0) hits nothing. One pass
-/// over the objects, for each hover.
-pub fn hit(objects: &[SheetObject], point_mm: Vec2, band_mm: f64) -> Option<Hit> {
-    if !point_mm.is_finite() || !band_mm.is_finite() || band_mm < 0.0 {
-        return None;
-    }
-    let mut found: Option<(f64, Hit)> = None;
-    for object in objects.iter().filter(|o| o.kind != ObjectKind::DrawingBorder) {
-        let b = object.boundary_mm.unwrap_or(object.bounds_mm);
-        if !b.inflated(band_mm).contains(point_mm) {
-            continue;
-        }
-        let area = (b.max.x - b.min.x) * (b.max.y - b.min.y);
-        if found.as_ref().is_none_or(|(smallest, _)| area <= *smallest) {
-            let to_edge = [point_mm.x - b.min.x, b.max.x - point_mm.x, point_mm.y - b.min.y, b.max.y - point_mm.y];
-            let on_edge = to_edge.iter().any(|gap| gap.abs() <= band_mm);
-            found = Some((area, Hit { object: object.object, kind: object.kind, on_edge }));
-        }
-    }
-    found.map(|(_, hit)| hit)
-}
-
 /// A line of a view under a point of its sheet ([`line_at`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct LineHit {
@@ -197,22 +154,6 @@ pub struct LineHit {
     pub source: Source,
     /// How far the point is from it, on paper.
     pub distance_mm: f64,
-}
-
-/// The stroke of `items` nearest `point`, within `band_mm`, and how far it is: the one painted last
-/// when two are as near. Only strokes whose box reaches the point are measured.
-fn nearest_stroke(items: &[Item], point: Vec2, band_mm: f64) -> Option<(usize, f64)> {
-    let mut found: Option<(usize, f64)> = None;
-    for (at, item) in items.iter().enumerate() {
-        let Item::Stroke { path, .. } = item else { continue };
-        for seg in path.iter().filter(|seg| seg.bounds().inflated(band_mm).contains(point)) {
-            let distance = seg.point_at(seg.closest_param(point)).dist(point);
-            if distance <= band_mm && found.is_none_or(|(_, nearest)| distance <= nearest) {
-                found = Some((at, distance));
-            }
-        }
-    }
-    found
 }
 
 /// The line under `point_mm` on sheet `sheet` of the drawing open, among the lines the provider shows
@@ -812,15 +753,25 @@ fn draw_now(s: &mut Session, d: &Drawing, id: u64, view: ResolvedView, state: &A
     }
     cache.serial += 1;
     let serial = cache.serial;
-    let lines_kept = KeptView::of(&view, state, &drawn);
-    cache.views.insert(id, Entry { state: state.clone(), view, drawn, serial });
-    cache.keep_annotations(these, lines, state, serial, units);
     #[cfg(test)]
     {
         cache.projections += 1;
     }
-    if let Some(kept) = lines_kept {
-        Arc::make_mut(&mut s.kept_lines).0.entry(d.id).or_default().insert(id, kept);
+    keep_view(s, d.id, id, view, drawn, state.clone(), true);
+    s.drawing_scenes.keep_annotations(these, lines, state, serial, units);
+}
+
+/// Keeps view `id`, as `drawn` drew it from `state`, in the provider under its serial now. With
+/// `for_saving`, its lines are what a save keeps too.
+fn keep_view(s: &mut Session, drawing: u64, id: u64, view: ResolvedView, drawn: Drawn, state: Arc<ModelState>, for_saving: bool) {
+    let kept = match (&drawn.group, drawn.boundary, &drawn.frame) {
+        (Some(group), Some(boundary), Some(frame)) if for_saving => Some(KeptView::new(&view, &state, group.clone(), boundary, frame)),
+        _ => None,
+    };
+    let serial = s.drawing_scenes.serial;
+    s.drawing_scenes.views.insert(id, Entry { state, view, drawn, serial });
+    if let Some(kept) = kept {
+        Arc::make_mut(&mut s.kept_lines).keep(drawing, id, kept);
     }
 }
 
@@ -859,76 +810,11 @@ fn take_last_lines(s: &mut Session, d: &Drawing, state: &Arc<ModelState>) {
         let centre = Vec2 { x: -saved.origin_mm.x / factor, y: -saved.origin_mm.y / factor };
         let Ok(frame) = ViewFrame::new(view.basis, view.scale.value, centre, Vec2::ZERO) else { continue };
         let fresh = current && saved.key == lines_key(&view);
-        let cache = &mut s.drawing_scenes;
-        cache.serial += 1;
+        s.drawing_scenes.serial += 1;
         let drawn =
             Drawn { group: Some(saved.group), status: Status::Drawn, stats: None, boundary: Some(saved.boundary), frame: Some(frame), owners: None };
-        let lines_kept = fresh.then(|| KeptView::of(&view, state, &drawn)).flatten();
-        let serial = cache.serial;
-        cache.views.insert(saved.view, Entry { state: if fresh { state.clone() } else { out_of_date.clone() }, view, drawn, serial });
-        if let Some(kept) = lines_kept {
-            Arc::make_mut(&mut s.kept_lines).0.entry(d.id).or_default().insert(saved.view, kept);
-        }
+        keep_view(s, d.id, saved.view, view, drawn, if fresh { state.clone() } else { out_of_date.clone() }, fresh);
     }
-}
-
-/// Each drawing's last lines, by drawing and view: what a save can keep. A closed drawing's stay here
-/// too, as plain data: a weak reference to the world state they came from says whether they are
-/// current without holding it.
-#[derive(Clone, Default)]
-pub struct KeptLines(BTreeMap<u64, BTreeMap<u64, KeptView>>);
-
-#[derive(Clone)]
-struct KeptView {
-    key: String,
-    state: std::sync::Weak<ModelState>,
-    group: Arc<Group>,
-    boundary: Aabb2,
-    origin_mm: Vec2,
-}
-
-impl KeptView {
-    /// A view's lines as a save keeps them, when it drew any.
-    fn of(view: &ResolvedView, state: &Arc<ModelState>, drawn: &Drawn) -> Option<KeptView> {
-        let (group, boundary, frame) = (drawn.group.as_ref()?, drawn.boundary?, drawn.frame?);
-        let origin_mm = frame.paper_map().apply(Vec2::ZERO);
-        Some(KeptView { key: lines_key(view), state: Arc::downgrade(state), group: group.clone(), boundary, origin_mm })
-    }
-}
-
-/// What a view's lines were drawn from, as a save writes it: compared only within one build, whose
-/// lines these are, so its text can be anything that tells two views apart.
-fn lines_key(view: &ResolvedView) -> String {
-    format!("{view:?}")
-}
-
-/// What a save of `design` keeps of its drawings' lines: only each view's own, drawn from the world
-/// state there is now and as it would draw now, and it never draws one (`saved_geometry`'s rule). A
-/// drawing with none keeps what its file has.
-pub(crate) fn saved_lines(s: &Session, design: &Document) -> solidcraft_io::SheetCaches {
-    let keep_from = s.file.as_ref().map(|(path, _)| path.clone());
-    let world = s.cached_world_state().filter(|_| s.active_sketch.is_none() && s.pending_moves.is_empty());
-    let Some(world) = world else { return solidcraft_io::SheetCaches { lines: Vec::new(), keep_from } };
-    let current = |d: &Drawing, id: u64, kept: &KeptView| {
-        let same = kept.state.upgrade().is_some_and(|state| Arc::ptr_eq(&state, &world));
-        (same && d.resolve_view(id).is_ok_and(|view| lines_key(&view) == kept.key)).then(|| solidcraft_io::SavedView {
-            view: id,
-            key: kept.key.clone(),
-            group: kept.group.clone(),
-            boundary: kept.boundary,
-            origin_mm: kept.origin_mm,
-        })
-    };
-    let lines = design
-        .drawings
-        .iter()
-        .filter_map(|d| {
-            let kept = s.kept_lines.0.get(&d.id)?;
-            let views: Vec<_> = d.views.iter().filter_map(|v| current(d, v.id, kept.get(&v.id)?)).collect();
-            (!views.is_empty()).then_some(solidcraft_io::SheetLines { drawing: d.id, views })
-        })
-        .collect();
-    solidcraft_io::SheetCaches { lines, keep_from }
 }
 
 /// Drops the cache once its drawing isn't the one open: closing a drawing (or opening another) ends
@@ -936,9 +822,6 @@ pub(crate) fn saved_lines(s: &Session, design: &Document) -> solidcraft_io::Shee
 pub(crate) fn forget_closed(s: &mut Session) {
     if s.drawing_scenes.drawing.is_some_and(|d| s.open_drawing != Some(d)) {
         s.drawing_scenes = Cache::default();
-    }
-    if s.open_drawing.is_none() {
-        s.linked.close();
     }
 }
 
