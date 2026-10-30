@@ -143,7 +143,10 @@ fn open(file: &str, own: Option<&str>) -> Result<Session, Unopened> {
         _ => problem(SourceState::Unreadable, format!("{file}: {e}")),
     })?;
     let unreadable = |e: solidcraft_io::IoError| match e {
-        solidcraft_io::IoError::Doc(DocError::Newer(why)) => problem(SourceState::Newer, format!("{file}: {why}")),
+        // The format check's one refusal of a newer build's file, the only way this head says so.
+        solidcraft_io::IoError::Doc(DocError::Invalid(why)) if why.contains("saved by a newer SolidCraft") => {
+            problem(SourceState::Newer, format!("{file}: {why}"))
+        }
         e => problem(SourceState::Unreadable, format!("{file}: {e}")),
     };
     let (doc, saved) = if solidcraft_io::is_design_container(&bytes) {
