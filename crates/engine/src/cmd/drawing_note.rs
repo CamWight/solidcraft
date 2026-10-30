@@ -11,7 +11,7 @@ use solidcraft_doc::drawing::note::{Anchor, Note};
 use solidcraft_doc::ids;
 
 use super::CommandSpec;
-use super::drawing_dimension::status_words;
+use super::drawing_dimension::located_result;
 use crate::params::bad;
 use crate::schema::drawing_note::{AddParams, AnchorParam, EditParams, EditResult, InspectParams, NoteResult};
 use crate::schema::{TypedContract, output_schema_for};
@@ -126,21 +126,9 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
     let note = d.notes.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no note {}", ids::encode(id))))?;
-    // A note on a sheet reads no model.
-    let from = note.anchor.view().map_or(Ok(s), |view| s.drawn_by_view(d, view)).map_err(|why| bad(cmd, why.to_string()))?;
-    let resolved = from.doc.resolve_notes(&from.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
-    let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("note {} wasn't read", ids::encode(id))))?;
-    let (status, why, candidates) = status_words(r.status);
-    let reply = NoteResult {
-        note: ids::encode(id),
-        record: crate::schema::reply(note)?,
-        status: status.to_string(),
-        why,
-        point: r.point.map(|p| [p.x, p.y, p.z]),
-        exact: r.exact,
-        candidates,
-        param_warnings: Vec::new(),
-    };
+    let located = crate::drawing_sources::only(crate::drawing_sources::resolve_notes(s, d, &[id]), cmd, "note", id)?;
+    let reply =
+        NoteResult { note: ids::encode(id), record: crate::schema::reply(note)?, located: located_result(located), param_warnings: Vec::new() };
     crate::schema::reply(reply)
 }
 

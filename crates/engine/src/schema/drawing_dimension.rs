@@ -372,6 +372,23 @@ pub struct EditResult {
     pub param_warnings: Vec<String>,
 }
 
+/// What a balloon or a note points at, in the words of its answer.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LocatedResult {
+    /// `ok`, `ambiguous`, `suppressed` or `lost`. What points at nothing is always `ok`.
+    pub status: String,
+    /// Why it is lost.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// Where its arrow or leader ends, in the design's frame.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub point: Option<[f64; 3]>,
+    /// What it points at was found by exact history.
+    pub exact: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub candidates: Vec<CandidateResult>,
+}
+
 /// One of the things an ambiguous dimension's name finds.
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
