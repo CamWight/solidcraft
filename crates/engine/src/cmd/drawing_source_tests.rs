@@ -193,7 +193,7 @@ fn a_source_path_follows_save_as_through_undo_redo_and_checkpoints() {
     assert_eq!(in_file(&path), [Some("parts/plate.sc".to_string())]);
 
     run(&mut s, "drawing.close", json!({}));
-    run(&mut s, "edit.checkpoint", json!({"name": "before"}));
+    let checkpoint = run(&mut s, "edit.checkpoint", json!({"name": "before"}))["checkpoint"].clone();
     let moved = dir.join("moved").join("deep").join("a.sc").to_string_lossy().into_owned();
     run(&mut s, "file.save_as", json!({"path": moved}));
     assert_eq!(in_file(&moved), [Some("../../parts/plate.sc".to_string())]);
@@ -205,7 +205,7 @@ fn a_source_path_follows_save_as_through_undo_redo_and_checkpoints() {
     assert_eq!(held(&s).as_deref(), Some(part.as_str()));
     run(&mut s, "edit.redo", json!({}));
     assert_eq!(held(&s).as_deref(), Some(part.as_str()));
-    run(&mut s, "edit.restore_checkpoint", json!({"name": "before"}));
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint": checkpoint}));
     assert_eq!(held(&s).as_deref(), Some(part.as_str()));
     run(&mut s, "file.save", json!({}));
     assert_eq!(in_file(&moved), [Some("../../parts/plate.sc".to_string())]);
