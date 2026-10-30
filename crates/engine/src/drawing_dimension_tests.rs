@@ -426,6 +426,10 @@ fn a_holes_centre_is_found_through_its_rim() {
     assert_eq!(f.resolve(across).status, Status::Suppressed);
 }
 
+fn radial(edge: &ModelEdge, diameter: bool) -> DimensionKind {
+    DimensionKind::Radial { edge: edge.clone(), diameter }
+}
+
 /// A reference to what a feature made says what became of that feature, not that it is lost: a hole
 /// suppressed or rolled back is suppressed, and a fillet put before what it rounds has failed, with
 /// why. Each reads again when its feature is back. A deleted feature's is lost.
