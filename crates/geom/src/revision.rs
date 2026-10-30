@@ -396,8 +396,8 @@ impl RevisionRecord {
     /// was issued against when there is one. A row is issued once: a change is a new revision.
     pub fn issue(&mut self, id: u64, model_version: Option<ModelVersion>) -> Result<()> {
         require(self.issued.len() < MAX_ISSUED, "a record's issued history holds at most 10,000 entries")?;
-        require(!self.is_issued(id), "a row is issued once: make a new revision")?;
         let mut row = self.rows.iter().find(|r| r.id == id).ok_or(Invalid("no row has that id"))?.clone();
+        require(!self.is_issued(id), "a row is issued once: make a new revision")?;
         row.model_version = model_version;
         row.check()?;
         self.issued.push(row);

@@ -235,7 +235,7 @@ fn a_record_round_trips_through_json_and_damaged_ones_are_refused() {
     assert_eq!(json["numbering"], json!("letters"));
     let id = json!(crate::ids::encode(a));
     assert_eq!(
-        (&json["rows"][0]["id"], &json["tags"][0]["row"], &json["rows"][0]["sheet"]),
+        (&json["issued"][0]["id"], &json["tags"][0]["row"], &json["issued"][0]["sheet"]),
         (&id, &id, &json!(null)),
         "ids as every drawing writes them"
     );
