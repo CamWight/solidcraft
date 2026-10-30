@@ -1,8 +1,8 @@
 //! Delete for everything that can be selected, in one undo step: sketch entities (while
 //! sketching), timeline features and sketches (with the features that depend on them),
 //! construction planes and axes, bodies (a Remove feature from here on in the timeline), occurrences and
-//! components, canvases, point clouds and joints; or, with a drawing open, its views, dimensions and
-//! balloons. `dry_run` reports what would go and what would fail without changing anything, so the UI
+//! components, canvases, point clouds and joints; or, with a drawing open, its views, dimensions,
+//! balloons and notes. `dry_run` reports what would go and what would fail without changing anything, so the UI
 //! can ask first.
 
 use std::collections::BTreeSet;
@@ -46,7 +46,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-/// Deletes the views, dimensions and balloons `items` name in the drawing open, as one change: the
+/// Deletes the views, dimensions, balloons and notes `items` name in the drawing open, as one change: the
 /// record's removal ([`solidcraft_doc::drawing::Drawing::remove_objects`]), with no model evaluated.
 fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value> {
     let cmd = "selection.delete";
@@ -56,7 +56,7 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
     }
     let with_projected = super::drawing_sheet::contents_delete(cmd, p, "a view goes with the views projected from it")?;
     let open = s.drawing(cmd)?.clone();
-    let (mut views, mut dimensions, mut balloons) = (BTreeSet::new(), Vec::new(), Vec::new());
+    let (mut views, mut dimensions, mut balloons, mut notes) = (BTreeSet::new(), Vec::new(), Vec::new(), Vec::new());
     for item in items {
         let Sel::Drawing { drawing, object } = item else { return Err(model()) };
         if *drawing != open.id {
@@ -68,11 +68,13 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
             dimensions.push(*object);
         } else if open.balloon(*object).is_some() {
             balloons.push(*object);
+        } else if open.note(*object).is_some() {
+            notes.push(*object);
         } else {
-            return Err(bad(cmd, format!("the drawing open has no view, dimension or balloon {}", ids::encode(*object))));
+            return Err(bad(cmd, format!("the drawing open has no view, dimension, balloon or note {}", ids::encode(*object))));
         }
     }
-    if views.is_empty() && dimensions.is_empty() && balloons.is_empty() {
+    if views.is_empty() && dimensions.is_empty() && balloons.is_empty() && notes.is_empty() {
         return Err(bad(cmd, "nothing to delete"));
     }
     let all = open.with_projected(&views);
@@ -88,6 +90,9 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
     gone.balloons.extend(balloons);
     gone.balloons.sort_unstable();
     gone.balloons.dedup();
+    gone.notes.extend(notes);
+    gone.notes.sort_unstable();
+    gone.notes.dedup();
     s.edit_drawing(cmd, |d| {
         d.remove_objects(&gone);
         Ok(())
@@ -95,7 +100,7 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
     let listed = |objects: &[u64]| objects.iter().map(|id| ids::encode(*id)).collect::<Vec<_>>();
     let (views, dimensions, balloons) = (listed(&gone.views), listed(&gone.dimensions), listed(&gone.balloons));
     Ok(
-        json!({ "deleted": [], "deleted_joints": [], "would_fail": [], "skipped": [], "views": views, "dimensions": dimensions, "balloons": balloons }),
+        json!({ "deleted": [], "deleted_joints": [], "would_fail": [], "skipped": [], "views": views, "dimensions": dimensions, "balloons": balloons, "notes": listed(&gone.notes) }),
     )
 }
 

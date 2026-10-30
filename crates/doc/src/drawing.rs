@@ -40,7 +40,7 @@
 //!
 //! [`Drawing::from_json`] reads a drawing in this order: at most [`MAX_DRAWING_BYTES`] of text,
 //! the family's format check, every number in range, the upgrade, the typed record with its views,
-//! dimensions and balloons by id, then [`Drawing::validate`]; [`Drawing::from_value`] the same from the
+//! dimensions, balloons and notes by id, then [`Drawing::validate`]; [`Drawing::from_value`] the same from the
 //! format check on.
 
 use std::collections::BTreeSet;
@@ -59,11 +59,13 @@ use crate::{DocError, Metadata, Result, expr};
 
 pub mod balloon;
 pub mod dimension;
+pub mod note;
 pub mod table;
 pub mod view;
 
 use balloon::Balloon;
 use dimension::Dimension;
+use note::{Anchor, Note};
 use table::SheetTable;
 use view::View;
 
@@ -127,6 +129,9 @@ pub struct Drawing {
     /// By id ([`Drawing::add_tables`]), as the balloons are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tables: Vec<Arc<SheetTable>>,
+    /// By id ([`Drawing::add_notes`]), as the balloons are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<Arc<Note>>,
     /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
     #[serde(default, skip_serializing_if = "no_revisions")]
     pub revisions: Arc<RevisionRecord>,
@@ -217,12 +222,19 @@ pub struct OnSheet {
     pub tags: Vec<u64>,
     /// The tables on it.
     pub tables: Vec<u64>,
+    /// The notes on it and in its views.
+    pub notes: Vec<u64>,
 }
 
 impl OnSheet {
     /// Nothing is on the sheet.
     pub fn is_empty(&self) -> bool {
-        self.views.is_empty() && self.dimensions.is_empty() && self.balloons.is_empty() && self.tags.is_empty() && self.tables.is_empty()
+        self.views.is_empty()
+            && self.dimensions.is_empty()
+            && self.balloons.is_empty()
+            && self.tags.is_empty()
+            && self.tables.is_empty()
+            && self.notes.is_empty()
     }
 }
 
@@ -291,6 +303,8 @@ impl Drawing {
         d.add_dimensions(dimensions);
         d.add_balloons(balloons);
         d.add_tables(tables);
+        let notes = std::mem::take(&mut d.notes);
+        d.add_notes(notes);
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
@@ -326,7 +340,7 @@ impl Drawing {
 
     /// Whether `id` names an object a sheet shows: a view, a dimension or a balloon.
     pub fn has_object(&self, id: u64) -> bool {
-        self.view(id).is_some() || self.dimension(id).is_some() || self.balloon(id).is_some()
+        self.view(id).is_some() || self.dimension(id).is_some() || self.balloon(id).is_some() || self.note(id).is_some()
     }
 
     /// What is on sheet `id`: its views and the dimensions and balloons in them. Each later kind of record on a
@@ -335,14 +349,18 @@ impl Drawing {
         // The views are listed by id, so the sheet's are too.
         let on = self.with_contents(self.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect());
         let tags = self.revisions.tags().iter().filter(|t| t.sheet == id).map(|t| t.id).collect();
-        OnSheet { tags, tables: self.tables.iter().filter(|t| t.sheet == id).map(|t| t.id).collect(), ..on }
+        let notes =
+            self.notes.iter().filter(|n| n.anchor == Anchor::Sheet(id) || n.anchor.view().is_some_and(|v| on.views.binary_search(&v).is_ok()));
+        let notes = notes.map(|n| n.id).collect();
+        OnSheet { tags, notes, tables: self.tables.iter().filter(|t| t.sheet == id).map(|t| t.id).collect(), ..on }
     }
 
     /// `views`, listed by id, with the dimensions and balloons in them.
     pub fn with_contents(&self, views: Vec<u64>) -> OnSheet {
         let dimensions = self.dimensions.iter().filter(|d| views.binary_search(&d.view).is_ok()).map(|d| d.id).collect();
         let balloons = self.balloons.iter().filter(|b| views.binary_search(&b.view).is_ok()).map(|b| b.id).collect();
-        OnSheet { views, dimensions, balloons, tags: Vec::new(), tables: Vec::new() }
+        let notes = self.notes.iter().filter(|n| n.anchor.view().is_some_and(|v| views.binary_search(&v).is_ok())).map(|n| n.id).collect();
+        OnSheet { views, dimensions, balloons, tags: Vec::new(), tables: Vec::new(), notes }
     }
 
     /// Takes sheet `id` out with everything on it ([`Drawing::on_sheet`]), and answers what that
@@ -362,6 +380,7 @@ impl Drawing {
         self.dimensions.retain(|d| objects.dimensions.binary_search(&d.id).is_err());
         self.balloons.retain(|b| objects.balloons.binary_search(&b.id).is_err());
         self.tables.retain(|t| objects.tables.binary_search(&t.id).is_err());
+        self.notes.retain(|n| objects.notes.binary_search(&n.id).is_err());
         // A balloon outlives the list it named, and goes back to the lists it could read.
         for balloon in &mut self.balloons {
             if balloon.parts_list.is_some_and(|list| objects.tables.binary_search(&list).is_ok()) {
@@ -383,6 +402,7 @@ impl Drawing {
             .chain(self.dimensions.iter().map(|d| d.id))
             .chain(self.balloons.iter().map(|b| b.id))
             .chain(self.tables.iter().map(|t| t.id))
+            .chain(self.notes.iter().map(|n| n.id))
             .chain(self.revisions.ids())
     }
 
@@ -417,7 +437,8 @@ impl Drawing {
         self.check_views()?;
         self.check_dimensions()?;
         self.check_tables()?;
-        self.check_balloons()
+        self.check_balloons()?;
+        self.check_notes()
     }
 
     /// A sheet's own rules, and that the source it documents is one of the drawing's.
