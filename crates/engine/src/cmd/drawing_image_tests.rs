@@ -95,7 +95,8 @@ fn the_same_bytes_are_one_file_on_each_sheet() {
     assert_eq!(s.drawing("test").unwrap().images.len(), 2, "the other sheet still uses it");
     s.execute("selection.delete", &json!({"items": [item(&b["image"])]})).unwrap();
     assert_eq!(s.drawing("test").unwrap().images.len(), 1, "the last place took its file");
-    s.execute("edit.undo", &json!({})).unwrap();
+    let undone = s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(undone, json!({"undone": "Delete"}), "a step of the drawing, not of the model");
     assert_eq!(s.drawing("test").unwrap().images.len(), 2, "an undo brings it back");
     let unused = s.drawing("test").unwrap().to_json().unwrap();
     assert!(solidcraft_doc::drawing::Drawing::from_json(&unused).is_ok());

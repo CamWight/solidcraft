@@ -1354,7 +1354,7 @@ impl Session {
             self.open_sources();
         }
         let open_drawing = self.open_drawing;
-        let before = Snapshot { part: open_drawing.filter(|_| spec.part == cmd::Part::Drawing), ..Snapshot::of(self, spec.label) };
+        let before = Snapshot { part: open_drawing.filter(|_| matches!(spec.part, cmd::Part::Drawing | cmd::Part::Open)), ..Snapshot::of(self, spec.label) };
         let ids = self.ids.clone();
         // Where new geometry goes: not in the design, but a replay needs it (component.activate).
         let active_before = (self.active_component, self.active_occurrence_path.clone());

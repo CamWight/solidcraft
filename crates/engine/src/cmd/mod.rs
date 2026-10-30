@@ -149,6 +149,8 @@ pub enum Part {
     Model,
     Drawing,
     Any,
+    /// Either, and what it changes is a step of the part open: a delete of what is selected.
+    Open,
 }
 
 pub struct CommandSpec {
@@ -257,6 +259,11 @@ impl CommandSpec {
     /// Works with a drawing open or with none.
     pub const fn any_part(mut self) -> Self {
         self.part = Part::Any;
+        self
+    }
+    /// Works with a drawing open or with none, and its undo step belongs to whichever is open.
+    pub const fn open_part(mut self) -> Self {
+        self.part = Part::Open;
         self
     }
     /// Works on the open drawing.
