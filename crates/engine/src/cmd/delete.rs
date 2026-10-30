@@ -15,7 +15,7 @@ use super::{CommandSpec, sketch_store};
 use crate::params::{bad, bool_};
 use crate::{EngineError, Result, Sel, Session};
 
-pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new("selection.delete", "Delete", delete).any_part().icon("delete").params(
+pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new("selection.delete", "Delete", delete).open_part().icon("delete").params(
     "items?: [selection items]; components?, occurrences?, canvases?, point_clouds?, joints?: [ids or names]; dry_run?: bool → deleted, deleted_joints, would_fail, skipped (one undo step). With a drawing open, items are its views, dimensions and balloons ({type: drawing, drawing, object}); each view takes its dimensions and balloons with it; a view with views projected from it is refused, naming them, unless they are in items or contents: delete takes them too → views, dimensions, balloons: [the ids that went]",
 )];
 
