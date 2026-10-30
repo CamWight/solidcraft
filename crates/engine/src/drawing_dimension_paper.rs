@@ -3,28 +3,21 @@
 //! millimetres, so a dimension is the same size at any view scale. [`paper_group`] lays one out
 //! centred on its view, as a view's lines are, so moving the view moves it unchanged.
 //!
-//! Its text is set in the drawing font ([`paper_text`]) and measured there, so the arrows go inside
-//! or outside by its real length. A text the font can't set leaves the lines and says why.
+//! Its text is measured ([`Text`]), so the arrows go inside or outside by its real length.
 
-use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
+use std::f64::consts::{FRAC_1_SQRT_2, TAU};
 
 use solidcraft_doc::drawing::dimension::{Dimension, Geometry, Resolved, TextPlace};
 use solidcraft_geom::drawing_measure::LinearDirection;
 use solidcraft_geom::drawing_view::ViewFrame;
-use solidcraft_geom::paper::annotate::{ArrowShape, Terminator};
-use solidcraft_geom::paper::text::{Font, TextRun};
 use solidcraft_geom::paper::{Group, Item, ObjectKind};
 use solidcraft_geom::{Seg2, Vec2, Vec3};
-use solidcraft_sketch::{DimFrame, DimSizes, TextStyle, dim_layout_sized, paper_text};
+use solidcraft_sketch::{DimFrame, DimSizes, dim_layout_sized};
+
+use crate::drawing_annotation_paper::{ARROW, ARROW_MM, GAP_MM, LINE_MM, OnPaper, Text, placed};
 
 /// A dimension's sizes on paper, with its text above an unbroken line (ISO 129-1).
-const SIZES: DimSizes = DimSizes { arrow: 3.0, gap: 1.0, overshoot: 2.0, offset: 10.0, above: true };
-/// A dimension's lines, half as wide as a view's visible ones (ISO 128).
-const LINE_MM: f64 = 0.25;
-/// A filled arrowhead, its line stopped at its base by [`stop_at_base`].
-const ARROW: Terminator = Terminator::Arrow { shape: ArrowShape::Filled, length_mm: SIZES.arrow, angle: PI / 9.0 };
-/// The height of a dimension's capitals.
-const TEXT_MM: f64 = 3.5;
+const SIZES: DimSizes = DimSizes { arrow: ARROW_MM, gap: GAP_MM, overshoot: 2.0, offset: 10.0, above: true };
 /// How close two points of a layout are when they are one point.
 const SAME_POINT_MM: f64 = 1e-6;
 
@@ -34,41 +27,6 @@ struct Piece {
     /// Where the layout puts its text, from the frame's own origin.
     at: Vec2,
     text: Text,
-}
-
-/// A text set once and measured, upright from the sheet's origin, for the layout to place.
-struct Text {
-    runs: Vec<TextRun>,
-    fonts: Vec<Font>,
-    /// Half its size.
-    half: Vec2,
-    /// Why it isn't set, when it can't be.
-    why: Option<String>,
-}
-
-impl Text {
-    fn set(text: Option<&str>) -> Text {
-        let unset = |why| Text { runs: Vec::new(), fonts: Vec::new(), half: Vec2::new(0.0, TEXT_MM * 0.5), why };
-        match text.map(|text| paper_text(text, None, Vec2::ZERO, TEXT_MM, 0.0, &TextStyle::default())) {
-            None | Some(Ok(None)) => unset(None),
-            Some(Err(why)) => unset(Some(why.to_string())),
-            Some(Ok(Some((runs, fonts)))) => {
-                let width = runs.iter().map(TextRun::reach).fold(0.0, f64::max);
-                // Its lines stand below the first one's baseline.
-                let below = runs.iter().map(|run| -run.origin.y).fold(0.0, f64::max);
-                Text { runs, fonts, half: Vec2::new(width, TEXT_MM + below) * 0.5, why: None }
-            }
-        }
-    }
-}
-
-/// A dimension on paper.
-pub struct OnPaper {
-    pub group: Group,
-    /// The fonts its text uses, in no order, the same one perhaps more than once.
-    pub fonts: Vec<Font>,
-    /// Why its text isn't there, when it can't be set.
-    pub why: Option<String>,
 }
 
 /// `dimension`, read as `resolved`, on the view through `frame` (centred on the view): its group,
@@ -100,13 +58,6 @@ pub fn paper_group(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame
     }
     items.extend(texts);
     Some(OnPaper { group: Group { object: dimension.id, kind: ObjectKind::Dimension, items }, fonts, why })
-}
-
-/// `runs` of a text `half` in size, centred on `centre` and running along `dir`.
-fn placed(runs: Vec<TextRun>, half: Vec2, centre: Vec2, dir: Vec2) -> impl Iterator<Item = Item> {
-    let up = dir.perp();
-    let start = centre - dir * half.x + up * (half.y - TEXT_MM);
-    runs.into_iter().map(move |run| Item::Text(TextRun { origin: start + dir * run.origin.x + up * run.origin.y, angle: dir.angle(), ..run }))
 }
 
 /// What `dimension` lays out, from what it measures, on paper through `frame`.

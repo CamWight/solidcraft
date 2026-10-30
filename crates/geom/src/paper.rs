@@ -150,8 +150,10 @@ pub enum ObjectKind {
     RevisionTable,
     /// A drawing view's lines.
     View,
-    /// A dimension's lines and arrowheads.
+    /// A dimension's lines, arrowheads and text.
     Dimension,
+    /// A balloon's circle, leader and number.
+    Balloon,
 }
 
 impl ObjectKind {
@@ -166,6 +168,7 @@ impl ObjectKind {
             ObjectKind::RevisionTable => "REVISION_TABLE",
             ObjectKind::View => "VIEW",
             ObjectKind::Dimension => "DIMENSION",
+            ObjectKind::Balloon => "BALLOON",
         }
     }
 }

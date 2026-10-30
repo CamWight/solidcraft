@@ -12,8 +12,6 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use solidcraft_doc::bom::{self, Tree, Unlisted};
-use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::ids;
 
@@ -112,7 +110,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
     let balloon = d.balloons.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no balloon {}", ids::encode(id))))?;
     let located = crate::drawing_sources::only(crate::drawing_sources::resolve_balloons(s, d, &[id]), cmd, "balloon", id)?;
-    let row = read_row(s, d, balloon);
+    let row = crate::drawing_sources::balloon_rows(s, d, &[balloon]).pop().unwrap_or_default();
     let warnings = if row.status == "reference" { vec!["it points at a reference, which no parts list counts".to_string()] } else { Vec::new() };
     let reply = BalloonResult {
         balloon: ids::encode(id),
@@ -128,41 +126,6 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
         param_warnings: Vec::new(),
     };
     crate::schema::reply(reply)
-}
-
-/// A balloon's row in the parts list it reads.
-#[derive(Default)]
-struct RowRead {
-    list: Option<u64>,
-    choices: Vec<u64>,
-    item: Option<String>,
-    status: &'static str,
-}
-
-fn read_row(s: &Session, d: &Drawing, balloon: &Balloon) -> RowRead {
-    let (list, parts_list) = match d.parts_list_for(balloon) {
-        Ok(found) => found,
-        Err(choices) => return RowRead { choices, status: "no_list", ..Default::default() },
-    };
-    // The list reads the design it lists, which needn't be the one the drawing is in.
-    let Ok(from) = s.drawn(d, parts_list.of.source) else { return RowRead { list: Some(list), status: "not_found", ..Default::default() } };
-    let state = from.model.state();
-    let mut tree = Tree::new(&from.doc, &state);
-    // Its component deleted, or too large to list: nothing it can read.
-    let Ok(listed) = bom::list_with(&mut tree, &parts_list.request(), true) else {
-        return RowRead { list: Some(list), status: "not_found", ..Default::default() };
-    };
-    match listed.item_of(&tree, balloon.occurrence()) {
-        Ok(item) => RowRead { list: Some(list), item: Some(item), status: "ok", ..Default::default() },
-        Err(why) => {
-            let status = match why {
-                Unlisted::NotFound => "not_found",
-                Unlisted::Reference => "reference",
-                Unlisted::NoRow => "no_row",
-            };
-            RowRead { list: Some(list), status, ..Default::default() }
-        }
-    }
 }
 
 #[cfg(test)]
