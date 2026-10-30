@@ -178,6 +178,17 @@ impl Session {
         }
     }
 
+    /// The design at `file`, opened and kept for a source about to name it, or why it can't be: what a
+    /// source command reads before it changes anything.
+    pub(crate) fn open_source_file(&mut self, file: &str) -> Result<&Session, Unopened> {
+        let linked = match self.linked.designs.remove(file) {
+            Some(open) if open.opened.is_ok() => open,
+            _ => Linked { opened: open(file, self.path.as_deref()).map(Box::new), nothing: Arc::default() },
+        };
+        let kept = self.linked.designs.entry(file.to_string()).or_insert(linked);
+        kept.opened.as_deref().map_err(Clone::clone)
+    }
+
     /// The session `source` of `d` draws from: this one for the design the drawing is in, or the design
     /// its path names; or why that can't be drawn. Nothing is read here.
     pub fn drawn(&self, d: &Drawing, source: u64) -> Result<&Session, Unopened> {

@@ -1,0 +1,58 @@
+{
+  "en": {
+    "cmd.drawing_sources": "List Sources",
+    "cmd.drawing_source_add": "Add Source",
+    "cmd.drawing_source_relink": "Relink Source",
+    "cmd.drawing_source_locate": "Locate Source",
+    "cmd.drawing_source_remove": "Remove Source"
+  },
+  "ar": {
+    "cmd.drawing_sources": "سرد المصادر",
+    "cmd.drawing_source_add": "إضافة مصدر",
+    "cmd.drawing_source_relink": "إعادة ربط المصدر",
+    "cmd.drawing_source_locate": "تحديد موقع المصدر",
+    "cmd.drawing_source_remove": "إزالة المصدر"
+  },
+  "de": {
+    "cmd.drawing_sources": "Quellen auflisten",
+    "cmd.drawing_source_add": "Quelle hinzufügen",
+    "cmd.drawing_source_relink": "Quelle neu verknüpfen",
+    "cmd.drawing_source_locate": "Quelle suchen",
+    "cmd.drawing_source_remove": "Quelle entfernen"
+  },
+  "he": {
+    "cmd.drawing_sources": "הצגת מקורות",
+    "cmd.drawing_source_add": "הוספת מקור",
+    "cmd.drawing_source_relink": "קישור מחדש של מקור",
+    "cmd.drawing_source_locate": "איתור מקור",
+    "cmd.drawing_source_remove": "הסרת מקור"
+  },
+  "ja": {
+    "cmd.drawing_sources": "ソースを一覧表示",
+    "cmd.drawing_source_add": "ソースを追加",
+    "cmd.drawing_source_relink": "ソースを再リンク",
+    "cmd.drawing_source_locate": "ソースを検索",
+    "cmd.drawing_source_remove": "ソースを削除"
+  },
+  "ko": {
+    "cmd.drawing_sources": "소스 목록",
+    "cmd.drawing_source_add": "소스 추가",
+    "cmd.drawing_source_relink": "소스 다시 연결",
+    "cmd.drawing_source_locate": "소스 찾기",
+    "cmd.drawing_source_remove": "소스 제거"
+  },
+  "vi": {
+    "cmd.drawing_sources": "Liệt kê nguồn",
+    "cmd.drawing_source_add": "Thêm nguồn",
+    "cmd.drawing_source_relink": "Liên kết lại nguồn",
+    "cmd.drawing_source_locate": "Tìm nguồn",
+    "cmd.drawing_source_remove": "Xóa nguồn"
+  },
+  "zh": {
+    "cmd.drawing_sources": "列出来源",
+    "cmd.drawing_source_add": "添加来源",
+    "cmd.drawing_source_relink": "重新链接来源",
+    "cmd.drawing_source_locate": "定位来源",
+    "cmd.drawing_source_remove": "移除来源"
+  }
+}

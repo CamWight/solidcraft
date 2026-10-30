@@ -266,6 +266,10 @@ A drawing saves what is authored: its sheets, views, dimensions and other annota
 what it measures by persistent name. Nothing derived is saved. An image on a sheet is kept in the
 record, its file's bytes in base64, and the path it came from isn't saved.
 
+A drawing's source with no `path` is the design it is in. One with a `path` is the design in another
+file, relative to this one, with `/`, once this one has a file: a session holds it whole, as it holds
+a component link's. Listing a file's sources opens no other design.
+
 ## Sheet cache
 
 A warm save may add each drawing's last lines, so opening it draws nothing that hasn't changed:

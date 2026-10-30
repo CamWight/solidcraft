@@ -355,6 +355,15 @@ impl Drawing {
         id_source.next(&self.ids().collect())
     }
 
+    /// What keeps `source` in use: the views drawn from it, the sheets that document it and the parts
+    /// lists that list it, by id.
+    pub fn source_users(&self, source: u64) -> Vec<u64> {
+        let views = self.views.iter().filter(|v| matches!(v.kind, view::ViewKind::Base { source: s, .. } if s == source)).map(|v| v.id);
+        let sheets = self.sheets.iter().filter(|s| s.documents.is_some_and(|of| of.source == source)).map(|s| s.id);
+        let tables = self.tables.iter().filter(|t| matches!(&t.kind, table::Kind::PartsList(list) if list.of.source == source)).map(|t| t.id);
+        views.chain(sheets).chain(tables).collect()
+    }
+
     /// The position of the sheet `named` names: by id, else by a name only one sheet has.
     pub fn sheet_index(&self, named: &str) -> Result<usize> {
         if let Some(i) = ids::decode(named).and_then(|id| self.sheets.iter().position(|s| s.id == id)) {

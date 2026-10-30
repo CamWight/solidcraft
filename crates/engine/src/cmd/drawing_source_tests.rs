@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
 use serde_json::json;
+use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
+use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
+use solidcraft_geom::drawing_view::NamedView;
 
 use super::*;
 use crate::schema::tests::conforms;
@@ -236,5 +239,151 @@ fn a_source_is_judged_from_its_text() {
     let part = dir.join("parts").join("missing.sc").to_string_lossy().into_owned();
     let reply = run(&mut empty, "drawing.create", json!({"source": part}));
     assert_eq!(reply["sources"][0]["path"], json!(part), "{reply}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A design of one box, saved as `name` in `dir`, or saved over it: its file.
+fn plate_at(dir: &std::path::Path, name: &str, size: [f64; 3]) -> String {
+    let mut part = Session::default();
+    part.doc_mut().name = name.trim_end_matches(".sc").to_string();
+    run(&mut part, "solid.box", json!({"length": size[0], "width": size[1], "height": size[2]}));
+    let file = dir.join(name).to_string_lossy().into_owned();
+    run(&mut part, "file.save", json!({"path": file}));
+    file
+}
+
+fn word(reply: &Value) -> &str {
+    reply["state"].as_str().unwrap_or_default()
+}
+
+/// The commands: add, list, relink, locate and remove, each reading before it changes anything, and a
+/// linked design that can't be changed from here.
+#[test]
+fn the_source_commands_read_before_they_change() {
+    let (dir, path, mut s) = saved_design("commands");
+    let plate = plate_at(&dir, "plate.sc", [40.0, 30.0, 5.0]);
+    let block = plate_at(&dir, "block.sc", [10.0, 10.0, 20.0]);
+    run(&mut s, "drawing.create", json!({}));
+    let schema = output_schema_for::<SourceResult>();
+
+    let before = s.doc.clone();
+    let missing = dir.join("missing.sc").to_string_lossy().into_owned();
+    assert!(s.execute(ADD, &json!({"path": missing})).is_err(), "a design that can't be read isn't added");
+    assert!(s.execute(ADD, &json!({"path": path})).is_err(), "nor the design the drawing is in");
+    assert!(Arc::ptr_eq(&s.doc, &before));
+
+    let added = run(&mut s, ADD, json!({"path": plate}));
+    assert!(conforms(schema.as_value(), schema.as_value(), &added), "{added}");
+    assert_eq!(word(&added), "up_to_date", "{added}");
+    let source = added["source"].as_str().unwrap().to_string();
+    assert!(s.execute(ADD, &json!({"path": plate})).is_err(), "once is enough");
+    let listed = run(&mut s, LIST, json!({}));
+    assert_eq!(listed["sources"].as_array().unwrap().len(), 2, "{listed}");
+    assert!(listed["sources"][0].get("path").is_none(), "{listed}");
+
+    // A linked design is read-only from here.
+    let change = json!({"source": source, "command": "solid.box", "params": {"length": 1, "width": 1, "height": 1}});
+    assert!(s.execute(EXECUTE, &change).is_err_and(|e| e.to_string().contains("read-only")));
+
+    // A relink warns on another design's name, and is one undo step that takes the file back.
+    let relinked = run(&mut s, RELINK, json!({"source": source, "path": block}));
+    assert!(relinked["warnings"][0].as_str().unwrap().contains("plate"), "{relinked}");
+    assert_eq!(relinked["file"], json!(block));
+    run(&mut s, "edit.undo", json!({}));
+    let listed = run(&mut s, LIST, json!({}));
+    assert_eq!((&listed["sources"][1]["file"], word(&listed["sources"][1])), (&json!(plate), "up_to_date"), "{listed}");
+    run(&mut s, "edit.redo", json!({}));
+    assert!(s.execute(RELINK, &json!({"source": source, "path": missing})).is_err(), "the source stays as it was");
+    let own = ids::encode(s.drawing("test").unwrap().sources[0].id);
+    assert!(s.execute(RELINK, &json!({"source": own, "path": plate})).is_err(), "the design itself has no file to change");
+
+    // Locate is this session only: nothing to save, and the file keeps the saved path.
+    run(&mut s, "file.save", json!({"path": path}));
+    let saved = s.doc.clone();
+    let located = run(&mut s, LOCATE, json!({"source": source, "path": plate}));
+    assert_eq!((&located["path"], &located["file"]), (&json!(block), &json!(plate)), "{located}");
+    assert!(Arc::ptr_eq(&s.doc, &saved) && Arc::ptr_eq(&s.saved, &saved), "nothing new to save");
+    assert_eq!(in_file(&path)[0], None);
+
+    // Remove is refused while it is used, and allowed once it isn't.
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let sheet = d.sheets[0].id;
+    let id = ids::decode(&source).unwrap();
+    let view = d.allocate_id(&mut s.ids).unwrap();
+    let kind = ViewKind::Base { source: id, view: ViewDirection::Named(NamedView::Front) };
+    d.add_views([Arc::new(View { id: view, sheet, kind, place: ViewPlace::At([100.0, 100.0]), settings: ViewOverrides::default(), reference_margin_mm: 0.0 })]);
+    s.doc_mut().put_drawing(Arc::new(d.clone()));
+    assert!(s.execute(REMOVE, &json!({"source": source})).is_err_and(|e| e.to_string().contains(&ids::encode(view))));
+    d.views.clear();
+    s.doc_mut().put_drawing(Arc::new(d));
+    assert_eq!(run(&mut s, REMOVE, json!({"source": source}))["removed"], json!(source));
+    assert!(s.execute(REMOVE, &json!({"source": own})).is_err());
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The acceptance cases of the versioned drawing contract that need no version control, on its numbers:
+/// a Plate 40 x 30 x 5, and at the next state 60 x 30 x 5. Its second case, a historical drawing and its
+/// designs at one repository commit, waits for version control.
+#[test]
+fn a_linked_plate_follows_the_acceptance_cases() {
+    let (dir, path, mut s) = saved_design("acceptance");
+    let plate = plate_at(&dir, "plate.sc", [40.0, 30.0, 5.0]);
+    let block = plate_at(&dir, "block.sc", [10.0, 10.0, 20.0]);
+    run(&mut s, "drawing.create", json!({"source": plate}));
+    let source = ids::encode(s.drawing("test").unwrap().sources[0].id);
+    let source_id = s.drawing("test").unwrap().sources[0].id;
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let view = d.allocate_id(&mut s.ids).unwrap();
+    let kind = ViewKind::Base { source: source_id, view: ViewDirection::Named(NamedView::Front) };
+    let settings = ViewOverrides { scale: Some("1:1".parse().unwrap()), ..ViewOverrides::default() };
+    d.add_views([Arc::new(View { id: view, sheet: d.sheets[0].id, kind, place: ViewPlace::At([200.0, 150.0]), settings, reference_margin_mm: 0.0 })]);
+    s.doc_mut().put_drawing(Arc::new(d));
+    let across = json!({"view": ids::encode(view), "kind": {"linear": {"a": [0, 0, 0], "b": [40, 0, 0], "direction": "horizontal"}}});
+    assert!((run(&mut s, "drawing.dimension.add", across)["value"].as_f64().unwrap() - 40.0).abs() < 1e-9);
+    run(&mut s, "file.save", json!({"path": path}));
+
+    // 1. The paths are listed without opening them, also when they are gone.
+    let bytes = std::fs::read(&path).unwrap();
+    let calls = solidcraft_io::vfs::file_calls();
+    assert_eq!(solidcraft_io::design_source_paths(&bytes).unwrap(), ["plate.sc"]);
+    assert_eq!(solidcraft_io::vfs::file_calls(), calls);
+
+    // 3. A changed file reads as what it is now, once it is opened again.
+    run(&mut s, "drawing.close", json!({}));
+    plate_at(&dir, "plate.sc", [60.0, 30.0, 5.0]);
+    let drawing = ids::encode(s.doc.drawings[0].id);
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let status = run(&mut s, "drawing.status", json!({}));
+    assert_eq!(status["dimensions"][0]["status"], "ok", "{status}");
+    let d = s.drawing("test").unwrap().clone();
+    let box_mm = crate::drawing_view::on_sheet(&s, &d, view, "test").unwrap().boundary;
+    assert!((box_mm.max.x - box_mm.min.x - 60.0).abs() < 1e-6, "{box_mm:?}");
+
+    // 3. A missing file is not a damaged reference: the drawing opens and says which file it wants, and
+    // an id the drawing doesn't have is refused as damage.
+    std::fs::remove_file(&plate).unwrap();
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let listed = run(&mut s, LIST, json!({}));
+    assert_eq!(word(&listed["sources"][0]), "missing", "{listed}");
+    assert_eq!(listed["sources"][0]["source"], json!(source));
+    let mut damaged: Value = serde_json::from_str(&s.drawing("test").unwrap().to_json().unwrap()).unwrap();
+    damaged["views"][0]["kind"]["base"]["source"] = json!(ids::encode(1));
+    assert!(solidcraft_doc::drawing::Drawing::from_json(&damaged.to_string()).is_err_and(|e| e.to_string().contains("doesn't have")));
+
+    // 3. A relink finds it again; a Save As moves the path, not the file.
+    let relinked = run(&mut s, RELINK, json!({"source": source, "path": block}));
+    assert_eq!(word(&relinked), "up_to_date", "{relinked}");
+    let moved = dir.join("moved").join("a.sc").to_string_lossy().into_owned();
+    run(&mut s, "file.save_as", json!({"path": moved}));
+    assert_eq!(in_file(&moved), [Some("../block.sc".to_string())]);
+
+    // 4. The authored text is the same from both forms, and holds nothing derived.
+    let bytes = std::fs::read(&moved).unwrap();
+    let container = solidcraft_io::read_design(&bytes).unwrap();
+    let plain = solidcraft_io::read_design(&solidcraft_io::write_design(&container)).unwrap();
+    assert_eq!(plain.drawings, container.drawings);
+    let text = container.drawings[0].to_json().unwrap();
+    assert!(!text.contains("cache") && !text.contains("group"), "{text}");
     std::fs::remove_dir_all(&dir).unwrap();
 }
