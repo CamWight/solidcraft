@@ -2,6 +2,9 @@
 //! ([`crate::drawing_scene::build`]): its drawing border, then each view on it by id. The sheet
 //! page draws the same scene through the provider, and the drawing export (A7) writes it.
 //!
+//! `drawing.scene.hit` (#4816 E7b) says what is under a point of a sheet, by the one rule the sheet
+//! page's hover uses ([`crate::drawing_scene::hit`]).
+//!
 //! `drawing.status` (#4894 WE2) says where the drawing open stands: each view as the provider last
 //! drew it, and each dimension as the model has it now, in one read.
 
@@ -11,13 +14,15 @@ use solidcraft_doc::ids;
 use super::CommandSpec;
 use crate::drawing_scene::{CMD, DimensionState};
 use crate::schema::drawing_scene::{
-    DimensionStatusResult, DrawingStatusParams, DrawingStatusResult, SheetPaperScene, SheetSceneDimension, SheetSceneParams, SheetSceneResult,
-    ViewStatusResult,
+    DimensionStatusResult, DrawingStatusParams, DrawingStatusResult, HitResult, SheetHitParams, SheetHitResult, SheetPaperScene, SheetSceneDimension,
+    SheetSceneParams, SheetSceneResult, ViewStatusResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
 
 const CONTRACT: TypedContract<SheetSceneParams> = TypedContract::new();
+const HIT: &str = "drawing.scene.hit";
+const HIT_CONTRACT: TypedContract<SheetHitParams> = TypedContract::new();
 const STATUS: &str = "drawing.status";
 const STATUS_CONTRACT: TypedContract<DrawingStatusParams> = TypedContract::new();
 
@@ -29,6 +34,14 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
     .contract(&STATUS_CONTRACT)
     .output(output_schema_for::<DrawingStatusResult>)
     .params("→ {views: [{view, sheet, status: current|out_of_date|placeholder|failed, reason?}], dimensions: [{dimension, status: ok|overridden|ambiguous|suppressed|lost|unmeasurable, why?}], waiting: how many views are out of date}. Read-only: nothing is drawn, and each body a dimension names is read once for the call."),
+    CommandSpec::new(HIT, "What Is Under a Point", crate::checked!("drawing.scene.hit", HIT_CONTRACT, hit))
+        .icon("inspect")
+        .in_drawing()
+        .noundo()
+        .doc_only()
+        .contract(&HIT_CONTRACT)
+        .output(output_schema_for::<SheetHitResult>)
+        .params("sheet: id or name; point_mm: [x, y] on paper; band_mm?: how near a box's edge counts as on it (default 0) → {hit: {object, kind: view|dimension, on_edge} or null}: the smallest box round a view or a dimension that holds the point within the band, then the topmost. Read-only; no model is evaluated."),
     CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", CONTRACT, scene))
     .icon("export")
     .in_drawing()
@@ -58,6 +71,19 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
     let waiting = views.iter().filter(|v| v.status == "out_of_date").count();
     let reply = DrawingStatusResult { views, dimensions, waiting, param_warnings: Vec::new() };
     serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+fn hit(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: SheetHitParams = crate::schema::read(HIT, p)?;
+    if !request.band_mm.is_finite() || request.band_mm < 0.0 {
+        return Err(crate::params::bad(HIT, "band_mm is a finite number, 0 or more"));
+    }
+    let d = s.drawing(HIT)?.clone();
+    let sheet = crate::drawing_scene::sheet_id(&d, &request.sheet, HIT)?;
+    let built = crate::drawing_scene::build(s, &d, sheet)?;
+    let found = crate::drawing_scene::hit(&built.objects, request.point_mm.0, request.band_mm);
+    let hit = found.map(|h| HitResult { object: ids::encode(h.object), kind: h.kind, on_edge: h.on_edge });
+    serde_json::to_value(SheetHitResult { hit, param_warnings: Vec::new() }).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 /// Each dimension of a scene in the words of a reply.
