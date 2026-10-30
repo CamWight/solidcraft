@@ -45,7 +45,7 @@ pub mod annotate;
 pub mod grid;
 pub mod text;
 
-pub use grid::{Grid, GridGroup, GridItem, GridPath, GridPoint, GridReport, OnGrid, Piece};
+pub use grid::{FillRule, Grid, GridGroup, GridItem, GridPath, GridPoint, GridReport, OnGrid, Paint, Piece};
 use text::{Font, TextRun};
 
 /// The widest line a scene may draw, in millimetres.

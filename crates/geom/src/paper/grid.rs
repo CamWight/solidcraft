@@ -10,6 +10,10 @@
 //! - A width under half a step is one step, and is counted.
 //! - Circular arcs come in pieces of at most a quarter turn ([`arc_pieces`]). Ellipses, hyperbolas
 //!   and Béziers above degree 3 aren't walked yet (A3b): a scene with one is refused.
+//! - A text run is its glyphs' outlines as the run places them
+//!   ([`super::text::TextRun::outlines`]), each loop walked as a fill's, filled nonzero (B2). It
+//!   keeps its item's place in the group, so a writer that sets real text (PDF) finds the run in
+//!   paint order.
 
 use super::{Invalid, Item, ObjectKind, Prepared, Result, arc_pieces};
 use crate::{Seg2, Vec2};
@@ -106,6 +110,39 @@ pub enum GridItem {
     Stroke { width: i64, path: GridPath },
     /// A fill's loops, each closed.
     Fill { loops: Vec<GridPath> },
+    /// A text run's glyph outlines, each loop closed, filled nonzero; `item` is the run's index
+    /// among its group's items.
+    Text { item: usize, loops: Vec<GridPath> },
+}
+
+/// How a writer paints an item on the grid ([`GridItem::paint`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Paint<'a> {
+    /// A line `width` steps wide along `path`.
+    Stroke { width: i64, path: &'a GridPath },
+    /// Closed loops filled solid, by `rule`.
+    Fill { loops: &'a [GridPath], rule: FillRule },
+}
+
+/// Which parts of a fill's loops are inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FillRule {
+    /// Where the loops are crossed an odd number of times: the scene's fills, whose holes are loops.
+    EvenOdd,
+    /// Where they wind round at all: glyph outlines, whose contours may overlap.
+    NonZero,
+}
+
+impl GridItem {
+    /// How a writer paints it: a text run fills its loops as a fill does, by another rule, so no
+    /// writer tells the two apart but one that sets real text (PDF).
+    pub fn paint(&self) -> Paint<'_> {
+        match self {
+            GridItem::Stroke { width, path } => Paint::Stroke { width: *width, path },
+            GridItem::Fill { loops } => Paint::Fill { loops, rule: FillRule::EvenOdd },
+            GridItem::Text { loops, .. } => Paint::Fill { loops, rule: FillRule::NonZero },
+        }
+    }
 }
 
 /// A group's items on the grid, in paint order.
@@ -140,7 +177,7 @@ impl Prepared<'_> {
         let mut groups = Vec::with_capacity(self.groups().len());
         for group in self.groups() {
             let mut items = Vec::with_capacity(group.items.len());
-            for item in &group.items {
+            for (at, item) in group.items.iter().enumerate() {
                 match item {
                     Item::Stroke { path, closed, width_mm } => {
                         let Some(path) = walk(grid, path, *closed, &mut report)? else { continue };
@@ -158,7 +195,15 @@ impl Prepared<'_> {
                         }
                         items.push(GridItem::Fill { loops });
                     }
-                    Item::Text(_) => return Err(Invalid("not supported yet: text on a writer's grid (#4890 B2)")),
+                    Item::Text(run) => {
+                        // `validate` holds every run's font in the scene.
+                        let font = self.font(run).ok_or(Invalid("a run's font is in the scene's table"))?;
+                        let mut loops = Vec::new();
+                        for l in run.outlines(font) {
+                            loops.extend(walk(grid, &l.segs, true, &mut report)?);
+                        }
+                        items.push(GridItem::Text { item: at, loops });
+                    }
                 }
             }
             groups.push(GridGroup { object: group.object, kind: group.kind, items });
