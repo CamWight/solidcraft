@@ -56,7 +56,7 @@ impl From<ViewState> for SheetSceneView {
         let reason = match v.status {
             Status::Drawn => None,
             Status::Placeholder(why) => Some(why.to_string()),
-            Status::Failed(why) => Some(why),
+            Status::Failed(why) | Status::Lost(why) => Some(why),
         };
         SheetSceneView { view: ids::encode(v.view), status, reason, stats: v.stats.map(Into::into) }
     }
