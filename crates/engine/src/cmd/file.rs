@@ -343,6 +343,7 @@ fn open(s: &mut Session, p: &Value) -> Result<Value> {
     s.replace_design(Session::opened_at(doc, saved.as_ref(), Some(path)));
     s.disk = disk;
     s.read_only = read_only;
+    s.file = solidcraft_io::design_file_digest(path).map(|digest| (path.to_string(), digest));
     let errors = s.model.results.iter().filter(|r| r.error.is_some()).count();
     let mut out = json!({"path": path, "features": s.doc.features.len(), "errors": errors, "name": s.doc.name});
     if read_only {
@@ -458,6 +459,7 @@ fn write_bytes(
     s.path = Some(path.to_string());
     s.disk = solidcraft_io::design_lock::stamp(path);
     s.read_only = false;
+    s.file = solidcraft_io::design_bytes_digest(&bytes).map(|digest| (path.to_string(), digest));
     s.mark_saved();
     Ok(json!({"path": path, "bytes": bytes.len(), "name": s.doc.name}))
 }
@@ -507,6 +509,7 @@ impl Session {
             rename_design(self, &from, &to);
         }
         self.path.clone_from(&done.path);
+        self.file.clone_from(&done.file);
         self.disk = done.disk;
         self.read_only = done.read_only;
         self.saved = done.saved.clone();
@@ -539,7 +542,8 @@ impl Session {
         let geometry = cache.then(|| saved_geometry(self, &design)).flatten();
         let preview = preview.then(|| saved_preview(self)).flatten();
         let thumbnail = cache.then(|| thumbnail::saved(self)).flatten();
-        solidcraft_io::write_design_container_with_thumbnail(&design, compression, preview.as_ref(), geometry.as_ref(), thumbnail.as_deref())
+        let sheets = if cache { crate::drawing_scene::saved_lines(self, &design) } else { Default::default() };
+        solidcraft_io::write_design_container_with_sheets(&design, compression, preview.as_ref(), geometry.as_ref(), thumbnail.as_deref(), &sheets)
     }
 }
 

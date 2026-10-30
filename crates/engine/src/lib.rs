@@ -528,6 +528,11 @@ pub struct Session {
     /// The sheet scenes of the drawing open, for the sheet page ([`drawing_scene::extract`]): view
     /// state, never saved or an undo step, dropped when the drawing closes.
     pub(crate) drawing_scenes: drawing_scene::Cache,
+    /// Each drawing's last lines a save can keep, shared with a copy that saves ([`Session::scratch`]).
+    pub(crate) kept_lines: Arc<drawing_scene::KeptLines>,
+    /// The design file this session last read or saved, and the digest of its `document.json`: where
+    /// a drawing's last lines are, and what they must be for.
+    pub(crate) file: Option<(String, String)>,
     /// The visibility the design file holds (what `is_dirty` compares with).
     saved_visibility: Visibility,
     /// States to go back to (`edit.checkpoint`, `edit.restore_checkpoint`): how batches of
@@ -717,6 +722,8 @@ impl Session {
             render_jobs: Default::default(),
             dimension_values: Default::default(),
             drawing_scenes: Default::default(),
+            kept_lines: Default::default(),
+            file: None,
             #[cfg(test)]
             evaluations: 0,
             motion_traces: Default::default(),
@@ -1640,6 +1647,8 @@ impl Session {
             render_viewport: self.render_viewport.clone(),
             render_jobs: self.render_jobs.scratch(),
             drawing_scenes: Default::default(),
+            kept_lines: self.kept_lines.clone(),
+            file: self.file.clone(),
             saved_visibility: self.saved_visibility.clone(),
             dimension_values: self.dimension_values.clone(),
             #[cfg(test)]

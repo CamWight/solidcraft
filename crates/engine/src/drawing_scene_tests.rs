@@ -946,3 +946,64 @@ fn a_model_edit_from_the_drawing_makes_its_views_stale() {
     settled(&mut s, sheet);
     assert!(extract(&mut s, sheet).unwrap().stale.is_empty());
 }
+
+/// The block's drawing saved at `path`, its sheet drawn first.
+fn saved_drawn(path: &str) -> (Session, u64, [u64; 2]) {
+    let (mut s, sheet, views) = front_and_top();
+    settled(&mut s, sheet);
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    (s, sheet, views)
+}
+
+/// The cache's entries in the file at `path`, and how many views the first drawing's manifest lists.
+fn cached_views(path: &str) -> usize {
+    let bytes = std::fs::read(path).unwrap();
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+    zip.file_names().filter(|n| n.starts_with("cache/drawings/") && n.contains("/views/")).count()
+}
+
+/// A save writes the lines current now and draws nothing, on a copy as well. A view out of date isn't
+/// written as current; a drawing with none keeps what the file has; plain JSON has none.
+#[test]
+fn a_save_keeps_only_current_lines_and_draws_nothing() {
+    let folder = crate::tests::Folder::new();
+    let path = folder.path("sheet.solidcraft");
+    let (mut s, sheet, [front, _]) = saved_drawn(&path);
+    assert_eq!(cached_views(&path), 2);
+
+    let before = s.drawing_scenes.projections;
+    let bytes = s.scratch().design_container(solidcraft_io::DesignCompression::Fast, false, true).unwrap();
+    assert_eq!(s.drawing_scenes.projections, before, "a save draws nothing");
+    let digest = solidcraft_io::design_bytes_digest(&bytes).unwrap();
+    let other = folder.path("copy.solidcraft");
+    std::fs::write(&other, &bytes).unwrap();
+    let id = s.open_drawing.unwrap();
+    assert_eq!(solidcraft_io::read_sheet_lines(&other, id, &digest).unwrap().views.len(), 2, "a copy keeps them, shared");
+
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"scale": "1:4"}}));
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    assert_eq!(cached_views(&path), 1, "the changed view isn't written");
+    let _ = sheet;
+
+    let json_path = folder.path("sheet.json");
+    run(&mut s, "file.save_as", json!({"path": json_path, "format": "json"}));
+    assert_eq!(s.file, None, "a plain design has no lines to come back to");
+}
+
+/// A closed drawing's lines stay as plain data until the next save; a model edit since makes them no
+/// longer current, and the file's older ones stay with their old stamp.
+#[test]
+fn a_closed_drawings_lines_keep_until_the_next_save() {
+    let folder = crate::tests::Folder::new();
+    let path = folder.path("closed.solidcraft");
+    let (mut s, _, _) = saved_drawn(&path);
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    assert_eq!(cached_views(&path), 2, "kept, closed");
+    run(&mut s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [200, 0, 0], "operation": "new"}));
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    assert_eq!(cached_views(&path), 2, "the file's own");
+    let (file, digest) = s.file.clone().unwrap();
+    let read = solidcraft_io::read_sheet_lines(&file, s.doc.drawings[0].id, &digest).unwrap();
+    assert!(!read.current, "not for this model");
+}
