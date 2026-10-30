@@ -103,6 +103,7 @@ fn listed(on: &OnSheet) -> String {
         kind("balloon", &on.balloons),
         kind("revision tag", &on.tags),
         kind("table", &on.tables),
+        kind("note", &on.notes),
     ]
     .into_iter()
     .flatten()
