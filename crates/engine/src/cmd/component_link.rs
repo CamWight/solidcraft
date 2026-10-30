@@ -72,7 +72,7 @@ fn link_refusal(design: Option<&str>, link: &str) -> Option<solidcraft_io::vfs::
 }
 
 /// The error for a link [`link_refusal`] refuses.
-fn link_refused(design: Option<&str>, link: &str) -> Result<()> {
+pub(super) fn link_refused(design: Option<&str>, link: &str) -> Result<()> {
     solidcraft_io::vfs::check_design_path(link, design).map_err(|e| EngineError::Other(e.to_string()))?;
     let file = resolve(design, link);
     solidcraft_io::vfs::check_design_path(&file.to_string_lossy(), design).map_err(|e| EngineError::Other(e.to_string()))
@@ -81,8 +81,12 @@ fn link_refused(design: Option<&str>, link: &str) -> Result<()> {
 /// Resolve a design's component links against its original file, before opening it from a
 /// different location (for example a recovery file) or keeping it in session history.
 pub fn resolve_design_links(doc: &mut Document, from: Option<&str>) {
+    let whole = |path: &str| absolute(&resolve(from, path)).to_string_lossy().into_owned();
     for link in doc.links.values_mut() {
-        link.path = absolute(&resolve(from, &link.path)).to_string_lossy().into_owned();
+        link.path = whole(&link.path);
+    }
+    if let Some(drawings) = super::design_link::drawings_with_paths(doc, whole) {
+        doc.drawings = drawings;
     }
 }
 

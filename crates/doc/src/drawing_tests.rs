@@ -32,7 +32,7 @@ fn plate() -> Drawing {
     let a3 = drawing_sheet::Sheet::standard(PaperSize::A3, Orientation::Landscape);
     let mut d = Drawing::new("Plate assembly", "en-GB", "Assembly", a3, Some(DrawingBorderProfile::iso()), &BTreeSet::new(), &mut id_source).unwrap();
     let id = d.allocate_id(&mut id_source).unwrap();
-    d.sources.push(Source { id });
+    d.sources.push(Source { id, path: None });
     let plate_id = d.sources[0].id;
     let id = d.allocate_id(&mut id_source).unwrap();
     d.sheets.push(Arc::new(Sheet {
@@ -206,15 +206,28 @@ fn every_cap_holds_on_both_sides() {
     for n in [0, 1001] {
         assert_eq!(refusal(&with("sheets", sheets(n))), "damaged drawing: a drawing has 1 to 1000 sheets", "{n} sheets");
     }
-    // Sources from id 1: the drawing's and the sheet's ids are the seed's, far from them. A drawing
-    // draws the design it is in, by an id alone: a path is a field this build doesn't know.
-    let sources = |n: u64| Value::Array((1..=n).map(|id| json!({"id": ids::encode(id)})).collect());
-    for n in [0, 1] {
+    // Sources from id 1: the drawing's and the sheet's ids are the seed's, far from them. One may be
+    // the design the drawing is in, by an id alone, and the others are files.
+    let sources = |n: u64| Value::Array((1..=n).map(|id| json!({"id": ids::encode(id), "path": format!("part{id}.sc")})).collect());
+    for n in [0, 1, MAX_SOURCES as u64] {
         assert_eq!(read(&with("sources", sources(n))).unwrap().sources.len(), n as usize);
     }
-    assert_eq!(refusal(&with("sources", sources(2))), "damaged drawing: a drawing draws only the design it is in");
-    let with_path = refusal(&with("sources", json!([{"id": ids::encode(1), "path": "plate.solidcraft"}])));
-    assert!(with_path.starts_with("damaged drawing: unknown field `path`"), "{with_path}");
+    assert_eq!(refusal(&with("sources", sources(MAX_SOURCES as u64 + 1))), "damaged drawing: a drawing has at most 64 sources");
+    let (one, two, three) = (ids::encode(1), ids::encode(2), ids::encode(3));
+    let older = read(&with("sources", json!([{"id": one}]))).unwrap();
+    assert_eq!(older.sources, [Source { id: 1, path: None }], "an older drawing's source is the design it is in");
+    let both = read(&with("sources", json!([{"id": one}, {"id": two, "path": "../parts/plate.sc"}]))).unwrap();
+    assert_eq!(both.sources[1].path.as_deref(), Some("../parts/plate.sc"));
+    let saved: Value = serde_json::from_str(&both.to_json().unwrap()).unwrap();
+    assert_eq!(saved["sources"], json!([{"id": one}, {"id": two, "path": "../parts/plate.sc"}]), "the design itself saves no path");
+    let refused = refusal(&with("sources", json!([{"id": one}, {"id": two}, {"id": three, "path": "a.sc"}])));
+    assert_eq!(refused, "damaged drawing: only one of a drawing's sources is the design it is in");
+    // A `..` chain is a path like any other here: what may be read is judged when it is opened.
+    assert!(read(&with("sources", json!([{"id": one, "path": "../".repeat(1000) + "a.sc"}]))).is_ok());
+    for path in [String::new(), "  ".into(), "a\0b.sc".into(), "x".repeat(MAX_SOURCE_PATH_BYTES)] {
+        let refused = refusal(&with("sources", json!([{"id": one, "path": path}])));
+        assert!(refused.contains("its path is a file's"), "{path:?}: {refused}");
+    }
     let names = |name: &str| {
         let mut sheet_named = base.clone();
         sheet_named["sheets"][0]["name"] = json!(name);
