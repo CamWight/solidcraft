@@ -1,0 +1,26 @@
+{
+  "en": {
+    "cmd.drawing_source_execute": "Change the Model"
+  },
+  "ar": {
+    "cmd.drawing_source_execute": "تغيير النموذج"
+  },
+  "de": {
+    "cmd.drawing_source_execute": "Modell ändern"
+  },
+  "he": {
+    "cmd.drawing_source_execute": "שינוי המודל"
+  },
+  "ja": {
+    "cmd.drawing_source_execute": "モデルを変更"
+  },
+  "ko": {
+    "cmd.drawing_source_execute": "모델 변경"
+  },
+  "vi": {
+    "cmd.drawing_source_execute": "Thay đổi mô hình"
+  },
+  "zh": {
+    "cmd.drawing_source_execute": "更改模型"
+  }
+}

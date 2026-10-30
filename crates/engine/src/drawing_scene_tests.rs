@@ -437,10 +437,8 @@ fn seeded_edits_and_steps_always_end_at_the_built_scene() {
     }
 }
 
-/// Setting a part as reference evaluates nothing, yet the views of it are out of date: its lines
-/// join the reference parts', so no longer hide what is under them or stop at its own extents.
-#[test]
-fn a_change_of_reference_parts_redraws_the_views() {
+/// Two parts, one over the other, and the upper's occurrence.
+fn under_and_over() -> (Session, u64) {
     let mut design = Session::default();
     let mut part = |name: &str, body: &str| {
         let occurrence = run(&mut design, "component.create", json!({"name": name}))["occurrence"].as_u64().unwrap();
@@ -451,6 +449,30 @@ fn a_change_of_reference_parts_redraws_the_views() {
     part("Under", "BodyUnder");
     let over = part("Over", "BodyOver");
     run(&mut design, "occurrence.move", json!({"occurrence": over, "translate": [10, 0, 10]}));
+    (design, over)
+}
+
+/// From the open drawing, its scenes kept, a change of reference parts puts its views out of date
+/// with no model evaluated, however few other things the change touched.
+#[test]
+fn a_change_of_reference_parts_from_the_open_drawing_redraws_the_views() {
+    let (design, over) = under_and_over();
+    let (mut s, sheet, [front, top]) = front_and_top_of(design);
+    let before = settled(&mut s, sheet);
+    let runs = s.evaluations;
+    let set = json!({"command": "occurrence.bom_type", "params": {"occurrence": over, "bom_type": "reference"}});
+    run(&mut s, "drawing.source.execute", set);
+    assert_eq!(s.evaluations, runs, "nothing is evaluated");
+    let stale = extract(&mut s, sheet).unwrap().stale;
+    assert!(stale.len() == 2 && stale.contains(&front) && stale.contains(&top), "{stale:?}");
+    assert_ne!(bytes(&settled(&mut s, sheet).scene), bytes(&before.scene));
+}
+
+/// Setting a part as reference evaluates nothing, yet the views of it are out of date: its lines
+/// join the reference parts', so no longer hide what is under them or stop at its own extents.
+#[test]
+fn a_change_of_reference_parts_redraws_the_views() {
+    let (design, over) = under_and_over();
     let (mut s, sheet, [front, top]) = front_and_top_of(design);
     let before = settled(&mut s, sheet);
     let drawing = json!({"drawing": ids::encode(s.drawing("test").unwrap().id)});
@@ -1086,4 +1108,17 @@ fn a_views_dimensions_swap_with_its_lines() {
     assert_eq!(s.drawing_scenes.projections, projections);
     assert_eq!(bytes_of(group_of(&edited.scene, front)), bytes_of(group_of(&end.scene, front)));
     assert_ne!(bytes_of(group_of(&edited.scene, id)), bytes_of(group_of(&end.scene, id)));
+}
+
+/// A model edit from the open drawing marks the views it changes stale, and the next steps draw them.
+#[test]
+fn a_model_edit_from_the_drawing_makes_its_views_stale() {
+    let (mut s, sheet, [front, _]) = front_and_top();
+    settled(&mut s, sheet);
+    assert!(extract(&mut s, sheet).unwrap().stale.is_empty());
+    let block = s.doc.features[0].id;
+    run(&mut s, "drawing.source.execute", json!({"command": "timeline.edit", "params": {"feature": block.to_string(), "set": {"height": 40}}}));
+    assert!(extract(&mut s, sheet).unwrap().stale.contains(&front));
+    settled(&mut s, sheet);
+    assert!(extract(&mut s, sheet).unwrap().stale.is_empty());
 }
