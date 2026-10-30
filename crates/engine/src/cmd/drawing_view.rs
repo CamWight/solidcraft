@@ -37,7 +37,7 @@ use solidcraft_doc::ids;
 use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
 use solidcraft_geom::drawing_view::{NamedView, PRESETS, ProjectedSide, Scale};
-use solidcraft_geom::hlr::{Source, Visibility};
+use solidcraft_geom::hlr::Visibility;
 use solidcraft_geom::paper::{MAX_COORDINATE_MM, Picture};
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_geom::{Aabb2, Vec2};
@@ -49,9 +49,9 @@ use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, BaseParams, BoxResult, ChoicesResult, CopyParams, CreateResult, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult,
-    InspectParams, InspectResult, LineResult, LineSourceResult, LinesStatusResult, MoveParams, OutsideResult, PathSegResult, PictureResult,
-    PieceResult, PlaceParam, ProjectedParams, ScaleResult, SceneResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult,
-    ToSheetResult, ViewMoveParams, ViewMoveResult, ViewResult, ViewSet,
+    InspectParams, InspectResult, LineResult, LinesStatusResult, MoveParams, OutsideResult, PathSegResult, PictureResult, PieceResult, PlaceParam,
+    ProjectedParams, ScaleResult, SceneResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult,
+    ViewMoveParams, ViewMoveResult, ViewResult, ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -291,10 +291,7 @@ fn line_results(shown: &ShownSet, drawn: &Lines) -> Vec<LineResult> {
             occurrence: body.map(|b| b.path.clone()).unwrap_or_default(),
             body: body.map(|b| b.body.clone()).unwrap_or_default(),
             reference: l.reference,
-            source: match l.source {
-                Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
-                Source::Silhouette { face } => LineSourceResult::Silhouette { face },
-            },
+            source: l.source.into(),
             pieces: l
                 .pieces
                 .iter()
