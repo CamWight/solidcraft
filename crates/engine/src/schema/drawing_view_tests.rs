@@ -9,9 +9,11 @@ use crate::schema::tests::{assert_keys, assert_strict_keeps_todays_errors};
 fn schemas_and_the_key_check_agree() {
     let keys = [
         "chord_mm",
+        "decimals",
         "display_style",
         "hide",
         "max_error_mm",
+        "measure",
         "position_mm",
         "reference_hides_model",
         "reference_margin_mm",
@@ -21,6 +23,7 @@ fn schemas_and_the_key_check_agree() {
         "sheet",
         "source",
         "tangent_edges",
+        "units",
         "view",
     ];
     assert_keys(input_schema_for::<SnapshotParams>(), &keys);

@@ -23,15 +23,17 @@ use std::sync::Arc;
 
 use serde::Serialize;
 use serde_json::Value;
+use solidcraft_doc::display_units::unit_scale;
 use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::balloon::Balloon;
-use solidcraft_doc::drawing::dimension::Dimension;
+use solidcraft_doc::drawing::dimension::{Dimension, LabelKind, MAX_DECIMALS, reading_label};
 use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{Looking, TangentEdges, ViewDirection, ViewOverrides};
 use solidcraft_doc::ids;
 use solidcraft_geom::Plane;
+use solidcraft_geom::drawing_measure::{self, AngleFrom, LinearDirection, Measured, Reading};
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
-use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale};
+use solidcraft_geom::drawing_view::{Invalid, NamedView, PRESETS, Scale};
 use solidcraft_geom::hlr::Visibility;
 use solidcraft_geom::paper::MAX_COORDINATE_MM;
 use solidcraft_geom::section::CurveAccuracy;
@@ -42,9 +44,10 @@ use super::CommandSpec;
 use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
-    AccuracyResult, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult,
-    LineResult, LineSourceResult, LinesStatusResult, MoveParams, OutsideResult, PathSegResult, PieceResult, PlaceParam, ScaleResult, SceneResult,
-    SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewMoveParams, ViewMoveResult, ViewResult, ViewSet,
+    AccuracyResult, AlongParam, AngleFromParam, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult,
+    InspectParams, InspectResult, LineResult, LinesStatusResult, MeasureParam, MeasurementResult, MoveParams, OutsideResult, PathSegResult,
+    PieceResult, PlaceParam, ScaleResult, SceneResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult,
+    ViewLineParam, ViewMoveParams, ViewMoveResult, ViewResult, ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -67,8 +70,8 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
     .noundo()
     .contract(&CONTRACT)
     .output(output_schema_for::<SnapshotResult>)
-    .params("view?: front (default), back, top, bottom, left, right, iso (= iso_front_right), iso_front_left, iso_back_right, iso_back_left, or {direction, up, origin?}; scale?: \"paper:model\" such as \"1:2\" (default: the largest ISO 5455 scale that fits the sheet's drawing area); position_mm?: [x, y] for the view's centre on the sheet (default the sheet's centre); sheet?: {size: {standard: a3} or {custom: {sides_mm: [w, h]}}, orientation?: landscape|portrait, dpi?: 25..2400} (default A3 landscape, 300 dpi); display_style?, reference_style?: visible (default) or visible_hidden (the shaded styles aren't supported yet); reference_hides_model?: false; reference_margin_mm?: 0..100000 model mm on every side; tangent_edges?: hide (default) or show; chord_mm?: 0.001..1 paper mm the lines are sampled at (default 0.01); max_error_mm?: the accuracy the lines must certify on paper (refused while they come from the mesh); scene?: true adds the lines as a paper scene of the sheet (visible lines only for now); source?: {occurrences: [[ids…]]}, the occurrence subtrees drawn ([] the design's own bodies; default every body); hide?: [[ids…]], subtrees left out; at most 1000 paths in each and 4096 ids in all. Every body the design places, whatever the browser shows. Returns {view, scale: {text, factor, fitted}, position_mm, sheet, extents (model mm on the view's plane), boundary_mm (on the sheet), lines: [{occurrence, body, reference, source: {kind: edge, edge, tangent} or {kind: silhouette, face}, pieces: [{visibility, path: [paper mm lines, and arcs for circles facing the view], accuracy}]}], status: {lines: approximate, provenance: mesh_projection, chord_mm, model_chord_mm, uncertain_pieces, covered_pieces}, stats, scene (with scene: true: {size_mm, groups: [{object: 0, kind: view, items: [{kind: stroke, path, closed, width_mm}]}]}), source}. Read-only: saves nothing."),
-    CommandSpec::new(INSPECT, "Inspect Drawing View", crate::checked!("drawing.view.inspect", inspect))
+    .params("view?: front (default), back, top, bottom, left, right, iso (= iso_front_right), iso_front_left, iso_back_right, iso_back_left, or {direction, up, origin?}; scale?: \"paper:model\" such as \"1:2\" (default: the largest ISO 5455 scale that fits the sheet's drawing area); position_mm?: [x, y] for the view's centre on the sheet (default the sheet's centre); sheet?: {size: {standard: a3} or {custom: {sides_mm: [w, h]}}, orientation?: landscape|portrait, dpi?: 25..2400} (default A3 landscape, 300 dpi); display_style?, reference_style?: visible (default) or visible_hidden (the shaded styles aren't supported yet); reference_hides_model?: false; reference_margin_mm?: 0..100000 model mm on every side; tangent_edges?: hide (default) or show; chord_mm?: 0.001..1 paper mm the lines are sampled at (default 0.01); max_error_mm?: the accuracy the lines must certify on paper (refused while they come from the mesh); scene?: true adds the lines as a paper scene of the sheet (visible lines only for now); source?: {occurrences: [[ids…]]}, the occurrence subtrees drawn ([] the design's own bodies; default every body); hide?: [[ids…]], subtrees left out; at most 1000 paths in each and 4096 ids in all. measure?: up to 100 values to read on the view, each {linear: {along: x|y, from, to}}, {aligned: {from, to}} (model points), {angle: {edge: [a, b], from: horizontal|vertical|[c, d]}} or {radius: {edge}} (an edge as drawing.dimension.add takes it, which the view must see face on), with units?: mm|cm|m|in|ft (default the design's) and decimals?: 0..6 (default 2) for their labels; the reply then has measurements: [{kind, value_mm and paper_mm, or value_rad, label, meaning: projected, foreshortened, status: exact|approximate}]. Every body the design places, whatever the browser shows. Returns {view, scale: {text, factor, fitted}, position_mm, sheet, extents (model mm on the view's plane), boundary_mm (on the sheet), lines: [{occurrence, body, reference, source: {kind: edge, edge, tangent} or {kind: silhouette, face}, pieces: [{visibility, path: [paper mm lines, and arcs for circles facing the view], accuracy}]}], status: {lines: approximate, provenance: mesh_projection, chord_mm, model_chord_mm, uncertain_pieces, covered_pieces}, stats, scene (with scene: true: {size_mm, groups: [{object: 0, kind: view, items: [{kind: stroke, path, closed, width_mm}]}]}), source}. Read-only: saves nothing."),
+    CommandSpec::new(INSPECT, "Inspect Drawing View", crate::checked!("drawing.view.inspect", INSPECT_CONTRACT, inspect))
         .icon("inspect")
         .in_drawing()
         .noundo()
@@ -146,7 +149,8 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     if !on_paper {
         return Err(bad(CMD, format!("at scale {scale} the view reaches past ±{MAX_COORDINATE_MM} mm on paper: choose a smaller scale")));
     }
-    let request = LineRequest {
+    let measurements = measurements(s, &request, &basis, scale)?;
+    let asked = LineRequest {
         shows: shown,
         hidden: settings.display_style == VisualStyle::VisibleHidden,
         reference_hidden: settings.reference_style == VisualStyle::VisibleHidden,
@@ -154,7 +158,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
         tangent_edges: settings.tangent_edges == TangentEdges::Show,
         chord_mm,
     };
-    let drawn = crate::drawing_view::lines(s, &set, &frame, &request, CMD)?;
+    let drawn = crate::drawing_view::lines(s, &set, &frame, &asked, CMD)?;
     if let Some(max) = request.max_error_mm {
         certify(&drawn, max, scale)?;
     }
@@ -197,11 +201,17 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
         },
         stats: drawn.stats.into(),
         scene,
+        measurements,
         source: SourceResult { bodies: set.bodies.len(), timeline_at_end: s.doc.marker.is_none() },
         param_warnings: Vec::new(),
     };
     serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
 }
+
+/// The most values one snapshot reads.
+const MAX_MEASUREMENTS: usize = 100;
+/// The decimals of a measurement's label unless told.
+const DEFAULT_DECIMALS: u8 = 2;
 
 /// `source` and `hide` checked: at most [`MAX_PATHS`] paths in each and [`MAX_PATH_IDS`] ids in all,
 /// each a path `occurrence_placement` takes, with `[]` (the design's own bodies) in `source` only.
@@ -222,6 +232,66 @@ fn check_paths(s: &Session, source: Option<&[Vec<u64>]>, hide: &[Vec<u64>]) -> R
         }
     }
     Ok(())
+}
+
+/// What `request.measure` reads on the view through `basis` at `scale`, in its order. The first that
+/// can't be read refuses the call, by its place in the list.
+fn measurements(s: &Session, request: &SnapshotParams, basis: &Plane, scale: Scale) -> Result<Vec<MeasurementResult>> {
+    if request.measure.len() > MAX_MEASUREMENTS {
+        return Err(bad(CMD, format!("at most {MAX_MEASUREMENTS} measurements in measure")));
+    }
+    let decimals = request.decimals.unwrap_or(DEFAULT_DECIMALS);
+    if decimals > MAX_DECIMALS {
+        return Err(bad(CMD, format!("decimals is 0 to {MAX_DECIMALS}")));
+    }
+    let units = request.units.as_deref().unwrap_or(s.doc.units.as_str());
+    if unit_scale(units).1 != units {
+        return Err(bad(CMD, "units is mm, cm, m, in or ft"));
+    }
+    let length = |kind, reading: Measured, label: LabelKind| MeasurementResult {
+        kind,
+        value_mm: Some(reading.value),
+        paper_mm: Some(reading.value * scale.factor()),
+        value_rad: None,
+        label: reading_label(label, reading.value, units, decimals),
+        meaning: "projected",
+        foreshortened: reading.foreshortened,
+        status: "exact",
+    };
+    let one = |m: &MeasureParam| -> std::result::Result<MeasurementResult, String> {
+        let invalid = |e: Invalid| e.0.to_string();
+        Ok(match m {
+            MeasureParam::Linear { along, from, to } => {
+                let direction = if *along == AlongParam::X { LinearDirection::Horizontal } else { LinearDirection::Vertical };
+                let reading = drawing_measure::linear(basis, from.0, to.0, direction, Reading::Projected).map_err(invalid)?;
+                length("linear", reading, LabelKind::Length)
+            }
+            MeasureParam::Aligned { from, to } => {
+                let reading = drawing_measure::linear(basis, from.0, to.0, LinearDirection::Aligned, Reading::Projected).map_err(invalid)?;
+                length("aligned", reading, LabelKind::Length)
+            }
+            MeasureParam::Angle { edge: [a, b], from } => {
+                let line = match from {
+                    AngleFromParam::View(ViewLineParam::Horizontal) => AngleFrom::Horizontal,
+                    AngleFromParam::View(ViewLineParam::Vertical) => AngleFrom::Vertical,
+                    AngleFromParam::Line([c, d]) => AngleFrom::Edge(c.0, d.0),
+                };
+                let reading = drawing_measure::angle(basis, (a.0, b.0), line, Reading::Projected).map_err(invalid)?;
+                MeasurementResult { value_mm: None, paper_mm: None, value_rad: Some(reading.value), ..length("angle", reading, LabelKind::Angle) }
+            }
+            MeasureParam::Radius { edge } => {
+                let named = s.doc.edge_reference(&s.model, &edge.pick, &edge.path).map_err(|e| e.to_string())?;
+                let (radius, exact) = s.doc.radius_on_view(&s.model, &named, basis).map_err(|status| {
+                    let (word, why, _) = super::drawing_dimension::status_words(status);
+                    why.unwrap_or_else(|| word.to_string())
+                })?;
+                let reading = Measured { value: radius, foreshortened: false };
+                MeasurementResult { status: if exact { "exact" } else { "approximate" }, ..length("radius", reading, LabelKind::Radius) }
+            }
+        })
+    };
+    let read = request.measure.iter().enumerate().map(|(at, m)| one(m).map_err(|why| bad(CMD, format!("measure[{at}]: {why}"))));
+    read.collect()
 }
 
 /// Refused unless every piece of `drawn` certifies `max` paper mm at `scale` (the accuracy rule on
