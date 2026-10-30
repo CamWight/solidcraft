@@ -131,13 +131,14 @@ impl Drawing {
         require(in_id_order(&self.sheet_images, |i| i.id), || "a drawing lists its placed images by id".into())?;
         let total = self.images.iter().fold(0, |total: usize, i| total.saturating_add(i.data.len()));
         require(total <= encoded(MAX_IMAGES_BYTES), || format!("a drawing's images are at most {} MiB between them", MAX_IMAGES_BYTES >> 20))?;
+        // The placements first: one that names no file says so, before its file reads as unused.
+        for placement in &self.sheet_images {
+            self.check_sheet_image(placement).map_err(|e| DocError::Invalid(format!("placed image {}: {e}", ids::encode(placement.id))))?;
+        }
         let used = self.images_in_use();
         for file in &self.images {
             check_image(file).map_err(|e| DocError::Invalid(format!("image {}: {e}", ids::encode(file.id))))?;
             require(used.contains(&file.id), || format!("image {}: nothing uses it", ids::encode(file.id)))?;
-        }
-        for placement in &self.sheet_images {
-            self.check_sheet_image(placement).map_err(|e| DocError::Invalid(format!("placed image {}: {e}", ids::encode(placement.id))))?;
         }
         Ok(())
     }
