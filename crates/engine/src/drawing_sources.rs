@@ -13,9 +13,12 @@ use std::io::{Cursor, ErrorKind};
 use std::path::Path;
 use std::sync::Arc;
 
+use solidcraft_doc::bom::{self, Tree, Unlisted};
 use solidcraft_doc::drawing::Drawing;
+use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::drawing::dimension::Resolved;
 use solidcraft_doc::drawing::reference::Located;
+use solidcraft_doc::drawing::table::PartsList;
 use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_io::vfs;
 
@@ -279,6 +282,51 @@ pub fn resolve_dimensions(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraf
 pub fn resolve_balloons(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraft_doc::Result<Vec<Located>> {
     let view_of = |id| d.balloons.by_id(id).map(|record| Some(record.view)).ok_or_else(|| unknown("balloon", id));
     read_by_source(s, d, wanted, view_of, |from, these| from.doc.resolve_balloons(&from.model, d, these), Located::lost)
+}
+
+/// A balloon's row in the parts list it reads.
+#[derive(Default)]
+pub(crate) struct RowRead {
+    pub(crate) list: Option<u64>,
+    pub(crate) choices: Vec<u64>,
+    pub(crate) item: Option<String>,
+    /// `ok`, `no_list`, `not_found`, `reference` or `no_row`.
+    pub(crate) status: &'static str,
+}
+
+/// Each of `balloons`' rows, in their order: one list made for each parts list they read, with each
+/// row's members, then one lookup per level of each one's path. It reads the design a list lists,
+/// which needn't be the one the drawing is in.
+pub(crate) fn balloon_rows(s: &Session, d: &Drawing, balloons: &[&Balloon]) -> Vec<RowRead> {
+    let mut rows: Vec<RowRead> = balloons.iter().map(|_| RowRead::default()).collect();
+    let mut by_list: BTreeMap<u64, (PartsList, Vec<usize>)> = BTreeMap::new();
+    for (at, (balloon, row)) in balloons.iter().zip(&mut rows).enumerate() {
+        match d.parts_list_for(balloon) {
+            Ok((list, parts_list)) => by_list.entry(list).or_insert((parts_list, Vec::new())).1.push(at),
+            Err(choices) => *row = RowRead { choices, status: "no_list", ..Default::default() },
+        }
+    }
+    for (list, (parts_list, places)) in by_list {
+        let from = s.drawn(d, parts_list.of.source).ok();
+        let state = from.map(|from| from.model.state());
+        let mut tree = from.zip(state.as_ref()).map(|(from, state)| Tree::new(&from.doc, state));
+        // Its design not open, its component deleted, or too large to list: nothing it can read.
+        let listed = tree.as_mut().and_then(|tree| bom::list_with(tree, &parts_list.request(), true).ok());
+        for at in places {
+            let balloon = balloons.get(at);
+            let read = listed.as_ref().zip(tree.as_ref()).zip(balloon).map(|((listed, tree), balloon)| listed.item_of(tree, balloon.occurrence()));
+            let row = match read {
+                Some(Ok(item)) => RowRead { list: Some(list), item: Some(item), status: "ok", ..Default::default() },
+                Some(Err(Unlisted::Reference)) => RowRead { list: Some(list), status: "reference", ..Default::default() },
+                Some(Err(Unlisted::NoRow)) => RowRead { list: Some(list), status: "no_row", ..Default::default() },
+                Some(Err(Unlisted::NotFound)) | None => RowRead { list: Some(list), status: "not_found", ..Default::default() },
+            };
+            if let Some(slot) = rows.get_mut(at) {
+                *slot = row;
+            }
+        }
+    }
+    rows
 }
 
 /// The notes `wanted` of `d` ([`read_by_source`]).

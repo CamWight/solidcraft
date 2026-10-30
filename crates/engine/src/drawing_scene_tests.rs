@@ -691,6 +691,7 @@ fn a_replys_text_and_fonts_keep_to_its_schema() {
         views: Vec::new(),
         objects: Vec::new(),
         dimensions: Vec::new(),
+        balloons: Vec::new(),
         out_of_date: Vec::new(),
         param_warnings: Vec::new(),
     };
