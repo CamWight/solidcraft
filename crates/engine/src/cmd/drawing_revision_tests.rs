@@ -48,7 +48,8 @@ fn revisions(reply: &Value) -> Vec<&str> {
 #[test]
 fn rows_take_the_next_revision_and_keep_what_is_typed() {
     let mut s = drawing_session();
-    assert_eq!(listed(&mut s), json!({"rows": [], "next": "1"}));
+    let empty = listed(&mut s);
+    assert_eq!((&empty["rows"], &empty["next"]), (&json!([]), &json!("1")), "{empty}");
     let steps = s.undo.len();
     let first = add(&mut s, json!({"description": "First issue", "designer": "CW", "date": "2026-10-29"}));
     assert_eq!(s.undo.len(), steps + 1, "one undo step, texts and all");
@@ -213,7 +214,7 @@ fn an_issued_copy_keeps_what_it_read() {
     assert_eq!(reply["issued"][0]["row"], json!(row));
     assert!(refused(&mut s, REVISE, json!({"row": row})).contains("issued once"));
     assert!(refused(&mut s, REVISE, json!({"row": row, "set": {"date": "x"}})).contains("as it reads"));
-    assert!(refused(&mut s, REVISE, json!({"row": "0000000000000"})).contains("no row"));
+    assert!(refused(&mut s, REVISE, json!({"row": ids::encode(1 << 41)})).contains("no row"));
 
     let edited = run(&mut s, EDIT, json!({"row": row, "set": {"description": "Changed"}}));
     assert_eq!(edited["warnings"], json!(["its issued copy keeps what it read"]), "{edited}");
@@ -333,7 +334,7 @@ fn a_revision_tag_sits_on_a_sheet_and_shows_its_row() {
 
     let gone = run(&mut s, DELETE, json!({"row": row}));
     assert_eq!((&gone["tags"][0]["shows"], &gone["tags"][0]["lost"]), (&json!("1"), &json!(true)), "{gone}");
-    run(&mut s, "edit.undo", json!({}));
+    s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(listed(&mut s)["tags"][0]["lost"], json!(false), "undo binds it again");
 
     let deleted = run(&mut s, TAG_DELETE, json!({"tag": tag}));
@@ -358,7 +359,7 @@ fn a_sheets_delete_takes_its_tags_and_hostile_tags_are_refused() {
     let left = listed(&mut s);
     assert_eq!(left["tags"].as_array().map(Vec::len), Some(1));
     assert_eq!(left["tags"][0]["tag"], on_first);
-    run(&mut s, "edit.undo", json!({}));
+    s.execute("edit.undo", &json!({})).unwrap();
     assert_eq!(listed(&mut s)["tags"][1]["tag"], on_second, "undo brings it back");
 
     for bad in [
