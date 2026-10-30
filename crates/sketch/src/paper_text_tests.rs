@@ -147,6 +147,21 @@ fn a_character_the_font_lacks_is_refused_by_name() {
     assert!(e.contains("'\\t'"), "{e}");
 }
 
+/// The marks dimensions and tolerances write that the built-in font has are set as its own glyphs,
+/// never its missing-glyph box: Ø ° ± ′ ″ × ≤ ≥. Those it lacks (the empty set ∅ and the diameter
+/// sign U+2300, and the angularity, perpendicularity, parallelism, arc, depth, counterbore and
+/// countersink marks) are refused, each by name.
+#[test]
+fn dimension_marks_are_set_and_those_the_font_lacks_refused_by_name() {
+    let (runs, font) = set("\u{d8}12 30\u{b0} \u{b1}0.1 5\u{2032} 7\u{2033} 2\u{d7} \u{2264} \u{2265}", &TextStyle::default());
+    assert!(runs.iter().flat_map(|r| &r.glyphs).all(|g| g.id != 0), "{runs:?}");
+    scene(&runs, &font).validate().unwrap();
+    for mark in ['\u{2205}', '\u{2300}', '\u{2220}', '\u{22a5}', '\u{2225}', '\u{2312}', '\u{21a7}', '\u{2334}', '\u{2335}'] {
+        let e = err(&format!("A {mark}"), None, &TextStyle::default());
+        assert!(e.contains(&format!("no glyph for {mark:?}")), "{e}");
+    }
+}
+
 #[test]
 fn a_family_is_found_by_name_among_the_installed_fonts() {
     let (runs, font) = set_in("Title 12", "ibm plex mono");
@@ -220,6 +235,44 @@ fn hostile_numbers_and_sizes_are_refused() {
     }
     assert!(matches!(paper_text(&"A".repeat(MAX_TEXT_CHARS + 1), None, AT, 5.0, 0.0, &plain), Err(SketchError::TooLarge)));
     assert!(paper_text("A", None, AT, 5.0, 0.0, &TextStyle { letter_spacing: f64::NAN, ..TextStyle::default() }).is_err());
+}
+
+#[test]
+fn lines_wrap_between_words_to_a_width_and_never_cut_one() {
+    let plain = TextStyle::default();
+    let lines = |text: &str, wrap| paper_lines(text, None, 5.0, wrap, &plain).unwrap();
+    let text = "Bracket for the left hand side";
+    let wrapped = lines(text, Some(40.0));
+    assert!(wrapped.lines.len() > 1, "{wrapped:?}");
+    for (i, (line, w)) in wrapped.lines.iter().enumerate() {
+        assert_eq!(*w, width(line), "{line}");
+        assert!(*w <= 40.0, "{line}: {w}");
+        // Each line holds as many words as fit: the next line's first word would take it past the width.
+        if let Some((next, _)) = wrapped.lines.get(i + 1) {
+            let first = next.split(' ').next().unwrap();
+            assert!(width(&format!("{line} {first}")) > 40.0, "{line} | {first}");
+        }
+    }
+    assert_eq!(wrapped.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join(" "), text);
+    assert_eq!(wrapped.pitch, TextMetrics::new(&font_data(None).unwrap(), &TextStyle::default()).unwrap().line_pitch(5.0).unwrap());
+    // Set as measured: the runs `paper_text` sets for the same lines joined by breaks.
+    let joined = wrapped.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("\n");
+    assert_eq!(wrapped.set(AT, 0.3).unwrap(), paper_text(&joined, None, AT, 5.0, 0.3, &plain).unwrap());
+    // A word wider than the width is a line of its own, whole.
+    let long = lines("a Bracketforthelefthandside b", Some(20.0));
+    assert_eq!(long.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["a", "Bracketforthelefthandside", "b"]);
+    assert!(long.lines[1].1 > 20.0);
+    // Line breaks always break; spaces between words become one; without a width only the breaks do.
+    let kept = lines("A  B\n\nC", Some(1000.0));
+    assert_eq!(kept.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["A B", "", "C"]);
+    assert_eq!(lines("A  B\nC", None).lines, vec![("A  B".to_string(), width("A  B")), ("C".to_string(), width("C"))]);
+    assert!(paper_lines("A", None, 5.0, Some(f64::NAN), &plain).is_err());
+    assert!(paper_lines("A", None, f64::NAN, None, &plain).is_err());
+    assert!(matches!(paper_lines(&"A".repeat(MAX_TEXT_CHARS + 1), None, 5.0, None, &plain), Err(SketchError::TooLarge)));
+    // Measuring refuses what setting would: a character the font lacks, a bold face, a path.
+    assert!(paper_lines("A 零", None, 5.0, Some(40.0), &plain).unwrap_err().to_string().contains("has no glyph for"));
+    assert!(paper_lines("A", None, 5.0, None, &TextStyle { bold: true, ..TextStyle::default() }).is_err());
+    assert!(lines("A", None).set(AT, f64::NAN).is_err());
 }
 
 /// Random lines of Latin, Hebrew with its points, digits, spaces and breaks, in random styles:

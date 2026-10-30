@@ -13,9 +13,10 @@
 //!   stem width measured from its `l` (no table gives it). One that lacks any of them is refused.
 //! - A character the font has no glyph for is refused by name: sketch's `?` stand-in is never set
 //!   on paper.
-//! - Lines break at `\n`, a line pitch apart, and are aligned as sketch text's are. A line with
-//!   right-to-left characters is a run per direction, shaped. Every run of a line starts where the
-//!   line does, its glyphs placed along the whole line.
+//! - Lines break at `\n` (and between words, to a width: [`paper_lines`]), a line pitch apart,
+//!   and are aligned as sketch text's are. A line with right-to-left characters is a run per
+//!   direction, shaped. Every run of a line starts where the line does, its glyphs placed along the
+//!   whole line.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -63,46 +64,122 @@ pub fn paper_text_in(
     angle: f64,
     style: &TextStyle,
 ) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
+    measure(dirs, text, family, height, None, style)?.set(at, angle)
+}
+
+/// A text measured for paper: the lines it is set in, each with its width (mm), and the distance
+/// between their baselines, as [`paper_text`] sets them, with what setting them needs, so
+/// [`PaperLines::set`] places them without measuring again.
+pub struct PaperLines {
+    pub lines: Vec<(String, f64)>,
+    pub pitch: f64,
+    laid: Vec<LaidLine>,
+    /// The face it is set in and its record (no glyphs yet), its millimetres per font unit, the
+    /// style it was measured in and the slant that style gives it.
+    data: FontData,
+    font: Font,
+    k: f64,
+    style: TextStyle,
+    slant: f64,
+}
+
+impl std::fmt::Debug for PaperLines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaperLines").field("lines", &self.lines).field("pitch", &self.pitch).finish_non_exhaustive()
+    }
+}
+
+/// `text` measured for paper in the font `family` (None or empty: the built-in font, as
+/// [`paper_text`] chooses) at a capital height of `height` mm, set in `style` (which follows no path
+/// on paper): broken at each line break, and with `wrap` (a width, mm) also between words, each line
+/// holding as many of its words as fit. Words are the text between spaces, put back one space apart
+/// on a wrapped line. A word is never cut, so a line of one word may be wider than `wrap`.
+pub fn paper_lines(text: &str, family: Option<&str>, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
+    measure(&font_dirs(), text, family, height, wrap, style)
+}
+
+/// [`paper_lines`] with the fonts installed in `dirs`.
+fn measure(dirs: &[PathBuf], text: &str, family: Option<&str>, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
     if text.chars().count() > MAX_TEXT_CHARS {
         return Err(SketchError::TooLarge);
     }
     check_height(height)?;
-    if !(angle.is_finite() && at.is_finite()) {
-        return Err(SketchError::Invalid("the text's place and angle must be finite".into()));
-    }
     check_spacing(style)?;
     if style.path.is_some() {
         return Err(SketchError::Invalid("text on paper follows no path".into()));
     }
-    let (data, mut font, family) = paper_face(dirs, family, style.bold, style.italic)?;
+    if wrap.is_some_and(|w| !w.is_finite()) {
+        return Err(SketchError::Invalid("a width to wrap text to must be finite".into()));
+    }
+    let (data, font, family) = paper_face(dirs, family, style.bold, style.italic)?;
     let metrics = TextMetrics::new(&data, style)?;
     let (k, pitch) = (metrics.scale(height)?, metrics.line_pitch(height)?);
-    let slant = if style.italic && !font.metrics.flags.italic { SLANT_DEG.to_radians().tan() } else { 0.0 };
-    let (sin, cos) = angle.sin_cos();
-    let mut runs = Vec::new();
-    for (row, line) in text.split('\n').enumerate() {
-        let missing = metrics.missing(line);
+    let lay = |line: &str| metrics.laid_out(line, k);
+    let mut laid = Vec::new();
+    for paragraph in text.split('\n') {
+        let missing = metrics.missing(paragraph);
         if !missing.is_empty() {
             let chars: String = missing.iter().map(|c| format!(" {c:?}")).collect();
             return Err(SketchError::Invalid(format!("the font {family} has no glyph for{chars}")));
         }
-        let laid = metrics.laid_out(line, k);
-        // The line's start: along the baseline by its alignment, then down a pitch a row.
-        let (along, down) = (style.align.start(laid.width), row as f64 * pitch);
-        let origin = at + Vec2::new(along * cos + down * sin, along * sin - down * cos);
-        for run in laid.runs.iter().filter(|run| !run.glyphs.is_empty()) {
-            let (glyphs, text, clusters) = run_records(&laid, run, line)?;
-            runs.push(TextRun { font: font.id, scale: k, origin, angle, slant, glyphs, text, clusters, rtl: run.rtl });
+        let Some(wrap) = wrap else {
+            laid.push((paragraph.to_string(), lay(paragraph)));
+            continue;
+        };
+        let mut words = paragraph.split(' ').filter(|w| !w.is_empty());
+        let Some(first) = words.next() else {
+            laid.push((String::new(), lay("")));
+            continue;
+        };
+        let mut line = (first.to_string(), lay(first));
+        for word in words {
+            let longer = format!("{} {word}", line.0);
+            let wider = lay(&longer);
+            if wider.width <= wrap {
+                line = (longer, wider);
+            } else {
+                laid.push(std::mem::replace(&mut line, (word.to_string(), lay(word))));
+            }
         }
+        laid.push(line);
     }
-    if runs.is_empty() {
-        return Ok(None);
+    let slant = if style.italic && !font.metrics.flags.italic { SLANT_DEG.to_radians().tan() } else { 0.0 };
+    let lines = laid.iter().map(|(line, l)| (line.clone(), l.width)).collect();
+    let laid = laid.into_iter().map(|(_, l)| l).collect();
+    Ok(PaperLines { lines, pitch, laid, data, font, k, style: style.clone(), slant })
+}
+
+impl PaperLines {
+    /// The lines on paper, the first line's baseline starting at `at` (sheet mm) and turned `angle`
+    /// radians about it, each aligned on it as the style said: their runs, and the fonts they use
+    /// (each once, in order of id, holding the glyphs its runs place); None when they set no glyph
+    /// (empty lines only).
+    pub fn set(&self, at: Vec2, angle: f64) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
+        if !(angle.is_finite() && at.is_finite()) {
+            return Err(SketchError::Invalid("the text's place and angle must be finite".into()));
+        }
+        let (sin, cos) = angle.sin_cos();
+        let mut runs = Vec::new();
+        for (row, ((line, _), laid)) in self.lines.iter().zip(&self.laid).enumerate() {
+            // The line's start: along the baseline by its alignment, then down a pitch a row.
+            let (along, down) = (self.style.align.start(laid.width), row as f64 * self.pitch);
+            let origin = at + Vec2::new(along * cos + down * sin, along * sin - down * cos);
+            for run in laid.runs.iter().filter(|run| !run.glyphs.is_empty()) {
+                let (glyphs, text, clusters) = run_records(laid, run, line)?;
+                runs.push(TextRun { font: self.font.id, scale: self.k, origin, angle, slant: self.slant, glyphs, text, clusters, rtl: run.rtl });
+            }
+        }
+        if runs.is_empty() {
+            return Ok(None);
+        }
+        let mut font = self.font.clone();
+        let metrics = TextMetrics::new(&self.data, &self.style)?;
+        for g in runs.iter().flat_map(|r| &r.glyphs) {
+            let id = ttf_parser::GlyphId(g.id);
+            font.glyphs.entry(g.id).or_insert_with(|| FontGlyph { advance: metrics.advance(id), outline: outline(&metrics, id) });
+        }
+        Ok(Some((runs, vec![font])))
     }
-    for g in runs.iter().flat_map(|r| &r.glyphs) {
-        let id = ttf_parser::GlyphId(g.id);
-        font.glyphs.entry(g.id).or_insert_with(|| FontGlyph { advance: metrics.advance(id), outline: outline(&metrics, id) });
-    }
-    Ok(Some((runs, vec![font])))
 }
 
 /// One run of a laid-out line as the scene records it: its glyphs, its text, and its clusters, each
