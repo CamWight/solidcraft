@@ -91,7 +91,9 @@ fn a_dimension_is_the_same_size_on_paper_at_any_scale() {
         }
         for item in group.items.iter().filter(|item| matches!(item, Item::Fill { .. })) {
             let size = fill_box(item);
-            assert!(close(size.max.x - size.min.x, 3.0) && close(size.max.y - size.min.y, 1.0), "{scale}: {size:?}");
+            // 3 long, with a 20 degree point.
+            let wide = 2.0 * 3.0 * (std::f64::consts::PI / 18.0).tan();
+            assert!(close(size.max.x - size.min.x, 3.0) && close(size.max.y - size.min.y, wide), "{scale}: {size:?}");
         }
     }
 }
