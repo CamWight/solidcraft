@@ -697,7 +697,7 @@ mod tests {
             let _ = s.execute("selection.delete", &p);
             let d = s.drawing("test").unwrap();
             d.validate().unwrap();
-            assert_eq!(&*solidcraft_doc::drawing::Drawing::from_json(&d.to_json().unwrap()).unwrap(), &**d, "seed {seed}");
+            assert_eq!(solidcraft_doc::drawing::Drawing::from_json(&d.to_json().unwrap()).unwrap(), **d, "seed {seed}");
             assert!(d.dimensions.iter().all(|x| d.view(x.view).is_some()) && d.balloons.iter().all(|x| d.view(x.view).is_some()), "seed {seed}");
             if pick(seed, 4, 3) == 0 {
                 let _ = s.execute("edit.undo", &json!({}));
