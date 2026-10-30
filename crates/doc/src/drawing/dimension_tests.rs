@@ -378,3 +378,31 @@ fn a_direction_along_a_line_saves_as_its_coordinates() {
     assert_eq!(serde_json::from_value::<LinearDirection>(json!({"along": [0.6, 0.8]})).unwrap(), along);
     assert_eq!(serde_json::to_value(Reading::True).unwrap(), json!("true"));
 }
+
+/// Quarter arcs of radius `r` round `c` in the plane z = 0, from `from` degrees, as a tessellated edge.
+fn arc_at(c: [f64; 2], r: f64, from: f64) -> (usize, Vec<Vec3>) {
+    let at = |d: f64| Vec3::new(c[0] + r * (from + d).to_radians().cos(), c[1] + r * (from + d).to_radians().sin(), 0.0);
+    (0, (0..=9).map(|i| at(f64::from(i) * 10.0)).collect())
+}
+
+/// Pieces are one circle only when every one lies on it: another centre or radius, however near, is
+/// another circle, a straight piece or one too short to read isn't a circle, and no pieces are none.
+#[test]
+fn pieces_are_one_circle_only_when_they_all_lie_on_it() {
+    let c = [40.0, 15.0];
+    let first = arc_at(c, 6.0, 0.0);
+    let found = one_circle(&[first.clone(), arc_at(c, 6.0, 180.0)]).unwrap();
+    assert!(found.dist(Vec3::new(40.0, 15.0, 0.0)) < 1e-9, "{found:?}");
+    assert!(one_circle(std::slice::from_ref(&first)).is_some());
+    assert!(one_circle(&[first.clone(), arc_at([40.0 + 1e-9, 15.0], 6.0, 180.0)]).is_some(), "rounding is the same circle");
+    assert!(one_circle(&[first.clone(), arc_at([40.0 + 1e-3, 15.0], 6.0, 180.0)]).is_none(), "another centre");
+    assert!(one_circle(&[first.clone(), arc_at(c, 6.0 + 1e-3, 180.0)]).is_none(), "another radius");
+    let above: Vec<Vec3> = arc_at(c, 6.0, 180.0).1.iter().map(|p| Vec3::new(p.x, p.y, 5.0)).collect();
+    assert!(one_circle(&[first.clone(), (1, above)]).is_none(), "the same circle moved along its axis");
+    let tilted: Vec<Vec3> = arc_at(c, 6.0, 180.0).1.iter().map(|p| Vec3::new(40.0, p.y, p.x - 40.0)).collect();
+    assert!(one_circle(&[first.clone(), (1, tilted)]).is_none(), "round another axis");
+    let line: Vec<Vec3> = (0..5).map(|i| Vec3::new(f64::from(i), 0.0, 0.0)).collect();
+    assert!(one_circle(&[first.clone(), (1, line)]).is_none(), "a straight piece");
+    assert!(one_circle(&[first.clone(), (1, first.1[..3].to_vec())]).is_none(), "too short to read");
+    assert!(one_circle(&[]).is_none());
+}
