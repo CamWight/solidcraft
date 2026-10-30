@@ -623,7 +623,10 @@ fn hostile_dimension_params_never_panic() {
         ),
         (ADD, json!({"view": v, "kind": {"angle": {"a": {"point": [40, 0, 30], "path": [1]}, "b": [0, 0, 15], "other_side": true}}})),
         (ADD, json!({"view": v, "kind": {"radial": {"edge": {"body": "Box", "index": 0, "path": [1]}, "diameter": true}}})),
-        (ADD, json!({"view": v, "kind": {"faces": {"a": {"body": "Box", "index": 0, "path": [1]}, "b": [80, 20, 15], "direction": {"along": [1, 0]}}}})),
+        (
+            ADD,
+            json!({"view": v, "kind": {"faces": {"a": {"body": "Box", "index": 0, "path": [1]}, "b": [80, 20, 15], "direction": {"along": [1, 0]}}}}),
+        ),
         (
             ADD,
             json!({"view": v, "kind": {"chain": {"points": [[0, 0, 0], {"centre": {"body": "Box", "index": 0}, "path": [1]}, corner, [80, 0, 0]],

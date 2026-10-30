@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
@@ -40,7 +41,7 @@ fn ballooned() -> (Drawing, [u64; 2]) {
     let mut added = [0; 2];
     for ((path, at), id) in [(vec![3], [40.0, 25.0]), (vec![3, 7], [-35.5, 60.0])].into_iter().zip(&mut added) {
         *id = d.allocate_id(&mut id_source).unwrap();
-        d.add_balloons([Arc::new(Balloon { id: *id, view, edge: edge("F1:side|F2:head", path), at, parts_list: None })]);
+        d.balloons.add([Arc::new(Balloon { id: *id, view, edge: edge("F1:side|F2:head", path), at, parts_list: None })]);
     }
     d.validate().unwrap();
     (d, added)
@@ -81,7 +82,7 @@ fn balloons_save_what_they_point_at_and_read_back_as_saved() {
         })
     );
     assert_eq!(balloon(&mut v, &placed)["edge"]["path"], json!([3]));
-    assert_eq!(d.balloon(added[1]).unwrap().occurrence(), [3, 7], "the part it numbers is its edge's path");
+    assert_eq!(d.balloons.by_id(added[1]).unwrap().occurrence(), [3, 7], "the part it numbers is its edge's path");
     let listed: Vec<u64> = v["balloons"].as_array().unwrap().iter().map(|x| ids::decode(x["id"].as_str().unwrap()).unwrap()).collect();
     let mut by_id = added.to_vec();
     by_id.sort_unstable();
@@ -202,7 +203,7 @@ fn add_list(d: &mut Drawing, sheet: u64, id: u64) {
     let list =
         PartsList { of, view: Default::default(), group: Default::default(), fold: false, purchased_contents: false, mass: MassFormat::default() };
     let kind = Kind::PartsList(list);
-    d.add_tables([Arc::new(SheetTable { id, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
+    d.tables.add([Arc::new(SheetTable { id, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
 }
 
 /// With no link a balloon reads its sheet's only list, else the drawing's only one, else none, with
@@ -211,7 +212,7 @@ fn add_list(d: &mut Drawing, sheet: u64, id: u64) {
 fn a_balloon_reads_the_list_it_names_else_the_only_one() {
     let (mut d, [id, _]) = ballooned();
     let sheet = d.sheets[0].id;
-    let read = |d: &Drawing| d.parts_list_for(d.balloon(id).unwrap()).map(|(list, _)| list);
+    let read = |d: &Drawing| d.parts_list_for(d.balloons.by_id(id).unwrap()).map(|(list, _)| list);
     assert_eq!(read(&d), Err(vec![]));
     let saved: Value = serde_json::from_str(&d.to_json().unwrap()).unwrap();
     assert_eq!(saved["balloons"][0].get("parts_list"), None);
@@ -226,10 +227,10 @@ fn a_balloon_reads_the_list_it_names_else_the_only_one() {
     add_list(&mut d, sheet, 1 << 43);
     assert_eq!(read(&d), Err(vec![1 << 41, 1 << 42, 1 << 43]), "the choices");
     let kind = Kind::Revision;
-    d.add_tables([Arc::new(SheetTable { id: 1 << 44, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
+    d.tables.add([Arc::new(SheetTable { id: 1 << 44, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
     assert_eq!(read(&d).unwrap_err().len(), 3, "a revision table is no choice");
 
-    let at = d.balloon_index(id).unwrap();
+    let at = d.balloons.index_of(id).unwrap();
     Arc::make_mut(&mut d.balloons[at]).parts_list = Some(1 << 41);
     assert_eq!(read(&d), Ok(1 << 41), "its link wins");
     d.validate().unwrap();
@@ -237,7 +238,7 @@ fn a_balloon_reads_the_list_it_names_else_the_only_one() {
 
     // The list goes, by its own delete or its sheet's: the balloon stays and reads what it can.
     d.remove_objects(&OnSheet { tables: vec![1 << 41], ..Default::default() });
-    assert_eq!(d.balloon(id).unwrap().parts_list, None);
+    assert_eq!(d.balloons.by_id(id).unwrap().parts_list, None);
     d.validate().unwrap();
     assert_eq!(read(&d).unwrap_err(), vec![1 << 42, 1 << 43]);
 }
@@ -248,13 +249,13 @@ fn a_balloons_link_is_to_a_parts_list() {
     let (mut d, [id, _]) = ballooned();
     let sheet = d.sheets[0].id;
     let kind = Kind::Revision;
-    d.add_tables([Arc::new(SheetTable { id: 1 << 44, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
-    let at = d.balloon_index(id).unwrap();
+    d.tables.add([Arc::new(SheetTable { id: 1 << 44, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
+    let at = d.balloons.index_of(id).unwrap();
     for bad in [1 << 44, 99] {
         Arc::make_mut(&mut d.balloons[at]).parts_list = Some(bad);
         assert!(d.validate().unwrap_err().to_string().contains("parts lists"), "{bad}");
     }
-    let mut v: Value = serde_json::from_str(&Drawing { balloons: Vec::new(), ..d.clone() }.to_json().unwrap()).unwrap();
+    let mut v: Value = serde_json::from_str(&Drawing { balloons: Default::default(), ..d.clone() }.to_json().unwrap()).unwrap();
     v["balloons"] = json!([{"id": "x", "view": "x", "edge": {}, "at": [0.0, 0.0], "parts_list": 7}]);
     assert!(Drawing::from_value(v).is_err(), "not an id");
 }

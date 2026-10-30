@@ -222,7 +222,8 @@ fn a_source_path_follows_save_as_through_undo_redo_and_checkpoints() {
 fn a_source_is_judged_from_its_text() {
     let (dir, path, mut s) = saved_design("text");
     let calls = solidcraft_io::vfs::file_calls();
-    let mut hostile = vec![String::new(), " ".into(), "a\0b.sc".into(), "x".repeat(4096), "plate.step".into(), path.clone(), r"\\.\COM1\plate.sc".into()];
+    let mut hostile =
+        vec![String::new(), " ".into(), "a\0b.sc".into(), "x".repeat(4096), "plate.step".into(), path.clone(), r"\\.\COM1\plate.sc".into()];
     if cfg!(windows) {
         hostile.push(r"\\evil.example\share\plate.sc".into());
     }
@@ -311,7 +312,14 @@ fn the_source_commands_read_before_they_change() {
     let id = ids::decode(&source).unwrap();
     let view = d.allocate_id(&mut s.ids).unwrap();
     let kind = ViewKind::Base { source: id, view: ViewDirection::Named(NamedView::Front) };
-    d.add_views([Arc::new(View { id: view, sheet, kind, place: ViewPlace::At([100.0, 100.0]), settings: ViewOverrides::default(), reference_margin_mm: 0.0 })]);
+    d.add_views([Arc::new(View {
+        id: view,
+        sheet,
+        kind,
+        place: ViewPlace::At([100.0, 100.0]),
+        settings: ViewOverrides::default(),
+        reference_margin_mm: 0.0,
+    })]);
     s.doc_mut().put_drawing(Arc::new(d.clone()));
     assert!(s.execute(REMOVE, &json!({"source": source})).is_err_and(|e| e.to_string().contains(&ids::encode(view))));
     d.views.clear();

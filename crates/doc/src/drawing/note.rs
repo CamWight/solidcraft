@@ -18,7 +18,6 @@
 //! height is [`CAP_MM`]; at most [`MAX_NOTES`] notes, listed by id.
 
 use std::ops::RangeInclusive;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::Vec3;
@@ -26,8 +25,9 @@ use solidcraft_geom::cell::{Content, Part, Source};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 
+use super::by_id::Record;
 use super::dimension::{Lookup, ModelEdge, ModelPoint, Status, check_edge, check_point};
-use super::{Drawing, add_by_id, in_id_order, require};
+use super::{Drawing, require};
 use crate::{DocError, Document, Model, Result, ids};
 
 /// The most notes a drawing may have.
@@ -91,31 +91,17 @@ pub struct Note {
     pub cap_mm: Option<f64>,
 }
 
+impl Record for Note {
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
 impl Drawing {
-    /// Adds `notes`, each where its id puts it, as [`Drawing::add_balloons`] adds balloons.
-    pub fn add_notes(&mut self, notes: impl IntoIterator<Item = Arc<Note>>) {
-        add_by_id(&mut self.notes, notes, |n| n.id);
-    }
-
-    /// Note `id`, found by halves in the notes' id order.
-    pub fn note(&self, id: u64) -> Option<&Note> {
-        self.note_index(id).and_then(|i| self.notes.get(i)).map(|n| &**n)
-    }
-
-    /// Where note `id` is in [`Drawing::notes`].
-    pub fn note_index(&self, id: u64) -> Option<usize> {
-        self.notes.binary_search_by_key(&id, |n| n.id).ok()
-    }
-
     /// The notes' rules (the module's notes). The views are checked first, so they are in id order
     /// here.
     pub(super) fn check_notes(&self) -> Result<()> {
-        require(self.notes.len() <= MAX_NOTES, || format!("a drawing has at most {MAX_NOTES} notes"))?;
-        require(in_id_order(&self.notes, |n| n.id), || "a drawing lists its notes by id".into())?;
-        for note in &self.notes {
-            self.check_note(note).map_err(|e| DocError::Invalid(format!("note {}: {e}", ids::encode(note.id))))?;
-        }
-        Ok(())
+        self.notes.check(MAX_NOTES, "note", |n| self.check_note(n))
     }
 
     fn check_note(&self, n: &Note) -> Result<()> {
@@ -162,7 +148,7 @@ impl Document {
         wanted
             .iter()
             .map(|id| {
-                let n = drawing.note(*id).ok_or_else(|| DocError::Unknown(format!("note {}", ids::encode(*id))))?;
+                let n = drawing.notes.by_id(*id).ok_or_else(|| DocError::Unknown(format!("note {}", ids::encode(*id))))?;
                 Ok(match &n.anchor {
                     Anchor::Sheet(_) | Anchor::View(_) => Resolved { status: Status::Ok, point: None, exact: true },
                     Anchor::Edge { edge, .. } => {

@@ -55,13 +55,13 @@ fn an_image_is_read_saved_without_its_path_and_one_undo_step() {
     std::fs::remove_dir_all(&dir).unwrap();
     let record = s.drawing("test").unwrap().clone();
     let id = ids::decode(reply["image"].as_str().unwrap()).unwrap();
-    assert_eq!(base64_decode(&record.image(record.sheet_image(id).unwrap().image).unwrap().data).unwrap(), bytes);
+    assert_eq!(base64_decode(&record.images.by_id(record.sheet_images.by_id(id).unwrap().image).unwrap().data).unwrap(), bytes);
     assert!(!record.to_json().unwrap().contains("logo"));
 
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.drawing("test").unwrap().images.is_empty());
     s.execute("edit.redo", &json!({})).unwrap();
-    assert!(s.drawing("test").unwrap().sheet_image(id).is_some());
+    assert!(s.drawing("test").unwrap().sheet_images.by_id(id).is_some());
 
     let item = json!({"type": "drawing", "drawing": ids::encode(record.id), "object": ids::encode(id)});
     s.execute("selection.delete", &json!({"items": [item]})).unwrap();

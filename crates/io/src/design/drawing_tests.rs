@@ -117,8 +117,8 @@ fn an_image_on_a_sheet_round_trips_and_a_lying_one_is_refused() {
     let mut d = (*doc.drawings[0]).clone();
     let mut ids = IdSource::seeded(5426);
     let (file, placed) = (d.allocate_id(&mut ids).unwrap(), d.allocate_id(&mut ids).unwrap());
-    d.add_images([Arc::new(ImageFile::from_file(file, &header).unwrap())]);
-    d.add_sheet_images([Arc::new(SheetImage { id: placed, sheet: d.sheets[0].id, rect_mm: [10.0, 20.0, 60.0, 45.0], image: file })]);
+    d.images.add([Arc::new(ImageFile::from_file(file, &header).unwrap())]);
+    d.sheet_images.add([Arc::new(SheetImage { id: placed, sheet: d.sheets[0].id, rect_mm: [10.0, 20.0, 60.0, 45.0], image: file })]);
     doc.drawings[0] = Arc::new(d);
     let bytes = write_design_container(&doc).unwrap();
     let read = read_design(&bytes).unwrap();

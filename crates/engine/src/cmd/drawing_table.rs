@@ -75,7 +75,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     apply(s, &record, &mut table, request.set, ADD)?;
     let list = listed(&table);
     s.edit_drawing(ADD, |d| {
-        d.add_tables([Arc::new(table)]);
+        d.tables.add([Arc::new(table)]);
         Ok(())
     })?;
     answer(s, ADD, id, list)
@@ -85,12 +85,12 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
     let request: EditParams = crate::schema::read(EDIT, p)?;
     let id = request.table.0;
     let record = s.drawing(EDIT)?.clone();
-    let mut table = record.table(id).ok_or_else(|| bad(EDIT, format!("the drawing has no table {}", ids::encode(id))))?.clone();
+    let mut table = record.tables.by_id(id).ok_or_else(|| bad(EDIT, format!("the drawing has no table {}", ids::encode(id))))?.clone();
     let before = listed(&table);
     apply(s, &record, &mut table, request.set, EDIT)?;
     let list = listed(&table).filter(|list| Some(*list) != before);
     s.edit_drawing(EDIT, |d| {
-        let at = d.table_index(id).ok_or_else(|| bad(EDIT, format!("the drawing has no table {}", ids::encode(id))))?;
+        let at = d.tables.index_of(id).ok_or_else(|| bad(EDIT, format!("the drawing has no table {}", ids::encode(id))))?;
         if let Some(old) = d.tables.get_mut(at) {
             *old = Arc::new(table);
         }
@@ -103,7 +103,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     let request: DeleteParams = crate::schema::read(DELETE, p)?;
     let id = request.table.0;
     let balloons = s.edit_drawing(DELETE, |d| {
-        d.table(id).ok_or_else(|| bad(DELETE, format!("the drawing has no table {}", ids::encode(id))))?;
+        d.tables.by_id(id).ok_or_else(|| bad(DELETE, format!("the drawing has no table {}", ids::encode(id))))?;
         let named = d.balloons.iter().filter(|b| b.parts_list == Some(id)).map(|b| ids::encode(b.id)).collect();
         d.remove_objects(&OnSheet { tables: vec![id], ..Default::default() });
         Ok(named)
@@ -195,7 +195,7 @@ fn answer(s: &mut Session, cmd: &str, id: u64, list: Option<PartsList>) -> Resul
         warnings.push(format!("its item numbers can still move: {why}"));
     }
     let d = s.drawing(cmd)?;
-    let table = d.table(id).ok_or_else(|| bad(cmd, format!("the drawing has no table {}", ids::encode(id))))?;
+    let table = d.tables.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no table {}", ids::encode(id))))?;
     let reply = TableResult {
         table: ids::encode(id),
         sheet: ids::encode(table.sheet),

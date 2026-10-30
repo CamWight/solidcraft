@@ -442,8 +442,10 @@ fn a_suppressed_or_failed_feature_is_not_lost() {
     let hole = f.s.doc.features.last().unwrap().name.clone();
     let rim = f.round([40.0, 0.0, 15.0], 6.0);
     let across = f.add(f.front, radial(&rim, true), None);
-    let centre = ModelPoint { body: rim.body.clone(), origin_feature: rim.origin_feature, edges: vec![rim.name.clone()], centre: true, path: Vec::new() };
-    let to_centre = DimensionKind::Linear { a: f.corner([0.0, 0.0, 0.0]), b: centre, direction: LinearDirection::Vertical, reading: Reading::Projected };
+    let centre =
+        ModelPoint { body: rim.body.clone(), origin_feature: rim.origin_feature, edges: vec![rim.name.clone()], centre: true, path: Vec::new() };
+    let to_centre =
+        DimensionKind::Linear { a: f.corner([0.0, 0.0, 0.0]), b: centre, direction: LinearDirection::Vertical, reading: Reading::Projected };
     let up = f.add(f.front, to_centre, None);
     let both = |f: &Fixture| [f.resolve(across).status, f.resolve(up).status];
     run(&mut f.s, "timeline.suppress", json!({"feature": hole, "suppressed": true}));
@@ -737,7 +739,7 @@ fn a_balloon_and_a_cylinder_follow_a_renamed_body() {
     let round = f.round([40.0, 0.0, 15.0], 6.0);
     let radial = f.add(front, DimensionKind::Radial { edge: round.clone(), diameter: true }, None);
     let id = f.d.allocate_id(&mut f.ids).unwrap();
-    f.d.add_balloons([Arc::new(solidcraft_doc::drawing::balloon::Balloon { id, view: front, edge: round, at: [60.0, 60.0], parts_list: None })]);
+    f.d.balloons.add([Arc::new(solidcraft_doc::drawing::balloon::Balloon { id, view: front, edge: round, at: [60.0, 60.0], parts_list: None })]);
     run(&mut f.s, "body.rename", json!({"body": "Box", "name": "Lid"}));
     assert_reads(&f.resolve(across), 12.0, false);
     assert_reads(&f.resolve(radial), 12.0, false);

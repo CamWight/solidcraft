@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
@@ -34,8 +35,8 @@ fn pictured(bytes: &[u8]) -> (Drawing, u64, u64) {
     let a3 = drawing_sheet::Sheet::standard(PaperSize::A3, Orientation::Landscape);
     let mut d = Drawing::new("Pictured", "en", "Sheet 1", a3, None, &BTreeSet::new(), &mut id_source).unwrap();
     let (file, placed) = (d.allocate_id(&mut id_source).unwrap(), d.allocate_id(&mut id_source).unwrap());
-    d.add_images([Arc::new(ImageFile::from_file(file, bytes).unwrap())]);
-    d.add_sheet_images([Arc::new(SheetImage { id: placed, sheet: d.sheets[0].id, rect_mm: RECT, image: file })]);
+    d.images.add([Arc::new(ImageFile::from_file(file, bytes).unwrap())]);
+    d.sheet_images.add([Arc::new(SheetImage { id: placed, sheet: d.sheets[0].id, rect_mm: RECT, image: file })]);
     d.validate().unwrap();
     (d, file, placed)
 }
@@ -63,12 +64,12 @@ fn an_image_is_saved_with_its_bytes_and_reads_back_the_same() {
     let read = Drawing::from_json(&saved).unwrap();
     assert_eq!(read, d);
     assert_eq!(read.to_json().unwrap(), saved);
-    let found = read.image(image).unwrap();
+    let found = read.images.by_id(image).unwrap();
     assert_eq!((found.format.as_str(), found.pixels), ("png", [640, 480]));
     assert_eq!(base64_decode(&found.data).unwrap(), bytes);
-    assert_eq!(read.sheet_image(placed).map(|i| (i.rect_mm, i.image)), Some((RECT, image)));
+    assert_eq!(read.sheet_images.by_id(placed).map(|i| (i.rect_mm, i.image)), Some((RECT, image)));
     assert!(read.has_object(placed) && !read.has_object(image), "what a sheet shows is the placement");
-    assert!(read.image(placed).is_none() && read.sheet_image(image).is_none());
+    assert!(read.images.by_id(placed).is_none() && read.sheet_images.by_id(image).is_none());
 }
 
 /// One file sits on two sheets and is saved once. Its bytes count once towards the caps, so a logo on
@@ -84,7 +85,7 @@ fn one_file_on_two_sheets_is_saved_once() {
     d.sheets.push(Arc::new(sheet));
     for n in 0..20u64 {
         let id = d.allocate_id(&mut id_source).unwrap();
-        d.add_sheet_images([Arc::new(SheetImage { id, sheet: second, rect_mm: [n as f64, 0.0, n as f64 + 5.0, 5.0], image })]);
+        d.sheet_images.add([Arc::new(SheetImage { id, sheet: second, rect_mm: [n as f64, 0.0, n as f64 + 5.0, 5.0], image })]);
     }
     d.validate().unwrap();
     assert_eq!((d.images.len(), d.sheet_images.len()), (1, 21));
@@ -181,7 +182,14 @@ fn a_placement_and_its_file_name_each_other() {
 #[test]
 fn a_rectangle_is_on_paper_and_has_a_size() {
     let (d, ..) = pictured(&png(10, 10));
-    for rect in [[60.0, 20.0, 10.0, 45.0], [10.0, 45.0, 60.0, 20.0], [10.0, 20.0, 10.0, 45.0], [10.0, 20.0, 60.0, 20.0], [1e300, 20.0, 2e300, 45.0], [f64::NAN; 4]] {
+    for rect in [
+        [60.0, 20.0, 10.0, 45.0],
+        [10.0, 45.0, 60.0, 20.0],
+        [10.0, 20.0, 10.0, 45.0],
+        [10.0, 20.0, 60.0, 20.0],
+        [1e300, 20.0, 2e300, 45.0],
+        [f64::NAN; 4],
+    ] {
         let mut bad = d.clone();
         Arc::make_mut(&mut bad.sheet_images[0]).rect_mm = rect;
         assert!(bad.validate().is_err_and(|e| e.to_string().contains("rectangle")), "{rect:?}");
@@ -197,8 +205,8 @@ fn a_drawings_images_keep_their_counts() {
         file.id = image + 2 * n;
         file.data = data.into();
         let use_of = SheetImage { id: placed + 2 * n, sheet: d.sheets[0].id, rect_mm: RECT, image: file.id };
-        d.add_images([Arc::new(file)]);
-        d.add_sheet_images([Arc::new(use_of)]);
+        d.images.add([Arc::new(file)]);
+        d.sheet_images.add([Arc::new(use_of)]);
     };
     // One file's cap and the cap between them, checked on every edit from the text's length alone.
     let mut big = d.clone();
@@ -219,7 +227,7 @@ fn a_drawings_images_keep_their_counts() {
     let mut placements = d.clone();
     let logo = placements.sheet_images[0].clone();
     let copies = (1..=MAX_SHEET_IMAGES as u64).map(|n| Arc::new(SheetImage { id: placed + 2 * n, ..(*logo).clone() }));
-    placements.add_sheet_images(copies.collect::<Vec<_>>());
+    placements.sheet_images.add(copies.collect::<Vec<_>>());
     assert!(placements.validate().is_err_and(|e| e.to_string().contains("at most")));
     let mut twins = d.clone();
     let twin = twins.sheet_images[0].clone();

@@ -50,11 +50,11 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         let shown = match d.images.iter().find(|known| known.data == image.data) {
             Some(known) => known.id,
             None => {
-                d.add_images([Arc::new(image)]);
+                d.images.add([Arc::new(image)]);
                 new_file
             }
         };
-        d.add_sheet_images([Arc::new(SheetImage { id, sheet, rect_mm, image: shown })]);
+        d.sheet_images.add([Arc::new(SheetImage { id, sheet, rect_mm, image: shown })]);
         // Every drawing saved opens again, so one that couldn't be saved is refused here, not at the save.
         d.to_json().map_err(|e| bad(ADD, e.to_string()))?;
         Ok(())

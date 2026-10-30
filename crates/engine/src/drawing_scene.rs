@@ -629,12 +629,10 @@ impl Cache {
         let fresh = on.iter().filter(|(id, view, _)| self.fresh(*id, worlds, view));
         let serials: BTreeMap<u64, u64> = fresh.filter_map(|(id, ..)| self.views.get(id).map(|e| (*id, e.serial))).collect();
         let current = |record: &Arc<Dimension>, serial: u64| {
-            self.dimensions
-                .get(&record.id)
-                .is_some_and(|e| {
-                    let same_state = self.views.get(&record.view).is_some_and(|view| Arc::ptr_eq(&e.state, &view.state));
-                    Arc::ptr_eq(&e.record, record) && same_state && e.view_serial == serial && e.units == units
-                })
+            self.dimensions.get(&record.id).is_some_and(|e| {
+                let same_state = self.views.get(&record.view).is_some_and(|view| Arc::ptr_eq(&e.state, &view.state));
+                Arc::ptr_eq(&e.record, record) && same_state && e.view_serial == serial && e.units == units
+            })
         };
         let mut stale = dimensions_on(d, serials.keys().copied());
         stale.retain(|record| serials.get(&record.view).is_some_and(|serial| !current(record, *serial)));

@@ -16,13 +16,13 @@
 //! [`MAX_SHEET_IMAGES`] placements; each list by id.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::{MAX_IMAGE_PIXELS, MAX_SIDE_MM};
 
-use super::{Drawing, add_by_id, in_id_order, require};
+use super::by_id::Record;
+use super::{Drawing, require};
 use crate::canvas::{base64_decode, base64_encode, image_info};
 use crate::{DocError, Result, ids};
 
@@ -87,29 +87,19 @@ impl ImageFile {
     }
 }
 
+impl Record for ImageFile {
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
+impl Record for SheetImage {
+    fn id(&self) -> u64 {
+        self.id
+    }
+}
+
 impl Drawing {
-    /// Adds image `files`, each where its id puts it, as [`Drawing::add_notes`] adds notes.
-    pub fn add_images(&mut self, files: impl IntoIterator<Item = Arc<ImageFile>>) {
-        add_by_id(&mut self.images, files, |i| i.id);
-    }
-
-    /// Adds `placements`, each where its id puts it.
-    pub fn add_sheet_images(&mut self, placements: impl IntoIterator<Item = Arc<SheetImage>>) {
-        add_by_id(&mut self.sheet_images, placements, |i| i.id);
-    }
-
-    /// Image file `id`, found by halves in the files' id order.
-    pub fn image(&self, id: u64) -> Option<&ImageFile> {
-        let at = self.images.binary_search_by_key(&id, |i| i.id).ok()?;
-        self.images.get(at).map(|i| &**i)
-    }
-
-    /// Placement `id`, found by halves in the placements' id order.
-    pub fn sheet_image(&self, id: u64) -> Option<&SheetImage> {
-        let at = self.sheet_images.binary_search_by_key(&id, |i| i.id).ok()?;
-        self.sheet_images.get(at).map(|i| &**i)
-    }
-
     /// The image files something in the drawing uses: the one list of what keeps a file. Anything new
     /// that shows a file adds its own here.
     pub fn images_in_use(&self) -> BTreeSet<u64> {
@@ -123,26 +113,19 @@ impl Drawing {
     }
 
     pub(super) fn check_images(&self) -> Result<()> {
-        require(self.images.len() <= MAX_IMAGES, || format!("a drawing has at most {MAX_IMAGES} images"))?;
-        require(self.sheet_images.len() <= MAX_SHEET_IMAGES, || format!("a drawing places images at most {MAX_SHEET_IMAGES} times"))?;
-        require(in_id_order(&self.images, |i| i.id), || "a drawing lists its images by id".into())?;
-        require(in_id_order(&self.sheet_images, |i| i.id), || "a drawing lists its placed images by id".into())?;
-        let total = self.images.iter().fold(0, |total: usize, i| total.saturating_add(i.data.len()));
-        require(total <= encoded(MAX_IMAGES_BYTES), || format!("a drawing's images are at most {} MiB between them", MAX_IMAGES_BYTES >> 20))?;
         // The placements first: one that names no file says so, before its file reads as unused.
-        for placement in &self.sheet_images {
-            self.check_sheet_image(placement).map_err(|e| DocError::Invalid(format!("placed image {}: {e}", ids::encode(placement.id))))?;
-        }
+        self.sheet_images.check(MAX_SHEET_IMAGES, "placed image", |placement| self.check_sheet_image(placement))?;
         let used = self.images_in_use();
-        for file in &self.images {
-            check_image(file).map_err(|e| DocError::Invalid(format!("image {}: {e}", ids::encode(file.id))))?;
-            require(used.contains(&file.id), || format!("image {}: nothing uses it", ids::encode(file.id)))?;
-        }
-        Ok(())
+        self.images.check(MAX_IMAGES, "image", |file| {
+            check_image(file)?;
+            require(used.contains(&file.id), || "nothing uses it".into())
+        })?;
+        let total = self.images.iter().fold(0, |total: usize, i| total.saturating_add(i.data.len()));
+        require(total <= encoded(MAX_IMAGES_BYTES), || format!("a drawing's images are at most {} MiB between them", MAX_IMAGES_BYTES >> 20))
     }
 
     fn check_sheet_image(&self, i: &SheetImage) -> Result<()> {
-        require(self.image(i.image).is_some(), || format!("it shows image {}, which the drawing doesn't have", ids::encode(i.image)))?;
+        require(self.images.by_id(i.image).is_some(), || format!("it shows image {}, which the drawing doesn't have", ids::encode(i.image)))?;
         require(self.sheets.iter().any(|s| s.id == i.sheet), || format!("it is on sheet {}, which the drawing doesn't have", ids::encode(i.sheet)))?;
         let [x0, y0, x1, y1] = i.rect_mm;
         let on_paper = [x0, y0, x1, y1].into_iter().all(is_paper_coordinate);

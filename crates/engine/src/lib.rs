@@ -129,7 +129,7 @@ pub enum Sel {
     Feature {
         id: u64,
     },
-    /// A view, dimension or balloon of the drawing open.
+    /// A view, dimension, balloon, note or image of the drawing open.
     Drawing {
         #[serde(with = "solidcraft_doc::ids")]
         drawing: u64,
@@ -893,7 +893,7 @@ impl Session {
         self.open_drawing.and_then(|id| self.doc.drawing(id)).ok_or_else(|| params::bad(cmd, "open a drawing first (drawing.open)"))
     }
 
-    /// Whether `object` can be selected in `drawing`: a view, dimension or balloon of the drawing open.
+    /// Whether `object` can be selected in `drawing`: what a selection can name in the drawing open ([`solidcraft_doc::drawing::Drawing::kind_of`]).
     pub(crate) fn selectable_in_drawing(&self, drawing: u64, object: u64) -> bool {
         self.open_drawing == Some(drawing) && self.doc.drawing(drawing).is_some_and(|d| d.has_object(object))
     }
@@ -1354,7 +1354,8 @@ impl Session {
             self.open_sources();
         }
         let open_drawing = self.open_drawing;
-        let before = Snapshot { part: open_drawing.filter(|_| matches!(spec.part, cmd::Part::Drawing | cmd::Part::Open)), ..Snapshot::of(self, spec.label) };
+        let before =
+            Snapshot { part: open_drawing.filter(|_| matches!(spec.part, cmd::Part::Drawing | cmd::Part::Open)), ..Snapshot::of(self, spec.label) };
         let ids = self.ids.clone();
         // Where new geometry goes: not in the design, but a replay needs it (component.activate).
         let active_before = (self.active_component, self.active_occurrence_path.clone());

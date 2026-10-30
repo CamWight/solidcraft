@@ -21,9 +21,11 @@ use solidcraft_doc::ids;
 
 use super::design_link::absolute;
 use super::{CommandSpec, Part, find_command};
-use crate::params::bad;
-use crate::schema::drawing_source::{AddParams, ExecuteParams, ExecuteResult, RemoveParams, RemoveResult, RepointParams, SourceResult, SourcesResult};
 use crate::drawing_sources::SourceState;
+use crate::params::bad;
+use crate::schema::drawing_source::{
+    AddParams, ExecuteParams, ExecuteResult, RemoveParams, RemoveResult, RepointParams, SourceResult, SourcesResult,
+};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session, frames};
 
@@ -95,7 +97,9 @@ pub static COMMANDS: &[CommandSpec] = &[
         .doc_only()
         .contract(&REMOVE_CONTRACT)
         .output(output_schema_for::<RemoveResult>)
-        .params("source: its id → {removed}. Refused while a view, a sheet or a parts list uses it, and for the design the drawing is in. One undo step."),
+        .params(
+            "source: its id → {removed}. Refused while a view, a sheet or a parts list uses it, and for the design the drawing is in. One undo step.",
+        ),
 ];
 
 /// The file a drawing's source named `given` keeps, whole: a saved design that isn't this one, whose

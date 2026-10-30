@@ -956,7 +956,13 @@ impl<'a> Lookup<'a> {
         let cylinders = self.cylinders.entry(i).or_insert_with(|| cylinders_of(b));
         let on = |f: &usize| cylinders.get(*f).copied().flatten();
         let first = match found.first() {
-            None => return Err(gone(self.model, &face_maker(&face.name).into_iter().collect::<Vec<_>>(), format!("face `{}` no longer exists", face.name))),
+            None => {
+                return Err(gone(
+                    self.model,
+                    &face_maker(&face.name).into_iter().collect::<Vec<_>>(),
+                    format!("face `{}` no longer exists", face.name),
+                ));
+            }
             Some(f) => on(f).ok_or_else(|| Status::Unmeasurable(format!("face `{}` isn't a cylinder", face.name)))?,
         };
         let tol = cylinder_tolerance(b);
