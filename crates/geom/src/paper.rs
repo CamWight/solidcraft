@@ -47,7 +47,7 @@ use serde::{Deserialize, Serialize};
 use std::f64::consts::FRAC_PI_2;
 
 use crate::pixel_grid::{GridWindow, PixelGrid, PixelGridError};
-use crate::{Aabb2, EPS, Region2, Seg2, Vec2};
+use crate::{Aabb2, EPS, Loop2, Region2, Seg2, Vec2};
 
 pub mod annotate;
 pub mod flatten;
@@ -91,6 +91,43 @@ pub struct Group {
 }
 
 impl Group {
+    /// The box round what the group draws, along its lines' paths and round its pictures. Text
+    /// isn't measured here: nothing on a sheet draws any yet, and its outlines need its font.
+    pub fn bounds(&self) -> Aabb2 {
+        let mut bounds = Aabb2::EMPTY;
+        for item in &self.items {
+            let mut add = |path: &[Seg2]| path.iter().for_each(|seg| bounds = bounds.union(&seg.bounds()));
+            match item {
+                Item::Stroke { path, .. } => add(path),
+                Item::Fill { region } => region.loops().for_each(|ring| add(&ring.segs)),
+                Item::Text(_) => {}
+                Item::Picture(picture) => bounds = bounds.union(&picture.rect),
+            }
+        }
+        bounds
+    }
+
+    /// The group moved `by` on paper: each point plus `by`, exactly, so the same lines moved to the
+    /// same centre are the same bytes however they got there.
+    pub fn moved(&self, by: Vec2) -> Group {
+        let segs = |path: &[Seg2]| -> Vec<Seg2> {
+            let shift = |seg: &Seg2| match *seg {
+                // An arc's centre moves; its radius and its angles stay.
+                Seg2::Arc { center, radius, start, sweep } => Seg2::Arc { center: center + by, radius, start, sweep },
+                _ => seg.map_controls(|p| p + by),
+            };
+            path.iter().map(shift).collect()
+        };
+        let ring = |l: &Loop2| Loop2 { segs: segs(&l.segs) };
+        let items = self.items.iter().map(|item| match item {
+            Item::Stroke { path, closed, width_mm } => Item::Stroke { path: segs(path), closed: *closed, width_mm: *width_mm },
+            Item::Fill { region } => Item::Fill { region: Region2 { outer: ring(&region.outer), holes: region.holes.iter().map(ring).collect() } },
+            Item::Text(run) => Item::Text(TextRun { origin: run.origin + by, ..run.clone() }),
+            Item::Picture(picture) => Item::Picture(Picture { rect: Aabb2 { min: picture.rect.min + by, max: picture.rect.max + by }, ..*picture }),
+        });
+        Group { object: self.object, kind: self.kind, items: items.collect() }
+    }
+
     /// The records the group counts toward [`MAX_RECORDS`]: itself, each item, each stroke's pieces,
     /// and each loop of a fill with its pieces. Saturates rather than overflows.
     pub fn records(&self) -> usize {

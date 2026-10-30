@@ -6,6 +6,7 @@ use solidcraft_doc::drawing::DEFAULT_DPI;
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
+use solidcraft_geom::Seg2;
 use solidcraft_geom::paper::{NoPictures, ObjectKind};
 
 use super::*;
@@ -295,7 +296,7 @@ fn a_move_and_its_undo_project_nothing() {
     assert!(after.generation > before.generation);
     assert_eq!(bytes(&after.scene), bytes(&built(&s, sheet).scene));
     for (was, now) in before.scene.groups.iter().zip(&after.scene.groups).skip(3) {
-        assert!(same_within(now, &moved(was, Vec2::new(50.0, 0.0)), 1e-9), "{now:?}");
+        assert!(same_within(now, &was.moved(Vec2::new(50.0, 0.0)), 1e-9), "{now:?}");
     }
     run(&mut s, "edit.undo", json!({}));
     let undone = extract(&mut s, sheet).unwrap();
@@ -309,7 +310,7 @@ fn a_move_and_its_undo_project_nothing() {
 fn a_moved_group_moves_its_picture() {
     let picture = |min: Vec2, max: Vec2| Item::Picture(Picture { source: 3, rect: Aabb2 { min, max }, opacity: 0.5 });
     let group = Group { object: 7, kind: ObjectKind::View, items: vec![picture(Vec2::new(1.0, 2.0), Vec2::new(11.0, 7.0))] };
-    assert_eq!(moved(&group, Vec2::new(50.0, -2.0)).items, [picture(Vec2::new(51.0, 0.0), Vec2::new(61.0, 5.0))]);
+    assert_eq!(group.moved(Vec2::new(50.0, -2.0)).items, [picture(Vec2::new(51.0, 0.0), Vec2::new(61.0, 5.0))]);
 }
 
 /// After a model change (going back to a checkpoint taken before a tower was added) both views are
@@ -516,7 +517,7 @@ fn text_moves_with_its_group() {
         rtl: false,
     };
     let group = Group { object: 1, kind: ObjectKind::View, items: vec![Item::Text(run.clone())] };
-    let Item::Text(placed) = &moved(&group, Vec2::new(10.0, 20.0)).items[0] else { panic!("a run") };
+    let Item::Text(placed) = &group.moved(Vec2::new(10.0, 20.0)).items[0] else { panic!("a run") };
     assert_eq!(placed, &TextRun { origin: Vec2::new(11.0, 22.0), ..run });
 }
 
@@ -813,7 +814,7 @@ fn a_moved_view_moves_its_dimensions_and_an_edit_reads_one() {
     let after = settled(&mut s, sheet);
     assert_eq!(s.drawing_scenes.projections, projections, "a move projects nothing");
     assert_eq!(s.drawing_scenes.dimensions[&other].serial, serial, "and reads nothing");
-    assert_eq!(bytes_of(group_of(&after.scene, id)), bytes_of(&moved(group_of(&before.scene, id), Vec2::new(20.0, -20.0))));
+    assert_eq!(bytes_of(group_of(&after.scene, id)), bytes_of(&group_of(&before.scene, id).moved(Vec2::new(20.0, -20.0))));
 
     run(&mut s, "drawing.dimension.edit", json!({"dimension": ids::encode(id), "set": {"offset_mm": 20.0}}));
     let edited = settled(&mut s, sheet);
