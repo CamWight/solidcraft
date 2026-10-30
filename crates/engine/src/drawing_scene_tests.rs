@@ -919,7 +919,7 @@ fn a_views_dimensions_swap_with_its_lines() {
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
 
     let waiting = extract(&mut s, sheet).unwrap();
-    assert_eq!(bytes_of(group_of(&waiting.scene, id)), bytes_of(group_of(&old.scene, id)), "the old lines keep the old dimension");
+    assert!(waiting.scene.groups.iter().all(|g| g.object != id), "a reopened drawing's old lines come back without their dimension");
     assert_eq!(bytes_of(group_of(&waiting.scene, front)), bytes_of(group_of(&old.scene, front)));
 
     // One step: the front view (the lower id) and its dimension together; the top view still waits.
