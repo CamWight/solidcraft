@@ -554,8 +554,7 @@ fn a_cylinders_diameter_is_found_through_all_its_faces() {
     assert_reads(&r, 10.0, false);
     assert!(!r.exact, "found through pieces: {r:?}");
     run(&mut f.s, "timeline.suppress", json!({"feature": boss, "suppressed": true}));
-    let r = f.resolve(front);
-    assert!(matches!(&r.status, Status::Lost(why) if why.contains("no longer exists")), "{r:?}");
+    assert_eq!(f.resolve(front).status, Status::Suppressed);
 }
 
 /// Two bosses along X on the box's right face, radius 5 at z = 15 and radius 3 at z = 25: in the
