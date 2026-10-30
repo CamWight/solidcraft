@@ -434,7 +434,7 @@ fn seeded_edits_and_steps_always_end_at_the_built_scene() {
         let at_once = built(&s, sheet);
         assert_eq!(bytes(&end.scene), bytes(&at_once.scene), "seed {seed}");
         assert_eq!(&*end.objects, at_once.objects.as_slice(), "seed {seed}");
-        assert_eq!(end.dimensions, at_once.dimensions, "seed {seed}");
+        assert_eq!(end.annotations, at_once.annotations, "seed {seed}");
         assert_eq!(run(&mut s, "drawing.status", json!({}))["waiting"], json!(0), "seed {seed}");
     }
 }
@@ -663,14 +663,21 @@ fn a_dimension_is_drawn_after_the_views_on_the_sheet() {
     let object = built.objects.iter().find(|o| o.object == id).unwrap();
     assert_eq!(object.kind, ObjectKind::Dimension);
     assert_eq!(
-        built.dimensions,
-        vec![DimensionState { dimension: id, view: front, status: solidcraft_doc::drawing::dimension::Status::Ok, drawn: true, why: None }]
+        built.annotations,
+        vec![AnnotationState {
+            object: id,
+            kind: ObjectKind::Dimension,
+            view: Some(front),
+            status: solidcraft_doc::drawing::dimension::Status::Ok,
+            drawn: true,
+            why: None
+        }]
     );
     let provided = settled(&mut s, sheet);
     assert_eq!(bytes(&provided.scene), bytes(&built.scene));
     assert_eq!(&*provided.objects, built.objects.as_slice());
-    assert_eq!(provided.dimensions, built.dimensions);
-    assert!(provided.stale_dimensions.is_empty());
+    assert_eq!(provided.annotations, built.annotations);
+    assert!(provided.stale_annotations.is_empty());
 }
 
 /// Moving a view moves its dimensions, the same bytes moved, with no projection and no new read. An
@@ -682,18 +689,18 @@ fn a_moved_view_moves_its_dimensions_and_an_edit_reads_one() {
     let other = run(&mut s, "drawing.dimension.add", json!({"view": ids::encode(front), "kind": {"linear": {"a": [0, 0, 0], "b": [0, 0, 20]}}}));
     let other = ids::decode(other["dimension"].as_str().unwrap()).unwrap();
     let before = settled(&mut s, sheet);
-    let (projections, serial) = (s.drawing_scenes.projections, s.drawing_scenes.dimensions[&other].serial);
+    let (projections, serial) = (s.drawing_scenes.projections, s.drawing_scenes.annotations[&other].serial);
 
     run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"place": {"at": [170.0, 130.0]}}}));
     let after = settled(&mut s, sheet);
     assert_eq!(s.drawing_scenes.projections, projections, "a move projects nothing");
-    assert_eq!(s.drawing_scenes.dimensions[&other].serial, serial, "and reads nothing");
+    assert_eq!(s.drawing_scenes.annotations[&other].serial, serial, "and reads nothing");
     assert_eq!(bytes_of(group_of(&after.scene, id)), bytes_of(&group_of(&before.scene, id).moved(Vec2::new(20.0, -20.0))));
 
     run(&mut s, "drawing.dimension.edit", json!({"dimension": ids::encode(id), "set": {"offset_mm": 20.0}}));
     let edited = settled(&mut s, sheet);
     assert_eq!(s.drawing_scenes.projections, projections, "an edit projects nothing");
-    assert_eq!(s.drawing_scenes.dimensions[&other].serial, serial, "the other dimension isn't read");
+    assert_eq!(s.drawing_scenes.annotations[&other].serial, serial, "the other dimension isn't read");
     assert_ne!(bytes_of(group_of(&edited.scene, id)), bytes_of(group_of(&after.scene, id)));
     assert_eq!(bytes(&edited.scene), bytes(&built(&s, sheet).scene));
 }
@@ -731,7 +738,7 @@ fn a_lost_dimension_leaves_the_sheet_drawn_and_is_listed() {
     let on_top = top_edge(&mut s, top);
     run(&mut s, "drawing.view.edit", json!({"view": ids::encode(top), "set": {"display_style": "shaded"}}));
     let view_failed = settled(&mut s, sheet);
-    let held = view_failed.dimensions.iter().find(|d| d.dimension == on_top).unwrap();
+    let held = view_failed.annotations.iter().find(|d| d.object == on_top).unwrap();
     assert!(!held.drawn && held.why.as_deref() == Some("its view isn't drawn"), "{held:?}");
     assert!(view_failed.scene.groups.iter().all(|g| g.object != on_top));
     assert_eq!(bytes(&view_failed.scene), bytes(&built(&s, sheet).scene));
@@ -745,14 +752,14 @@ fn a_lost_dimension_leaves_the_sheet_drawn_and_is_listed() {
     run(&mut s, "timeline.edit", json!({"feature": block.to_string(), "set": {"height": 40}}));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
     let view = extract(&mut s, sheet).unwrap();
-    assert!(view.stale.contains(&front) && view.stale_dimensions.is_empty(), "the views first");
+    assert!(view.stale.contains(&front) && view.stale_annotations.is_empty(), "the views first");
     assert_ne!(bytes_of(group_of(&settled(&mut s, sheet).scene, id)), bytes_of(group_of(&before.scene, id)));
 
     let (mut s, sheet, front, id, drawing) = holed();
     let before = settled(&mut s, sheet);
     delete_hole(&mut s, &drawing);
     let lost = settled(&mut s, sheet);
-    let state = lost.dimensions.iter().find(|d| d.dimension == id).unwrap();
+    let state = lost.annotations.iter().find(|d| d.object == id).unwrap();
     assert!(!state.drawn && matches!(state.status, solidcraft_doc::drawing::dimension::Status::Lost(_)), "{state:?}");
     assert!(lost.scene.groups.iter().all(|g| g.object != id));
     assert!(lost.scene.groups.iter().any(|g| g.object == front), "the sheet is still drawn");
@@ -783,9 +790,10 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
     };
     let mut assembly = assemble(record, std::iter::once((front, Vec2::new(100.0, 100.0), view))).unwrap();
     let stroke = |to: Vec2| Item::Stroke { path: vec![Seg2::Line { a: Vec2::ZERO, b: to }], closed: false, width_mm: 0.25 };
-    let dimension = |id, items| DrawnDimension {
-        dimension: id,
-        view: front,
+    let dimension = |id, items| DrawnAnnotation {
+        object: id,
+        kind: ObjectKind::Dimension,
+        view: Some(front),
         status: solidcraft_doc::drawing::dimension::Status::Ok,
         group: Some(Group { object: id, kind: ObjectKind::Dimension, items }),
         why: None,
@@ -793,7 +801,7 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
     let too_many = dimension(1, vec![stroke(Vec2::X); MAX_RECORDS + 1]);
     let off_paper = dimension(2, vec![stroke(Vec2::new(1e9, 0.0))]);
     let fits = dimension(3, vec![stroke(Vec2::X)]);
-    assembly.add_dimensions([&too_many, &off_paper, &fits].into_iter());
+    assembly.add_annotations([&too_many, &off_paper, &fits].into_iter());
     let (scene, _, objects, states) = assembly.finish().unwrap();
     assert!(!states[0].drawn && states[0].why.as_deref().is_some_and(|w| w.contains("records")), "{:?}", states[0]);
     assert!(!states[1].drawn && states[1].why.is_some(), "{:?}", states[1]);
@@ -930,7 +938,7 @@ fn a_views_dimensions_swap_with_its_lines() {
     assert_eq!(one.stale, vec![top], "the one view drawn");
     assert_eq!(bytes_of(group_of(&one.scene, front)), bytes_of(group_of(&new.scene, front)));
     assert_eq!(bytes_of(group_of(&one.scene, id)), bytes_of(group_of(&new.scene, id)), "and its dimension in the same swap");
-    assert!(one.stale_dimensions.is_empty(), "{:?}", one.stale_dimensions);
+    assert!(one.stale_annotations.is_empty(), "{:?}", one.stale_annotations);
 
     // 40 tall at 1:2: the top edge is 10 above the centre, and the dimension line 10 above that.
     let tips: Vec<f64> = group_of(&one.scene, id)
