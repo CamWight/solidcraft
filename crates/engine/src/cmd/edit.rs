@@ -12,8 +12,13 @@ use crate::params::{bad, bool_, name_or_id_list, num, str_};
 use crate::{EngineError, Result, Sel, Session, Snapshot};
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new("edit.undo", "Undo", undo).any_part().icon("undo").key("Ctrl+Z").noundo().doc_only(),
-    CommandSpec::new("edit.redo", "Redo", redo).any_part().icon("redo").key("Ctrl+Y").noundo().doc_only(),
+    CommandSpec::new("edit.undo", "Undo", undo).any_part().icon("undo").key("Ctrl+Z").noundo().doc_only().params(
+        "model?: true, the model's last step with a drawing open, which stays open (default: the open part's) → {undone, skipped?: the \
+         newer steps of the model it passed, in a drawing}",
+    ),
+    CommandSpec::new("edit.redo", "Redo", redo).any_part().icon("redo").key("Ctrl+Y").noundo().doc_only().params(
+        "model?: true, as edit.undo → {redone, skipped?}",
+    ),
     CommandSpec::new("edit.repeat", "Repeat Last Command", crate::checked!("edit.repeat", repeat))
         .icon("redo")
         .key("Shift+R")
@@ -105,20 +110,24 @@ fn play(_s: &mut Session, p: &Value) -> Result<Value> {
     serde_json::to_value(crate::schema::edit::TimelinePlayResult { action: request.action }).map_err(|e| EngineError::Other(e.to_string()))
 }
 
-fn undo(s: &mut Session, _p: &Value) -> Result<Value> {
-    let prev = latest(&mut s.undo, s.open_drawing).ok_or_else(|| nothing(s, "undo"))?;
+fn undo(s: &mut Session, p: &Value) -> Result<Value> {
+    let part = part_named(s, p, "edit.undo")?;
+    let (prev, skipped) = latest(&mut s.undo, part, s.open_drawing).map_err(|why| why.error("undo"))?;
     let now = go_to(s, prev);
-    let label = now.label.clone();
+    let mut reply = json!({"undone": now.label});
     s.redo.push(now);
-    Ok(json!({"undone": label}))
+    with_skipped(&mut reply, skipped);
+    Ok(reply)
 }
 
-fn redo(s: &mut Session, _p: &Value) -> Result<Value> {
-    let next = latest(&mut s.redo, s.open_drawing).ok_or_else(|| nothing(s, "redo"))?;
+fn redo(s: &mut Session, p: &Value) -> Result<Value> {
+    let part = part_named(s, p, "edit.redo")?;
+    let (next, skipped) = latest(&mut s.redo, part, s.open_drawing).map_err(|why| why.error("redo"))?;
     let now = go_to(s, next);
-    let label = now.label.clone();
+    let mut reply = json!({"redone": now.label});
     s.undo.push(now);
-    Ok(json!({"redone": label}))
+    with_skipped(&mut reply, skipped);
+    Ok(reply)
 }
 
 const REPEAT_CONTRACT: crate::schema::TypedContract<crate::schema::edit::RepeatParams> = crate::schema::TypedContract::new();
@@ -131,25 +140,63 @@ fn repeat(_s: &mut Session, _p: &Value) -> Result<Value> {
     ))
 }
 
-/// Takes the latest of `steps` on `part` (the open drawing, else the model): undo and redo go
-/// through one part's steps, and leave the others' where they are.
-fn latest(steps: &mut Vec<Snapshot>, part: Option<u64>) -> Option<Snapshot> {
-    let at = steps.iter().rposition(|step| step.part == part)?;
-    Some(steps.remove(at))
+/// The part `p` asks to undo or redo in: the open one, or the model with `model: true`.
+fn part_named(s: &Session, p: &Value, cmd: &str) -> Result<Option<u64>> {
+    match p.get("model") {
+        None | Some(Value::Bool(false)) => Ok(s.open_drawing),
+        Some(Value::Bool(true)) => Ok(None),
+        Some(_) => Err(bad(cmd, "`model` is true or false")),
+    }
 }
 
-fn nothing(s: &Session, what: &str) -> EngineError {
-    match s.open_drawing {
-        Some(_) => EngineError::Other(format!("nothing to {what} in this drawing (close it to {what} in the model)")),
-        None => EngineError::Other(format!("nothing to {what}")),
+fn with_skipped(reply: &mut Value, skipped: Vec<String>) {
+    if !skipped.is_empty()
+        && let Some(reply) = reply.as_object_mut()
+    {
+        reply.insert("skipped".into(), json!(skipped));
     }
+}
+
+/// Why no step can be taken.
+enum NoStep {
+    /// None in the part, a drawing or the model.
+    Nothing(Option<u64>),
+    /// The model's step would take away the drawing that is open.
+    Opens(u64),
+}
+
+impl NoStep {
+    fn error(&self, what: &str) -> EngineError {
+        match self {
+            NoStep::Nothing(Some(_)) => EngineError::Other(format!("nothing to {what} in this drawing (close it to {what} in the model)")),
+            NoStep::Nothing(None) => EngineError::Other(format!("nothing to {what}")),
+            NoStep::Opens(id) => {
+                EngineError::Other(format!("that would {what} the making of drawing {}, which is open: close it first", ids::encode(*id)))
+            }
+        }
+    }
+}
+
+/// Takes the latest of `steps` on `part` (a drawing, else the model), and the labels of the newer
+/// steps of the model it passed: undo and redo go through one part's steps, and leave the others'
+/// where they are. A step of the model without the drawing `open` is left where it is: nothing can
+/// be open that isn't there.
+fn latest(steps: &mut Vec<Snapshot>, part: Option<u64>, open: Option<u64>) -> std::result::Result<(Snapshot, Vec<String>), NoStep> {
+    let at = steps.iter().rposition(|step| step.part == part).ok_or(NoStep::Nothing(part))?;
+    if let (None, Some(open), Some(step)) = (part, open, steps.get(at))
+        && step.doc.drawing(open).is_none()
+    {
+        return Err(NoStep::Opens(open));
+    }
+    let passed = steps.get(at + 1..).unwrap_or_default().iter().filter(|step| step.part.is_none()).map(|step| step.label.clone()).collect();
+    Ok((steps.remove(at), passed))
 }
 
 /// Put the session at `snap`; returns where it was, under the same label. A drawing's step puts
 /// back only that drawing. The model's step puts back the design as it was, but keeps each
 /// drawing the design had as it is now: each part's steps are undone in that part only. Neither
-/// opens or closes a drawing: a drawing's steps are taken while it is open, and the model's while
-/// none is.
+/// opens or closes a drawing: a drawing's steps are taken while it is open, and a model's with a
+/// drawing open keep it open ([`latest`]).
 fn go_to(s: &mut Session, snap: Snapshot) -> Snapshot {
     let was = Snapshot { part: snap.part, ..Snapshot::of(s, &snap.label) };
     let snap = match snap.part {
