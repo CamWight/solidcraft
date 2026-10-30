@@ -1232,10 +1232,13 @@ impl Session {
     fn refresh_render(&mut self, previous: &Arc<Document>) {
         self.revision += 1;
         // Geometry/placements have been proved identical. Retarget the cache's document key
-        // instead of discarding prepared meshes merely because the document Arc changed.
+        // instead of discarding prepared meshes merely because the document Arc changed. Reference
+        // parts draw differently on a drawing, and its views watch the world state: a change of them
+        // makes a new one, from the same meshes.
         if let Ok(mut cache) = self.world_cache.lock()
             && let Some(cache) = cache.as_mut()
             && Arc::ptr_eq(&cache.doc, previous)
+            && self.doc.reference_occurrences() == previous.reference_occurrences()
         {
             cache.doc = self.doc.clone();
         }
