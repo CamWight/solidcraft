@@ -41,6 +41,7 @@ use std::f64::consts::FRAC_PI_2;
 use crate::{EPS, Region2, Seg2, Vec2};
 
 pub mod annotate;
+pub mod cubic_pieces;
 pub mod grid;
 
 pub use grid::{Grid, GridGroup, GridItem, GridPath, GridPoint, GridReport, OnGrid, Piece};
