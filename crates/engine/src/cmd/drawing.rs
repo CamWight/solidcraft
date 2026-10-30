@@ -24,7 +24,7 @@ use crate::{Result, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new("drawing.create", "Create Drawing", create).any_part().icon("new").doc_only().params(
-        "name?: the drawing's name (default: the design's); language?: the drawing's content language, a BCP 47 tag (default en); units?: \"follow_model\" (default) or one length unit such as \"mm\". Adds a drawing of this design, one ISO A3 landscape sheet with the ISO border, and opens it (one undo step of the model) → as drawing.inspect",
+        "name?: the drawing's name (default: the design's); language?: the drawing's content language, a BCP 47 tag (default en); units?: \"follow_model\" (default) or one length unit such as \"mm\"; source?: a saved .sc design's path, to draw that design instead of this one, which may then be empty. Adds a drawing of this design, one ISO A3 landscape sheet with the ISO border, and opens it (one undo step of the model) → as drawing.inspect",
     ),
     CommandSpec::new("drawing.list", "List Drawings", list)
         .any_part()
@@ -112,7 +112,8 @@ fn named(cmd: &str, s: &Session, p: &Value) -> Result<u64> {
 
 fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "drawing.create";
-    if s.doc.features.is_empty() {
+    let linked = text(cmd, p, "source")?.map(|given| super::drawing_source::source_file(s, cmd, given)).transpose()?;
+    if s.doc.features.is_empty() && linked.is_none() {
         return Err(bad(cmd, "the design is empty: there is nothing to draw yet"));
     }
     drawing::check_count(s.doc.drawings.len() + 1).map_err(|e| bad(cmd, e.to_string()))?;
@@ -125,7 +126,7 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     let fail = |e: solidcraft_doc::DocError| bad(cmd, e.to_string());
     let mut d = Drawing::new(&name, language, "Sheet 1", a3, Some(DrawingBorderProfile::iso()), &taken, &mut s.ids).map_err(fail)?;
     let source = d.allocate_id(&mut s.ids).map_err(fail)?;
-    d.sources.push(Source { id: source });
+    d.sources.push(Source { id: source, path: linked });
     if let Some(units) = units(cmd, p)? {
         d.units = units;
     }
@@ -133,6 +134,14 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
     s.open_drawing = Some(d.id);
     s.doc_mut().put_drawing(Arc::new(d));
     inspect(s, &Value::Null)
+}
+
+/// A source as `drawing.inspect` lists it.
+fn source_reply(source: &Source) -> Value {
+    match &source.path {
+        Some(path) => json!({"id": ids::encode(source.id), "path": path}),
+        None => json!({"id": ids::encode(source.id)}),
+    }
 }
 
 fn list(s: &mut Session, _p: &Value) -> Result<Value> {
@@ -265,7 +274,7 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         "projection": d.projection,
         "language": d.language,
         "properties": d.properties,
-        "sources": d.sources.iter().map(|source| json!({"id": ids::encode(source.id)})).collect::<Vec<_>>(),
+        "sources": d.sources.iter().map(source_reply).collect::<Vec<_>>(),
         "sheets": sheets,
         "revisions": {
             "numbering": d.revisions.numbering,
