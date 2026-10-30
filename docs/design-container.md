@@ -263,7 +263,8 @@ drawings of its own too, is damage: the design is refused. Plain JSON holds the 
 `drawings` in the document.
 
 A drawing saves what is authored: its sheets, views, dimensions and other annotations, each naming
-what it measures by persistent name. Nothing derived is saved.
+what it measures by persistent name. Nothing derived is saved. An image on a sheet is kept in the
+record, its file's bytes in base64, and the path it came from isn't saved.
 
 ## Sheet cache
 
