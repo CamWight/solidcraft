@@ -174,7 +174,7 @@ impl Tag {
         require(self.sheet != 0, "a tag is on a sheet")?;
         require(self.at.iter().all(|c| is_paper_coordinate(*c)), "a tag is on paper")?;
         require(TAG_SIZES_MM.contains(&self.size_mm), "a tag's side is 1 to 50 mm")?;
-        for text in &self.text {
+        if let Some(text) = &self.text {
             check_label(text).map_err(cell_rule)?;
         }
         Ok(())
@@ -307,7 +307,7 @@ impl RevisionRecord {
             require(ids.insert(tag.id), "each row and tag has its own id")?;
             require(tag.lost.is_some() || self.rows.iter().any(|r| r.id == tag.row), "a tag is bound to a row")?;
             tag.check()?;
-            for text in &tag.lost {
+            if let Some(text) = &tag.lost {
                 check_label(text).map_err(cell_rule)?;
             }
         }
