@@ -17,7 +17,7 @@
 //! projected again, and an edited dimension is read again alone. The provider
 //! evaluates no model either. Its cache is the
 //! session's view state, beside the drawing: never saved, never an undo step, and dropped when its
-//! drawing closes.
+//! drawing closes. What a save keeps of it is apart, in [`KeptLines`].
 //!
 //! [`SheetLayout::paper`]: solidcraft_geom::drawing_sheet::SheetLayout::paper
 
@@ -30,7 +30,7 @@ use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
-use solidcraft_doc::{DocError, ModelState, ids};
+use solidcraft_doc::{DocError, Document, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Scene};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
@@ -201,7 +201,7 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
 /// A view's lines for a sheet scene, centred on the view, or why it has none.
 #[derive(Clone, Debug)]
 struct Drawn {
-    group: Option<Group>,
+    group: Option<Arc<Group>>,
     status: Status,
     stats: Option<Stats>,
     /// Its boundary, centred on the view as its lines are.
@@ -252,7 +252,7 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
             if group.records() > MAX_RECORDS {
                 return none(Status::Failed(format!("its lines are more than a paper scene's {MAX_RECORDS} records: choose a smaller scale")));
             }
-            Drawn { group: Some(group), status: Status::Drawn, stats: Some(lines.stats), boundary, frame: Some(frame) }
+            Drawn { group: Some(Arc::new(group)), status: Status::Drawn, stats: Some(lines.stats), boundary, frame: Some(frame) }
         }
         Err(e) => none(Status::Failed(reason(e))),
     }
@@ -665,13 +665,18 @@ pub fn step(s: &mut Session) -> bool {
     cache.shown = Some((state.clone(), shown));
     cache.serial += 1;
     let serial = cache.serial;
+    let lines_kept = KeptView::of(&view, &state, &drawn);
     cache.views.insert(id, Entry { state: state.clone(), view, drawn, serial });
     cache.keep_dimensions(these, lines, &state, serial, &units);
     #[cfg(test)]
     {
         cache.projections += 1;
     }
-    waiting.len() > 1 || !cache.stale_dimensions(&d, &on, &state, &units).is_empty()
+    let more = waiting.len() > 1 || !cache.stale_dimensions(&d, &on, &state, &units).is_empty();
+    if let Some(kept) = lines_kept {
+        Arc::make_mut(&mut s.kept_lines).0.entry(d.id).or_default().insert(id, kept);
+    }
+    more
 }
 
 /// Reads the dimensions out of date of the first view that has any, through its frame, and says
@@ -687,6 +692,65 @@ fn step_dimensions(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)
     cache.serial += 1;
     cache.keep_dimensions(these, lines, state, view_serial, &units);
     !others.is_empty()
+}
+
+/// Each drawing's last lines, by drawing and view: what a save can keep. A closed drawing's stay here
+/// too, as plain data: a weak reference to the world state they came from says whether they are
+/// current without holding it.
+#[derive(Clone, Default)]
+pub struct KeptLines(BTreeMap<u64, BTreeMap<u64, KeptView>>);
+
+#[derive(Clone)]
+struct KeptView {
+    key: String,
+    state: std::sync::Weak<ModelState>,
+    group: Arc<Group>,
+    boundary: Aabb2,
+    origin_mm: Vec2,
+}
+
+impl KeptView {
+    /// A view's lines as a save keeps them, when it drew any.
+    fn of(view: &ResolvedView, state: &Arc<ModelState>, drawn: &Drawn) -> Option<KeptView> {
+        let (group, boundary, frame) = (drawn.group.as_ref()?, drawn.boundary?, drawn.frame?);
+        let origin_mm = frame.paper_map().apply(Vec2::ZERO);
+        Some(KeptView { key: lines_key(view), state: Arc::downgrade(state), group: group.clone(), boundary, origin_mm })
+    }
+}
+
+/// What a view's lines were drawn from, as a save writes it: compared only within one build, whose
+/// lines these are, so its text can be anything that tells two views apart.
+fn lines_key(view: &ResolvedView) -> String {
+    format!("{view:?}")
+}
+
+/// What a save of `design` keeps of its drawings' lines: only each view's own, drawn from the world
+/// state there is now and as it would draw now, and it never draws one (`saved_geometry`'s rule). A
+/// drawing with none keeps what its file has.
+pub(crate) fn saved_lines(s: &Session, design: &Document) -> solidcraft_io::SheetCaches {
+    let keep_from = s.file.as_ref().map(|(path, _)| path.clone());
+    let world = s.cached_world_state().filter(|_| s.active_sketch.is_none() && s.pending_moves.is_empty());
+    let Some(world) = world else { return solidcraft_io::SheetCaches { lines: Vec::new(), keep_from } };
+    let current = |d: &Drawing, id: u64, kept: &KeptView| {
+        let same = kept.state.upgrade().is_some_and(|state| Arc::ptr_eq(&state, &world));
+        (same && d.resolve_view(id).is_ok_and(|view| lines_key(&view) == kept.key)).then(|| solidcraft_io::SavedView {
+            view: id,
+            key: kept.key.clone(),
+            group: kept.group.clone(),
+            boundary: kept.boundary,
+            origin_mm: kept.origin_mm,
+        })
+    };
+    let lines = design
+        .drawings
+        .iter()
+        .filter_map(|d| {
+            let kept = s.kept_lines.0.get(&d.id)?;
+            let views: Vec<_> = d.views.iter().filter_map(|v| current(d, v.id, kept.get(&v.id)?)).collect();
+            (!views.is_empty()).then_some(solidcraft_io::SheetLines { drawing: d.id, views })
+        })
+        .collect();
+    solidcraft_io::SheetCaches { lines, keep_from }
 }
 
 /// Drops the cache once its drawing isn't the one open: closing a drawing (or opening another) ends
