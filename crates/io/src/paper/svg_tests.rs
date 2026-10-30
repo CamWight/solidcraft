@@ -165,7 +165,7 @@ fn the_svg_reader_reads_it_back() {
 /// Text is its glyph outlines, one path a run, filled black with SVG's default nonzero rule.
 #[test]
 fn text_is_its_outlines_filled_black_nonzero() {
-    use solidcraft_geom::paper::text::{Cluster, Font, FontFlags, FontGlyph, FontMetrics, PlacedGlyph, TextRun};
+    use solidcraft_geom::paper::text::{Cluster, Embed, Font, FontFlags, FontGlyph, FontMetrics, PlacedGlyph, TextRun};
     let metrics = FontMetrics {
         ascent: 900,
         descent: -200,
@@ -181,6 +181,7 @@ fn text_is_its_outlines_filled_black_nonzero() {
         bytes: std::sync::Arc::from(vec![1u8]),
         face: 0,
         postscript_name: "MadeUp".into(),
+        embed: Embed::Subset,
         num_glyphs: 2,
         units_per_em: 1000,
         metrics,
