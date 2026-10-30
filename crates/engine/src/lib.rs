@@ -130,7 +130,7 @@ pub enum Sel {
     Feature {
         id: u64,
     },
-    /// A view, dimension or balloon of the drawing open.
+    /// A view, dimension, balloon or note of the drawing open.
     Drawing {
         #[serde(with = "solidcraft_doc::ids")]
         drawing: u64,
@@ -895,7 +895,7 @@ impl Session {
         self.open_drawing.and_then(|id| self.doc.drawing(id)).ok_or_else(|| params::bad(cmd, "open a drawing first (drawing.open)"))
     }
 
-    /// Whether `object` can be selected in `drawing`: a view, dimension or balloon of the drawing open.
+    /// Whether `object` can be selected in `drawing`: what a selection can name in the drawing open ([`solidcraft_doc::drawing::Drawing::kind_of`]).
     pub(crate) fn selectable_in_drawing(&self, drawing: u64, object: u64) -> bool {
         self.open_drawing == Some(drawing) && self.doc.drawing(drawing).is_some_and(|d| d.has_object(object))
     }

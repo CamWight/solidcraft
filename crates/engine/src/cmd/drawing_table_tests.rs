@@ -170,9 +170,9 @@ fn a_table_edits_moves_and_goes_with_its_sheet() {
     let edited = set(&mut s, json!({"filter": filter, "overrides": overrides}));
     assert_eq!((&edited["record"]["table"]["filter"], &edited["record"]["table"]["overrides"]), (&filter, &overrides), "{edited}");
 
-    let before = s.drawing("test").unwrap().table(id).unwrap().clone();
+    let before = s.drawing("test").unwrap().tables.by_id(id).unwrap().clone();
     s.execute("drawing.sheet.set", &json!({"sheet": sheet, "size": {"standard": "a1"}})).unwrap();
-    assert_eq!(*s.drawing("test").unwrap().table(id).unwrap(), before, "a change of paper moves nothing");
+    assert_eq!(*s.drawing("test").unwrap().tables.by_id(id).unwrap(), before, "a change of paper moves nothing");
 
     let other = s.execute("drawing.sheet.add", &json!({"name": "Other"})).unwrap()["sheet"].as_str().unwrap().to_string();
     let moved = set(&mut s, json!({"sheet": "Other"}));

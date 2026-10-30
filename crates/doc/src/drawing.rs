@@ -59,12 +59,14 @@ use crate::ids::{self, IdSource};
 use crate::{DocError, Metadata, Result, expr};
 
 pub mod balloon;
+pub mod by_id;
 pub mod dimension;
 pub mod note;
 pub mod table;
 pub mod view;
 
 use balloon::Balloon;
+use by_id::ById;
 use dimension::Dimension;
 use note::{Anchor, Note};
 use table::SheetTable;
@@ -128,15 +130,12 @@ pub struct Drawing {
     /// By id ([`Drawing::add_dimensions`]), each behind its own `Arc`, as the views are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dimensions: Vec<Arc<Dimension>>,
-    /// By id ([`Drawing::add_balloons`]), as the dimensions are.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub balloons: Vec<Arc<Balloon>>,
-    /// By id ([`Drawing::add_tables`]), as the balloons are.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tables: Vec<Arc<SheetTable>>,
-    /// By id ([`Drawing::add_notes`]), as the balloons are.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub notes: Vec<Arc<Note>>,
+    #[serde(default, skip_serializing_if = "ById::is_empty")]
+    pub balloons: ById<Balloon>,
+    #[serde(default, skip_serializing_if = "ById::is_empty")]
+    pub tables: ById<SheetTable>,
+    #[serde(default, skip_serializing_if = "ById::is_empty")]
+    pub notes: ById<Note>,
     /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
     #[serde(default, skip_serializing_if = "no_revisions")]
     pub revisions: Arc<RevisionRecord>,
@@ -229,6 +228,18 @@ impl Sheet {
     }
 }
 
+/// What a selection can name in a drawing ([`Drawing::kind_of`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Selectable {
+    View,
+    Dimension,
+    Balloon,
+    Note,
+}
+
+/// [`Selectable`] in words, for what a command says when an id is none of them.
+pub const SELECTABLE: &str = "view, dimension, balloon or note";
+
 /// What is on one of a drawing's sheets ([`Drawing::on_sheet`]), each kind by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct OnSheet {
@@ -254,6 +265,25 @@ impl OnSheet {
             && self.tags.is_empty()
             && self.tables.is_empty()
             && self.notes.is_empty()
+    }
+
+    /// Adds object `id` of `kind`. [`OnSheet::finish`] puts the lists back in order after.
+    pub fn add(&mut self, kind: Selectable, id: u64) {
+        let list = match kind {
+            Selectable::View => &mut self.views,
+            Selectable::Dimension => &mut self.dimensions,
+            Selectable::Balloon => &mut self.balloons,
+            Selectable::Note => &mut self.notes,
+        };
+        list.push(id);
+    }
+
+    /// Each list by id and each id once, as [`Drawing::remove_objects`] takes them.
+    pub fn finish(&mut self) {
+        for list in [&mut self.views, &mut self.dimensions, &mut self.balloons, &mut self.tags, &mut self.tables, &mut self.notes] {
+            list.sort_unstable();
+            list.dedup();
+        }
     }
 }
 
@@ -291,9 +321,9 @@ impl Drawing {
             sheets: vec![Arc::new(first)],
             views: Vec::new(),
             dimensions: Vec::new(),
-            balloons: Vec::new(),
-            notes: Vec::new(),
-            tables: Vec::new(),
+            balloons: ById::default(),
+            tables: ById::default(),
+            notes: ById::default(),
             revisions: Arc::default(),
         };
         drawing.validate()?;
@@ -317,14 +347,12 @@ impl Drawing {
         DRAWING.check_numbers(&v, "properties")?;
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
         let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
-        let (views, dimensions, balloons) = (std::mem::take(&mut d.views), std::mem::take(&mut d.dimensions), std::mem::take(&mut d.balloons));
-        let tables = std::mem::take(&mut d.tables);
+        let (views, dimensions) = (std::mem::take(&mut d.views), std::mem::take(&mut d.dimensions));
         d.add_views(views);
         d.add_dimensions(dimensions);
-        d.add_balloons(balloons);
-        d.add_tables(tables);
-        let notes = std::mem::take(&mut d.notes);
-        d.add_notes(notes);
+        d.balloons.put_in_order();
+        d.tables.put_in_order();
+        d.notes.put_in_order();
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
@@ -367,9 +395,22 @@ impl Drawing {
         }
     }
 
-    /// Whether `id` names an object a sheet shows: a view, a dimension or a balloon.
+    /// What `id` names, of what a selection can: the one place that says.
+    pub fn kind_of(&self, id: u64) -> Option<Selectable> {
+        if self.view(id).is_some() {
+            Some(Selectable::View)
+        } else if self.dimension(id).is_some() {
+            Some(Selectable::Dimension)
+        } else if self.balloons.by_id(id).is_some() {
+            Some(Selectable::Balloon)
+        } else {
+            self.notes.by_id(id).map(|_| Selectable::Note)
+        }
+    }
+
+    /// Whether `id` names an object a selection can name.
     pub fn has_object(&self, id: u64) -> bool {
-        self.view(id).is_some() || self.dimension(id).is_some() || self.balloon(id).is_some() || self.note(id).is_some()
+        self.kind_of(id).is_some()
     }
 
     /// What is on sheet `id`: its views and the dimensions and balloons in them. Each later kind of record on a
@@ -411,7 +452,7 @@ impl Drawing {
         self.tables.retain(|t| objects.tables.binary_search(&t.id).is_err());
         self.notes.retain(|n| objects.notes.binary_search(&n.id).is_err());
         // A balloon outlives the list it named, and goes back to the lists it could read.
-        for balloon in &mut self.balloons {
+        for balloon in self.balloons.iter_mut() {
             if balloon.parts_list.is_some_and(|list| objects.tables.binary_search(&list).is_ok()) {
                 Arc::make_mut(balloon).parts_list = None;
             }
