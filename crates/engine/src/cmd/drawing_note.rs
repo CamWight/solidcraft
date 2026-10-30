@@ -25,7 +25,7 @@ const INSPECT: &str = "drawing.note.inspect";
 const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new(ADD, "Add Note", crate::checked!("drawing.note.add", ADD_CONTRACT, add))
+    CommandSpec::new(ADD, "Add Note", crate::checked!("drawing.note.add", add))
         .icon("new")
         .in_drawing()
         .doc_only()
@@ -37,7 +37,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              or [{text} or {field: {source: component|drawing|sheet|revision, key, format?}}]; cap_mm?: 0.5..100, its text height → what \
              drawing.note.inspect answers for it. Saved by name, never the point picked. One undo step; no model is evaluated.",
         ),
-    CommandSpec::new(EDIT, "Edit Note", crate::checked!("drawing.note.edit", EDIT_CONTRACT, edit))
+    CommandSpec::new(EDIT, "Edit Note", crate::checked!("drawing.note.edit", edit))
         .icon("edit")
         .in_drawing()
         .doc_only()
@@ -47,7 +47,7 @@ pub static COMMANDS: &[CommandSpec] = &[
             "note: its id; set: {at?: [x, y], content?, cap_mm?: a height, or null for the drawing's} → {note, changed: [fields]}. What it \
              belongs to stays: to point at something else, add a new one. One undo step, none when nothing changes; no model is evaluated.",
         ),
-    CommandSpec::new(INSPECT, "Inspect Note", crate::checked!("drawing.note.inspect", INSPECT_CONTRACT, inspect))
+    CommandSpec::new(INSPECT, "Inspect Note", crate::checked!("drawing.note.inspect", inspect))
         .icon("inspect")
         .in_drawing()
         .noundo()

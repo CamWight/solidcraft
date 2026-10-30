@@ -47,7 +47,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
         .contract(&HIT_CONTRACT)
         .output(output_schema_for::<SheetHitResult>)
         .params("sheet: id or name; point_mm: [x, y] on paper; band_mm?: how near a box's edge counts as on it (default 0) → {hit: {object, kind: view|dimension, on_edge} or null}: the smallest box round a view or a dimension that holds the point within the band, then the topmost. Read-only; no model is evaluated."),
-    CommandSpec::new(LINE, "Which Line Is Under a Point", crate::checked!("drawing.scene.line", LINE_CONTRACT, line))
+    CommandSpec::new(LINE, "Which Line Is Under a Point", crate::checked!("drawing.scene.line", line))
         .icon("inspect")
         .in_drawing()
         .noundo()
@@ -55,7 +55,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
         .contract(&LINE_CONTRACT)
         .output(output_schema_for::<SheetLineResult>)
         .params("sheet: id or name; point_mm: [x, y] on paper; band_mm?: how near a line counts as under the point (default 1) → {line: {view, occurrence: [the occurrences that place its body], body, reference, source: {kind: edge, edge, tangent} or {kind: silhouette, face}, distance_mm} or null}: in the view under the point, smallest boundary first, the nearest of its drawn lines within the band, the one painted last when two are as near. Draws the sheet's views first if they aren't; evaluates nothing."),
-    CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", CONTRACT, scene))
+    CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", scene))
     .icon("export")
     .in_drawing()
     .noundo()
