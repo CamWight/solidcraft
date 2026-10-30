@@ -32,7 +32,7 @@ use solidcraft_doc::ids;
 use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
 use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale};
-use solidcraft_geom::hlr::{Source, Visibility};
+use solidcraft_geom::hlr::Visibility;
 use solidcraft_geom::paper::{MAX_COORDINATE_MM, Picture};
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_geom::{Aabb2, Vec2};
@@ -84,7 +84,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&EDIT_CONTRACT)
         .output(output_schema_for::<EditResult>)
-        .params("view: a saved view's id; set: {scale?, display_style?, reference_style?, reference_hides_model?, tangent_edges?: each a value, or null to follow the parent (a base view keeps a scale); reference_margin_mm?; view?: a base view's direction; place?: {at: [x, y]} or {aligned: n}; linked?: a projected view's display settings all following its parent (true) or all its own, as they are now (false)} → {view, changed: [fields], followers: [the views projected from it whose settings changed with it]}. One undo step; no model is evaluated."),
+        .params("view: a saved view's id; set: {scale?, display_style?, reference_style?, reference_hides_model?, tangent_edges?: each a value, or null to follow the parent (a base view keeps a scale); reference_shown_percent?; view?: a base view's direction; place?: {at: [x, y]} or {aligned: n}; linked?: a projected view's display settings all following its parent (true) or all its own, as they are now (false)} → {view, changed: [fields], followers: [the views projected from it whose settings changed with it]}. One undo step; no model is evaluated."),
     CommandSpec::new(DRAG, "Move View", crate::checked!("drawing.view.move", move_view))
         .icon("move")
         .in_drawing()
@@ -268,10 +268,7 @@ fn line_results(shown: &ShownSet, drawn: &Lines) -> Vec<LineResult> {
             occurrence: body.map(|b| b.path.clone()).unwrap_or_default(),
             body: body.map(|b| b.body.clone()).unwrap_or_default(),
             reference: l.reference,
-            source: match l.source {
-                Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
-                Source::Silhouette { face } => LineSourceResult::Silhouette { face },
-            },
+            source: l.source.into(),
             pieces: l
                 .pieces
                 .iter()
