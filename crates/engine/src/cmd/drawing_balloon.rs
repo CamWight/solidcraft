@@ -18,7 +18,7 @@ use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::ids;
 
 use super::CommandSpec;
-use super::drawing_dimension::status_words;
+use super::drawing_dimension::located_result;
 use crate::params::bad;
 use crate::schema::drawing_balloon::{AddParams, BalloonResult, EditParams, EditResult, InspectParams};
 use crate::schema::{TypedContract, output_schema_for};
@@ -117,10 +117,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
     let balloon = d.balloons.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no balloon {}", ids::encode(id))))?;
-    let from = s.drawn_by_view(d, balloon.view).map_err(|why| bad(cmd, why.to_string()))?;
-    let resolved = from.doc.resolve_balloons(&from.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
-    let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("balloon {} wasn't read", ids::encode(id))))?;
-    let (status, why, candidates) = status_words(r.status);
+    let located = crate::drawing_sources::only(crate::drawing_sources::resolve_balloons(s, d, &[id]), cmd, "balloon", id)?;
     let row = read_row(s, d, balloon);
     let warnings = if row.status == "reference" { vec!["it points at a reference, which no parts list counts".to_string()] } else { Vec::new() };
     let reply = BalloonResult {
@@ -128,11 +125,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
         view: ids::encode(balloon.view),
         record: crate::schema::reply(balloon)?,
         occurrence: balloon.occurrence().to_vec(),
-        status: status.to_string(),
-        why,
-        point: r.point.map(|p| [p.x, p.y, p.z]),
-        exact: r.exact,
-        candidates,
+        located: located_result(located),
         parts_list: row.list.map(ids::encode),
         choices: row.choices.into_iter().map(ids::encode).collect(),
         item: row.item,

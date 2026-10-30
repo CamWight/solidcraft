@@ -77,7 +77,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         svg,
         report: ExportReport { widths_snapped: written.widths_snapped, pieces_merged: written.pieces_merged },
         views: built.views.into_iter().map(Into::into).collect(),
-        dimensions: super::drawing_scene::dimension_results(built.dimensions),
+        dimensions: super::drawing_scene::dimension_results(built.annotations),
         param_warnings: Vec::new(),
     };
     crate::schema::reply(reply)

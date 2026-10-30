@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::drawing::dimension::{Candidate, Dimension, DimensionKind, Silhouette, Status, TextPlace, check_chain_length};
+use solidcraft_doc::drawing::dimension::{Candidate, Dimension, DimensionKind, Located, Silhouette, Status, TextPlace, check_chain_length};
 use solidcraft_doc::ids;
 use solidcraft_geom::Vec3;
 use solidcraft_geom::drawing_measure::{LinearDirection, Reading};
@@ -18,7 +18,7 @@ use super::CommandSpec;
 use crate::params::bad;
 use crate::schema::drawing_dimension::{
     AddParams, CandidateResult, CornerParam, DimensionResult, DimensionSet, EdgeParam, EditParams, EditResult, FaceParam, InspectParams, KindParam,
-    MemberResult, SilhouetteParam,
+    LocatedResult, MemberResult, SilhouetteParam,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -285,8 +285,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &mut Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?.clone();
     let dimension = d.dimension(id).ok_or_else(|| bad(cmd, format!("the drawing has no dimension {}", ids::encode(id))))?;
-    let resolved = crate::drawing_sources::resolve_dimensions(s, &d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
-    let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("dimension {} wasn't read", ids::encode(id))))?;
+    let r = crate::drawing_sources::only(crate::drawing_sources::resolve_dimensions(s, &d, &[id]), cmd, "dimension", id)?;
     let last_good = match r.measured {
         Some(m) => {
             s.dimension_values.insert((d.id, id), m.value);
@@ -328,6 +327,12 @@ pub(super) fn status_words(status: Status) -> (&'static str, Option<String>, Vec
         Status::Lost(why) => ("lost", Some(why), Vec::new()),
         Status::Unmeasurable(why) => ("unmeasurable", Some(why), Vec::new()),
     }
+}
+
+/// What a balloon or a note points at, as its answer says it.
+pub(super) fn located_result(located: Located) -> LocatedResult {
+    let (status, why, candidates) = status_words(located.status);
+    LocatedResult { status: status.to_string(), why, point: located.point.map(|p| [p.x, p.y, p.z]), exact: located.exact, candidates }
 }
 
 fn candidate(c: Candidate) -> CandidateResult {

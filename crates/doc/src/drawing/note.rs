@@ -20,13 +20,12 @@
 use std::ops::RangeInclusive;
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec3;
 use solidcraft_geom::cell::{Content, Part, Source};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 
 use super::by_id::Record;
-use super::dimension::{Lookup, ModelEdge, ModelPoint, Status, check_edge, check_point};
+use super::dimension::{Located, Lookup, ModelEdge, ModelPoint, Status, check_edge, check_point};
 use super::{Drawing, require};
 use crate::{DocError, Document, Model, Result, ids};
 
@@ -128,36 +127,22 @@ impl Drawing {
     }
 }
 
-/// A note as the model has it now ([`Document::resolve_notes`]): never saved.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Resolved {
-    /// Always [`Status::Ok`] for a note on a sheet or a view, which reads no model.
-    pub status: Status,
-    /// Where its leader ends, in the design's frame: when it has one.
-    pub point: Option<Vec3>,
-    /// What it points at was found by exact history, as one edge.
-    pub exact: bool,
-}
-
 impl Document {
     /// The notes `wanted` of `drawing` (one of this design's drawings) as `model` (this design's) has
     /// them now, as [`Document::resolve_balloons`] finds balloons'. `Err` only for an id the drawing
     /// doesn't have.
-    pub fn resolve_notes(&self, model: &Model, drawing: &Drawing, wanted: &[u64]) -> Result<Vec<Resolved>> {
+    pub fn resolve_notes(&self, model: &Model, drawing: &Drawing, wanted: &[u64]) -> Result<Vec<Located>> {
         let mut lookup = Lookup::new(self, model);
         wanted
             .iter()
             .map(|id| {
                 let n = drawing.notes.by_id(*id).ok_or_else(|| DocError::Unknown(format!("note {}", ids::encode(*id))))?;
                 Ok(match &n.anchor {
-                    Anchor::Sheet(_) | Anchor::View(_) => Resolved { status: Status::Ok, point: None, exact: true },
-                    Anchor::Edge { edge, .. } => {
-                        let (status, point, exact) = lookup.middle(edge);
-                        Resolved { status, point, exact }
-                    }
+                    Anchor::Sheet(_) | Anchor::View(_) => Located { status: Status::Ok, point: None, exact: true },
+                    Anchor::Edge { edge, .. } => lookup.middle(edge),
                     Anchor::Corner { point, .. } => match lookup.corner(point) {
-                        Ok((at, exact)) => Resolved { status: Status::Ok, point: Some(at), exact },
-                        Err(status) => Resolved { status, point: None, exact: false },
+                        Ok((at, exact)) => Located { status: Status::Ok, point: Some(at), exact },
+                        Err(status) => Located { status, point: None, exact: false },
                     },
                 })
             })

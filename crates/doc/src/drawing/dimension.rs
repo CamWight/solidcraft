@@ -403,6 +403,24 @@ impl Resolved {
     }
 }
 
+/// What a balloon or a note points at as the model has it now: never saved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Located {
+    /// Always [`Status::Ok`] for what points at nothing, which reads no model.
+    pub status: Status,
+    /// Where its arrow or leader ends, in the design's frame: when what it points at was found.
+    pub point: Option<Vec3>,
+    /// What it points at was found by exact history, as one edge.
+    pub exact: bool,
+}
+
+impl Located {
+    /// With nothing to read it from: why.
+    pub fn lost(why: String) -> Located {
+        Located { status: Status::Lost(why), point: None, exact: false }
+    }
+}
+
 /// One of a chain's members as the model has it now.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Member {
@@ -830,8 +848,8 @@ impl<'a> Lookup<'a> {
     /// The middle of the edge `edge` names, in the design's frame, where a balloon's arrow or a note's
     /// leader ends: how it stands, the point, and whether it was found by exact history. A split edge
     /// has no one middle: the pieces are listed, and none is chosen.
-    pub(super) fn middle(&mut self, edge: &ModelEdge) -> (Status, Option<Vec3>, bool) {
-        match self.edges(edge) {
+    pub(super) fn middle(&mut self, edge: &ModelEdge) -> Located {
+        let (status, point, exact) = match self.edges(edge) {
             Ok(found) if !found.whole => (Status::Ambiguous(edge_candidates(&found)), None, false),
             Ok(found) => {
                 let point = found.pieces.first().and_then(|(_, line)| crate::joints::edge::middle(line)).map(|(p, _)| p);
@@ -839,7 +857,8 @@ impl<'a> Lookup<'a> {
                 (status, point, found.exact)
             }
             Err(status) => (status, None, false),
-        }
+        };
+        Located { status, point, exact }
     }
 
     /// The edges `edge` names: the one edge, or the pieces of it. One piece is that edge, though not

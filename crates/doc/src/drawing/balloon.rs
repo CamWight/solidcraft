@@ -22,12 +22,11 @@
 //! ([`super::dimension::Status`]): by name, strictly, and what it can't decide it says.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::Vec3;
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 
 use super::by_id::Record;
-use super::dimension::{Lookup, ModelEdge, Status, check_edge};
+use super::dimension::{Located, Lookup, ModelEdge, check_edge};
 use super::table::{Kind, PartsList, SheetTable};
 use super::{Drawing, require};
 use crate::{DocError, Document, Model, Result, ids};
@@ -108,29 +107,18 @@ impl Drawing {
     }
 }
 
-/// A balloon as the model has it now ([`Document::resolve_balloons`]): never saved.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Resolved {
-    pub status: Status,
-    /// Where its arrow ends, the middle of its edge, in the design's frame: when the edge was found.
-    pub point: Option<Vec3>,
-    /// Its edge was found by exact history, as one edge.
-    pub exact: bool,
-}
-
 impl Document {
     /// The balloons `wanted` of `drawing` (one of this design's drawings) as `model` (this
     /// design's) has them now: each one's edge found again by name, and the middle of it. A body is
     /// looked up and its edge names worked out once for the call, however many balloons name it.
     /// `Err` only for an id the drawing doesn't have.
-    pub fn resolve_balloons(&self, model: &Model, drawing: &Drawing, wanted: &[u64]) -> Result<Vec<Resolved>> {
+    pub fn resolve_balloons(&self, model: &Model, drawing: &Drawing, wanted: &[u64]) -> Result<Vec<Located>> {
         let mut lookup = Lookup::new(self, model);
         wanted
             .iter()
             .map(|id| {
                 let b = drawing.balloons.by_id(*id).ok_or_else(|| DocError::Unknown(format!("balloon {}", ids::encode(*id))))?;
-                let (status, point, exact) = lookup.middle(&b.edge);
-                Ok(Resolved { status, point, exact })
+                Ok(lookup.middle(&b.edge))
             })
             .collect()
     }

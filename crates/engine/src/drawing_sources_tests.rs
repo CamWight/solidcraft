@@ -235,7 +235,10 @@ fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
     assert_eq!(reply["status"], "ok", "{reply}");
     assert!((reply["value"].as_f64().unwrap() - 40.0).abs() < 1e-9, "{reply}");
     let far = json!({"anchor": {"corner": {"view": ids::encode(big), "corner": [40, 0, 40]}}, "at": [30, 30], "content": "Far corner"});
-    assert_eq!(run(&mut s, "drawing.note.add", far)["status"], "ok");
+    let far = run(&mut s, "drawing.note.add", far);
+    assert_eq!(far["status"], "ok");
+    let on_sheet = json!({"anchor": {"sheet": ids::encode(sheet)}, "at": [30, 40], "content": "On the sheet"});
+    let on_sheet = run(&mut s, "drawing.note.add", on_sheet);
     let on_small = json!({"view": ids::encode(small), "kind": {"linear": {"a": [0, 0, 0], "b": [40, 0, 0], "direction": "horizontal"}}});
     assert!(s.execute("drawing.dimension.add", &on_small).is_err(), "the other design has no such corner");
 
@@ -254,7 +257,11 @@ fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
     assert!(matches!(status(big), crate::drawing_scene::Status::Lost(why) if why.contains("not found")));
     assert!(after.scene.groups.iter().any(|g| g.object == big), "its last lines stay");
     assert_eq!(after.scene.groups.len(), groups - 1, "and its lost dimension, centred on what it lost, isn't drawn");
-    assert!(after.dimensions.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::dimension::Status::Lost(_))));
+    assert!(after.annotations.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::dimension::Status::Lost(_))));
+    // A note says so as a dimension does, and one on the sheet reads no design.
+    let lost = run(&mut s, "drawing.note.inspect", json!({"note": far["note"]}));
+    assert!(lost["status"] == "lost" && lost["why"].as_str().is_some_and(|why| why.contains("not found")), "{lost}");
+    assert_eq!(run(&mut s, "drawing.note.inspect", json!({"note": on_sheet["note"]}))["status"], "ok");
 
     // Never drawn and missing: a placeholder to pick, and no lines. The sheet is still drawn.
     let (mut fresh, linked) = drawing_of(&[&plate]);

@@ -14,7 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::drawing::dimension::Resolved;
+use solidcraft_doc::drawing::dimension::{Located, Resolved};
 use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_io::vfs;
 
@@ -229,30 +229,67 @@ impl Session {
     }
 }
 
-/// The dimensions `wanted` of `d`, in `wanted`'s order, each read against the design its view draws:
-/// one read for each source, and one with no linked source. One whose design can't be drawn is lost,
+/// The records `wanted` of `d`, in `wanted`'s order, each read against the design it hangs on: one
+/// `read` for each source, and one with no linked source. `view_of` says which view a record is on
+/// (`None`: it is on a sheet, which reads no other design). One whose design can't be drawn is `lost`,
 /// saying why. `Err` only for an id the drawing doesn't have.
-pub fn resolve_dimensions(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraft_doc::Result<Vec<Resolved>> {
+fn read_by_source<R>(
+    s: &Session,
+    d: &Drawing,
+    wanted: &[u64],
+    view_of: impl Fn(u64) -> solidcraft_doc::Result<Option<u64>>,
+    read: impl Fn(&Session, &[u64]) -> solidcraft_doc::Result<Vec<R>>,
+    lost: impl Fn(String) -> R,
+) -> solidcraft_doc::Result<Vec<R>> {
     if d.sources.iter().all(|source| source.path.is_none()) {
-        return s.doc.resolve_dimensions(&s.model, d, wanted);
+        return read(s, wanted);
     }
-    let mut by_source: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    let mut by_source: BTreeMap<Option<u64>, Vec<usize>> = BTreeMap::new();
     for (at, id) in wanted.iter().enumerate() {
-        let record = d.dimension(*id).ok_or_else(|| DocError::Unknown(format!("dimension {}", ids::encode(*id))))?;
-        by_source.entry(d.resolve_view(record.view)?.source).or_default().push(at);
+        let source = view_of(*id)?.map(|view| d.resolve_view(view).map(|resolved| resolved.source)).transpose()?;
+        by_source.entry(source).or_default().push(at);
     }
-    let mut read: Vec<(usize, Resolved)> = Vec::with_capacity(wanted.len());
+    let mut answers: Vec<(usize, R)> = Vec::with_capacity(wanted.len());
     for (source, places) in by_source {
-        match s.drawn(d, source) {
+        match source.map_or(Ok(s), |source| s.drawn(d, source)) {
             Ok(from) => {
                 let these: Vec<u64> = places.iter().filter_map(|at| wanted.get(*at).copied()).collect();
-                read.extend(places.into_iter().zip(from.doc.resolve_dimensions(&from.model, d, &these)?));
+                answers.extend(places.into_iter().zip(read(from, &these)?));
             }
-            Err(why) => read.extend(places.into_iter().map(|at| (at, Resolved::lost(why.reason.clone())))),
+            Err(why) => answers.extend(places.into_iter().map(|at| (at, lost(why.reason.clone())))),
         }
     }
-    read.sort_by_key(|(at, _)| *at);
-    Ok(read.into_iter().map(|(_, resolved)| resolved).collect())
+    answers.sort_by_key(|(at, _)| *at);
+    Ok(answers.into_iter().map(|(_, answer)| answer).collect())
+}
+
+/// An id the drawing doesn't have, in the words of a read.
+fn unknown(what: &str, id: u64) -> DocError {
+    DocError::Unknown(format!("{what} {}", ids::encode(id)))
+}
+
+/// The dimensions `wanted` of `d` ([`read_by_source`]).
+pub fn resolve_dimensions(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraft_doc::Result<Vec<Resolved>> {
+    let view_of = |id| d.dimension(id).map(|record| Some(record.view)).ok_or_else(|| unknown("dimension", id));
+    read_by_source(s, d, wanted, view_of, |from, these| from.doc.resolve_dimensions(&from.model, d, these), Resolved::lost)
+}
+
+/// The balloons `wanted` of `d` ([`read_by_source`]).
+pub fn resolve_balloons(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraft_doc::Result<Vec<Located>> {
+    let view_of = |id| d.balloons.by_id(id).map(|record| Some(record.view)).ok_or_else(|| unknown("balloon", id));
+    read_by_source(s, d, wanted, view_of, |from, these| from.doc.resolve_balloons(&from.model, d, these), Located::lost)
+}
+
+/// The notes `wanted` of `d` ([`read_by_source`]).
+pub fn resolve_notes(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraft_doc::Result<Vec<Located>> {
+    let view_of = |id| d.notes.by_id(id).map(|record| record.anchor.view()).ok_or_else(|| unknown("note", id));
+    read_by_source(s, d, wanted, view_of, |from, these| from.doc.resolve_notes(&from.model, d, these), Located::lost)
+}
+
+/// The one answer of a read of one record, for command `cmd`.
+pub(crate) fn only<R>(read: solidcraft_doc::Result<Vec<R>>, cmd: &str, what: &str, id: u64) -> crate::Result<R> {
+    let read = read.map_err(|e| crate::params::bad(cmd, e.to_string()))?;
+    read.into_iter().next().ok_or_else(|| crate::params::bad(cmd, format!("{what} {} wasn't read", ids::encode(id))))
 }
 
 #[cfg(test)]
