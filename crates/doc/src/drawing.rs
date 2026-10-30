@@ -60,6 +60,7 @@ use crate::{DocError, Metadata, Result, expr};
 pub mod balloon;
 pub mod dimension;
 pub mod fields;
+pub mod template;
 pub mod view;
 
 use balloon::Balloon;
