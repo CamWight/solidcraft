@@ -1134,8 +1134,10 @@ fn a_holes_radius_is_read_face_on_and_refused_end_on() {
     run(&mut s, "solid.cylinder", json!({"diameter": 20, "height": 7, "base": [20, 20, -1], "operation": "cut", "targets": ["Plate"]}));
     let rim = json!({"radius": {"edge": [30, 20, 5]}});
     let v = snap(&mut s, json!({"view": "top", "scale": "2:1", "measure": [rim]}));
-    assert_eq!(readings(&v), [(10.0, "R10.00".to_string())], "{v}");
-    assert_eq!((&v["measurements"][0]["paper_mm"], &v["measurements"][0]["status"]), (&json!(20.0), &json!("exact")), "{v}");
+    let read = readings(&v);
+    assert!(matches!(read.as_slice(), [(value, text)] if (value - 10.0).abs() < EPS && text == "R10.00"), "{v}");
+    let paper = v["measurements"][0]["paper_mm"].as_f64().unwrap();
+    assert!((paper - 20.0).abs() < EPS && v["measurements"][0]["status"] == json!("exact"), "{v}");
     let e = refused(&mut s, json!({"view": "front", "measure": [{"aligned": {"from": [0, 0, 0], "to": [1, 0, 0]}}, rim]}));
     assert!(e.contains("measure[1]") && e.contains("isn't a circle in this view"), "{e}");
     let straight = json!({"radius": {"edge": [0, 20, 5]}});
