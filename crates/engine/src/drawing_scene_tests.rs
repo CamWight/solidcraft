@@ -31,8 +31,12 @@ fn front_and_top_of(mut s: Session) -> (Session, u64, [u64; 2]) {
     let mut d = (**s.drawing("test").unwrap()).clone();
     let mut id_source = solidcraft_doc::ids::IdSource::seeded(4890);
     let (sheet, source) = (d.sheets[0].id, d.sources[0].id);
+    // Lowest first, so the front view is the one drawn first.
+    let mut fresh = [d.allocate_id(&mut id_source).unwrap(), d.allocate_id(&mut id_source).unwrap()];
+    fresh.sort_unstable();
+    let mut fresh = fresh.into_iter();
     let mut add = |d: &mut Drawing, kind: ViewKind, place: ViewPlace, settings: ViewOverrides| {
-        let id = d.allocate_id(&mut id_source).unwrap();
+        let id = fresh.next().unwrap();
         d.add_views([Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 })]);
         id
     };
@@ -982,7 +986,7 @@ fn cached_views(path: &str) -> usize {
 fn a_save_keeps_only_current_lines_and_draws_nothing() {
     let folder = crate::tests::Folder::new("sheet-lines-sheet");
     let path = folder.path("sheet.solidcraft");
-    let (mut s, sheet, [front, _]) = saved_drawn(&path);
+    let (mut s, sheet, [_, top]) = saved_drawn(&path);
     assert_eq!(cached_views(&path), 2);
 
     let before = s.drawing_scenes.projections;
@@ -994,7 +998,7 @@ fn a_save_keeps_only_current_lines_and_draws_nothing() {
     let id = s.open_drawing.unwrap();
     assert_eq!(solidcraft_io::read_sheet_lines(&other, id, &digest).unwrap().views.len(), 2, "a copy keeps them, shared");
 
-    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"scale": "1:4"}}));
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(top), "set": {"scale": "1:4"}}));
     run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
     assert_eq!(cached_views(&path), 1, "the changed view isn't written");
     let _ = sheet;
@@ -1062,8 +1066,8 @@ fn reopening_unchanged_draws_nothing() {
 fn only_the_view_that_changed_draws_again() {
     let folder = crate::tests::Folder::new("sheet-lines-one");
     let path = folder.path("one.solidcraft");
-    let (mut s, _, [front, _]) = saved_drawn(&path);
-    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"scale": "1:4"}}));
+    let (mut s, _, [_, top]) = saved_drawn(&path);
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(top), "set": {"scale": "1:4"}}));
     let sheet = reopened(&mut s, &path);
     let first = extract(&mut s, sheet).unwrap();
     assert_eq!(first.stale.len(), 1, "{:?}", first.stale);
