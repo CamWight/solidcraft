@@ -50,21 +50,6 @@ pub fn read_design_thumbnail(bytes: &[u8]) -> Option<Vec<u8>> {
 }
 /// Read a portable picture without importing or reading the source blobs.
 pub fn read_design_thumbnail_file(path: &str) -> Option<Vec<u8>> {
-    #[cfg(not(target_arch = "wasm32"))]
-    let source = {
-        crate::vfs::check(path).ok()?;
-        let metadata = std::fs::metadata(path).ok()?;
-        if !metadata.is_file() || metadata.len() > max_design() as u64 {
-            return None;
-        }
-        let source = std::fs::File::open(path).ok()?;
-        let metadata = source.metadata().ok()?;
-        if !metadata.is_file() || metadata.len() > max_design() as u64 {
-            return None;
-        }
-        source
-    };
-    #[cfg(target_arch = "wasm32")]
-    let source = Cursor::new(crate::vfs::read(path, max_design()).ok()?);
+    let source = open_regular_file(path).ok()?;
     DesignContainerReader::new(source).ok()?.thumbnail()
 }
