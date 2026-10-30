@@ -10,7 +10,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-use super::drawing_dimension::{CandidateResult, EdgeParam};
+use super::drawing_dimension::{EdgeParam, LocatedResult};
 use super::drawing_table::TableIdParam;
 use super::drawing_view::ViewIdParam;
 
@@ -104,18 +104,8 @@ pub struct BalloonResult {
     pub record: Value,
     /// The part it numbers: the ids of the occurrences its edge's body is placed through.
     pub occurrence: Vec<u64>,
-    /// `ok`, `ambiguous`, `suppressed` or `lost`.
-    pub status: String,
-    /// Why it is lost.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
-    /// Where its arrow ends, the middle of its edge, in the design's frame.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub point: Option<[f64; 3]>,
-    /// Its edge was found by exact history.
-    pub exact: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub candidates: Vec<CandidateResult>,
+    #[serde(flatten)]
+    pub located: LocatedResult,
     /// The parts list it reads.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub parts_list: Option<String>,

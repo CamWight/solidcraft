@@ -10,7 +10,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use solidcraft_geom::cell::{Content, Part};
 
-use super::drawing_dimension::{CandidateResult, CornerParam, EdgeParam};
+use super::drawing_dimension::{CornerParam, EdgeParam, LocatedResult};
 use super::drawing_sheet::sheet_ref;
 use super::drawing_view::ViewIdParam;
 
@@ -146,18 +146,8 @@ pub struct NoteResult {
     pub note: String,
     /// The record, as the drawing saves it.
     pub record: Value,
-    /// `ok`, `ambiguous`, `suppressed` or `lost`. A note that points at nothing is always `ok`.
-    pub status: String,
-    /// Why it is lost.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub why: Option<String>,
-    /// Where its leader ends, in the design's frame.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub point: Option<[f64; 3]>,
-    /// What it points at was found by exact history.
-    pub exact: bool,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub candidates: Vec<CandidateResult>,
+    #[serde(flatten)]
+    pub located: LocatedResult,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,

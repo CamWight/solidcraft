@@ -13,9 +13,10 @@
 
 use serde_json::Value;
 use solidcraft_doc::ids;
+use solidcraft_geom::paper::ObjectKind;
 
 use super::CommandSpec;
-use crate::drawing_scene::{CMD, DimensionState};
+use crate::drawing_scene::{AnnotationState, CMD};
 use crate::schema::drawing_scene::{
     DimensionStatusResult, DrawingStatusParams, DrawingStatusResult, HitResult, LineHitResult, SheetHitParams, SheetHitResult, SheetLineParams,
     SheetLineResult, SheetPaperScene, SheetSceneDimension, SheetSceneParams, SheetSceneResult, ViewStatusResult,
@@ -126,18 +127,19 @@ fn line(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// Each dimension of a scene in the words of a reply.
-pub(super) fn dimension_results(states: Vec<DimensionState>) -> Vec<SheetSceneDimension> {
-    let one = |state: DimensionState| {
+pub(super) fn dimension_results(states: Vec<AnnotationState>) -> Vec<SheetSceneDimension> {
+    let one = |state: AnnotationState| {
+        let view = state.view?;
         let (status, why, _) = super::drawing_dimension::status_words(state.status);
-        SheetSceneDimension {
-            dimension: ids::encode(state.dimension),
-            view: ids::encode(state.view),
+        Some(SheetSceneDimension {
+            dimension: ids::encode(state.object),
+            view: ids::encode(view),
             status,
             drawn: state.drawn,
             why: why.or(state.why),
-        }
+        })
     };
-    states.into_iter().map(one).collect()
+    states.into_iter().filter(|state| state.kind == ObjectKind::Dimension).filter_map(one).collect()
 }
 
 fn scene(s: &mut Session, p: &Value) -> Result<Value> {
@@ -147,7 +149,7 @@ fn scene(s: &mut Session, p: &Value) -> Result<Value> {
     let built = crate::drawing_scene::build(s, &d, sheet)?;
     let views = built.views.into_iter().map(Into::into).collect();
     let objects = built.objects.into_iter().map(Into::into).collect();
-    let dimensions = dimension_results(built.dimensions);
+    let dimensions = dimension_results(built.annotations);
     let reply =
         SheetSceneResult { sheet: ids::encode(sheet), scene: SheetPaperScene(built.scene), views, objects, dimensions, param_warnings: Vec::new() };
     crate::schema::reply(reply)
