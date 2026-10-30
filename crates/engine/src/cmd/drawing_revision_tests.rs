@@ -258,3 +258,43 @@ fn a_revision_names_the_version_it_was_issued_against() {
     assert_eq!((s.drawing("test").unwrap(), s.undo.len()), (&record, steps), "nothing changed");
     s.drawing("test").unwrap().validate().unwrap();
 }
+
+/// Numbers from 1 unless set; a switch leaves what is there as typed, and the next revision counts
+/// only the labels of its own kind, so the first letter after numbers is A, and the numbers carry on
+/// after letters. Past Y it is AA; a skipped letter is kept and warned about; a bad numbering refused.
+#[test]
+fn a_drawing_numbers_or_letters_its_revisions() {
+    let mut s = drawing_session();
+    assert_eq!(listed(&mut s)["numbering"], json!({"numbers": {"start": 1}}));
+    assert_eq!(listed(&mut s)["next"], json!("1"));
+    let set = |s: &mut Session, numbering: Value| s.execute("drawing.set", &json!({"revision_numbering": numbering}));
+    set(&mut s, json!({"numbers": {"start": 0}})).unwrap();
+    assert_eq!(listed(&mut s)["next"], json!("0"));
+    add(&mut s, json!({}));
+    add(&mut s, json!({}));
+    assert_eq!(listed(&mut s)["next"], json!("2"));
+
+    set(&mut s, json!("letters")).unwrap();
+    let after = listed(&mut s);
+    assert_eq!(after["numbering"], json!("letters"));
+    assert_eq!(after["rows"][1]["revision"], json!("1"), "as typed");
+    assert_eq!(after["next"], json!("A"));
+    let row = add(&mut s, json!({}));
+    assert_eq!(listed(&mut s)["rows"][2]["revision"], json!("A"));
+    let skipped = run(&mut s, EDIT, json!({"row": row, "set": {"revision": "I"}}));
+    assert_eq!(skipped["warnings"], json!(["the revisions' lettering skips I: kept as typed"]), "{skipped}");
+    let last = run(&mut s, EDIT, json!({"row": row, "set": {"revision": "Y"}}));
+    assert_eq!(last["next"], json!("AA"), "past Y");
+
+    set(&mut s, json!({"numbers": {"start": 1}})).unwrap();
+    assert_eq!(listed(&mut s)["next"], json!("2"), "the numbers carry on");
+
+    let (record, steps) = (s.drawing("test").unwrap().clone(), s.undo.len());
+    for bad in [json!({"numbers": {"start": 2}}), json!("roman"), json!({"numbers": {}}), json!(1), json!(null)] {
+        assert!(set(&mut s, bad.clone()).is_err(), "{bad}");
+    }
+    assert_eq!((s.drawing("test").unwrap(), s.undo.len()), (&record, steps));
+    // No change makes no step.
+    set(&mut s, json!({"numbers": {"start": 1}})).unwrap();
+    assert_eq!(s.undo.len(), steps);
+}
