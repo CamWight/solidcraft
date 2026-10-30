@@ -314,9 +314,9 @@ fn a_group_has_a_box_and_moves_exactly() {
     let arc = Seg2::Arc { center: p(10.0, 10.0), radius: 5.0, start: 0.0, sweep: PI };
     let items = vec![stroke(vec![line(p(0.0, 0.0), p(20.0, 0.0)), arc], false, 0.25), fill(rectangle(p(30.0, -2.0), p(40.0, 2.0)), Vec::new())];
     let group = Group { object: 7, kind: ObjectKind::View, items };
-    let bounds = group.bounds();
+    let bounds = group.bounds(&[]);
     assert_eq!((bounds.min, bounds.max), (p(0.0, -2.0), p(40.0, 15.0)));
-    assert_eq!(Group { items: Vec::new(), ..group.clone() }.bounds(), Aabb2::EMPTY);
+    assert_eq!(Group { items: Vec::new(), ..group.clone() }.bounds(&[]), Aabb2::EMPTY);
 
     let by = p(0.1, -0.2);
     let moved = group.moved(by);

@@ -84,14 +84,18 @@ pub struct Group {
 
 impl Group {
     /// The box round what the group draws, along its lines' paths.
-    pub fn bounds(&self) -> Aabb2 {
+    pub fn bounds(&self, fonts: &[Font]) -> Aabb2 {
         let mut bounds = Aabb2::EMPTY;
         let mut add = |path: &[Seg2]| path.iter().for_each(|seg| bounds = bounds.union(&seg.bounds()));
         for item in &self.items {
             match item {
                 Item::Stroke { path, .. } => add(path),
                 Item::Fill { region } => region.loops().for_each(|ring| add(&ring.segs)),
-                Item::Text(_) => {}
+                Item::Text(run) => {
+                    if let Some(font) = text::font_in(fonts, &run.font) {
+                        run.outlines(font).for_each(|ring| add(&ring.segs));
+                    }
+                }
             }
         }
         bounds
@@ -225,8 +229,7 @@ impl<'a> Prepared<'a> {
 
     /// The font a run names: there, as the scene was checked.
     pub fn font(&self, run: &TextRun) -> Option<&'a Font> {
-        let fonts = &self.scene.fonts;
-        fonts.binary_search_by_key(&run.font, |f| f.id).ok().and_then(|at| fonts.get(at))
+        text::font_in(&self.scene.fonts, &run.font)
     }
 }
 

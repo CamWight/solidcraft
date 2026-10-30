@@ -39,6 +39,7 @@ use solidcraft_doc::drawing_view::TangentEdges;
 use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::hlr::Source;
+use solidcraft_geom::paper::text::Font;
 use solidcraft_geom::paper::{Group, MAX_RECORDS, ObjectKind, Scene};
 use solidcraft_geom::{Aabb2, Vec2};
 
@@ -279,6 +280,8 @@ struct DrawnAnnotation {
     view: Option<u64>,
     status: dimension::Status,
     group: Option<Group>,
+    /// The fonts its group's text uses.
+    fonts: Vec<Font>,
     why: Option<String>,
 }
 
@@ -344,15 +347,28 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
     let read = crate::drawing_sources::resolve_dimensions(s, d, &ids);
     let one = |at: usize, annotation: &Annotation| {
         let Annotation::Dimension(record) = annotation;
-        let drawn = |status, group, why| DrawnAnnotation { object: record.id, kind: annotation.kind(), view: annotation.view(), status, group, why };
+        let drawn = |status, group, fonts, why| DrawnAnnotation {
+            object: record.id,
+            kind: annotation.kind(),
+            view: annotation.view(),
+            status,
+            group,
+            fonts,
+            why,
+        };
         match read.as_ref().map(|all| all.get(at)) {
             Ok(Some(resolved)) => {
-                let group = frame(record.view).and_then(|frame| crate::drawing_dimension_paper::paper_group(record, resolved, &frame));
-                let nothing = group.is_none() && resolved.geometry.is_some() && frame(record.view).is_some();
-                let why = nothing.then(|| "what it measures has no place to draw on its view".to_string());
-                drawn(resolved.status.clone(), group, why)
+                let paper = frame(record.view).and_then(|frame| crate::drawing_dimension_paper::paper_group(record, resolved, &frame));
+                let Some(paper) = paper else {
+                    let nothing = resolved.geometry.is_some() && frame(record.view).is_some();
+                    let why = nothing.then(|| "what it measures has no place to draw on its view".to_string());
+                    return drawn(resolved.status.clone(), None, Vec::new(), why);
+                };
+                drawn(resolved.status.clone(), Some(paper.group), paper.fonts, paper.why)
             }
-            Ok(None) | Err(_) => drawn(dimension::Status::Unmeasurable(format!("dimension {} can't be read", ids::encode(record.id))), None, None),
+            Ok(None) | Err(_) => {
+                drawn(dimension::Status::Unmeasurable(format!("dimension {} can't be read", ids::encode(record.id))), None, Vec::new(), None)
+            }
         }
     };
     wanted.iter().enumerate().map(|(at, annotation)| one(at, annotation)).collect()
@@ -388,20 +404,25 @@ enum LeftOut {
 }
 
 impl Assembly {
-    /// Puts `group` in the scene moved to `centre`, and gives the box round it there.
-    fn add(&mut self, group: &Group, centre: Vec2) -> std::result::Result<Aabb2, LeftOut> {
-        let more = group.records();
+    /// Puts `group`, whose text uses `fonts`, in the scene moved to `centre`, and gives the box round
+    /// it there. Only a group that joins adds to the scene's fonts.
+    fn add(&mut self, group: &Group, fonts: &[Font], centre: Vec2) -> std::result::Result<Aabb2, LeftOut> {
+        self.alone.add_fonts(fonts.iter().cloned());
+        let more = group.records().saturating_add(self.scene.font_records_beyond(&self.alone.fonts));
         if self.records.saturating_add(more) > MAX_RECORDS {
+            self.alone.fonts.clear();
             return Err(LeftOut::TooManyRecords);
         }
         self.alone.groups.push(group.moved(centre));
         if let Err(e) = self.alone.validate() {
             self.alone.groups.clear();
+            self.alone.fonts.clear();
             return Err(LeftOut::Invalid(e.to_string()));
         }
         self.records += more;
-        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, Group::bounds);
+        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, |one| one.bounds(&self.alone.fonts));
         self.scene.groups.append(&mut self.alone.groups);
+        self.scene.add_fonts(std::mem::take(&mut self.alone.fonts));
         Ok(bounds)
     }
 
@@ -415,7 +436,7 @@ impl Assembly {
             let centre = one.view.map_or(Some(Vec2::ZERO), |view| self.placed.get(&view).map(|(_, centre)| *centre));
             match (centre, &one.group) {
                 (None, _) => why = Some("its view isn't drawn".into()),
-                (Some(centre), Some(group)) => match self.add(group, centre) {
+                (Some(centre), Some(group)) => match self.add(group, &one.fonts, centre) {
                     Ok(bounds_mm) => {
                         drawn = true;
                         self.objects.push(SheetObject { object: one.object, kind: one.kind, bounds_mm, boundary_mm: None });
@@ -450,7 +471,7 @@ fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, 
     let mut objects = Vec::new();
     if !border.is_empty() {
         // The border's groups are one object.
-        let bounds_mm = border.iter().map(Group::bounds).fold(Aabb2::EMPTY, |all, one| all.union(&one));
+        let bounds_mm = border.iter().map(|group| group.bounds(&[])).fold(Aabb2::EMPTY, |all, one| all.union(&one));
         objects.push(SheetObject { object: record.id, kind: ObjectKind::DrawingBorder, bounds_mm, boundary_mm: None });
     }
     let scene = Scene::new(size_mm, border);
@@ -461,7 +482,7 @@ fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, 
         let mut status = drawn.status.clone();
         let mut lines = None;
         if let Some(group) = &drawn.group {
-            match assembly.add(group, centre) {
+            match assembly.add(group, &[], centre) {
                 Ok(bounds) => {
                     lines = Some(bounds);
                     if let Some(frame) = drawn.frame {

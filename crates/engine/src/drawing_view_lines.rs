@@ -442,7 +442,7 @@ mod tests {
             .iter()
             .filter_map(|i| match i {
                 Item::Stroke { width_mm, .. } => Some(*width_mm),
-                Item::Fill { .. } => None,
+                Item::Fill { .. } | Item::Text(_) => None,
             })
             .collect();
         assert_eq!(widths, [REFERENCE_MM, VISIBLE_MM, VISIBLE_MM]);
