@@ -38,6 +38,7 @@ mod drawing_export;
 mod drawing_revision;
 mod drawing_scene;
 mod drawing_sheet;
+mod drawing_table;
 mod drawing_ui;
 mod drawing_view;
 mod edit;
@@ -398,6 +399,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(drawing_dimension::COMMANDS.iter());
     v.extend(drawing_export::COMMANDS.iter());
     v.extend(drawing_revision::COMMANDS.iter());
+    v.extend(drawing_table::COMMANDS.iter());
     v.extend(drawing_scene::COMMANDS.iter());
     v.extend(drawing_sheet::COMMANDS.iter());
     v.extend(drawing_view::COMMANDS.iter());

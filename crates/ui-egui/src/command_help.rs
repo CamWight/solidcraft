@@ -10,6 +10,7 @@ use crate::i18n;
 pub const DOCUMENTED: &[&str] = &[
     "appearance.assign",
     "component.finish_edit",
+    "drawing.table.edit",
     "face.delete",
     "material.assign",
     "occurrence.move",
