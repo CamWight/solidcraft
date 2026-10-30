@@ -8,7 +8,7 @@ use solidcraft_doc::ids;
 use solidcraft_geom::paper::ObjectKind;
 
 use super::drawing_sheet::sheet_ref;
-use super::drawing_view::{BoxResult, LinesStatsResult, paper_scene_schema};
+use super::drawing_view::{BoxResult, LineSourceResult, LinesStatsResult, paper_scene_schema};
 use super::types::Point2;
 use crate::drawing_scene::{SheetObject, Status, ViewState};
 
@@ -121,6 +121,46 @@ pub struct HitResult {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SheetHitResult {
     pub hit: Option<HitResult>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
+fn line_band() -> f64 {
+    1.0
+}
+
+/// Ask which line of a view is under a point of a sheet.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct SheetLineParams {
+    /// The sheet, by id or name.
+    #[serde(deserialize_with = "sheet_ref")]
+    pub sheet: String,
+    /// The point, in paper millimetres from the sheet's lower-left corner.
+    pub point_mm: Point2,
+    /// How near a line counts as under the point, in paper millimetres: 0 or more (default 1).
+    #[serde(default = "line_band")]
+    pub band_mm: f64,
+}
+
+/// The line a point is on.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LineHitResult {
+    pub view: String,
+    /// The occurrences that place its body, from the design's root.
+    pub occurrence: Vec<u64>,
+    /// Its body's name in its definition.
+    pub body: String,
+    pub reference: bool,
+    pub source: LineSourceResult,
+    /// How far the point is from it, in paper millimetres.
+    pub distance_mm: f64,
+}
+
+/// What `drawing.scene.line` returns: the line, or null when no line is that near.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetLineResult {
+    pub line: Option<LineHitResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
 }

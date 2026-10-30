@@ -32,7 +32,7 @@ use solidcraft_doc::ids;
 use solidcraft_geom::Plane;
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
 use solidcraft_geom::drawing_view::{NamedView, PRESETS, Scale};
-use solidcraft_geom::hlr::{Source, Visibility};
+use solidcraft_geom::hlr::Visibility;
 use solidcraft_geom::paper::MAX_COORDINATE_MM;
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_geom::{Aabb2, Vec2};
@@ -255,10 +255,7 @@ fn line_results(shown: &ShownSet, drawn: &Lines) -> Vec<LineResult> {
             occurrence: body.map(|b| b.path.clone()).unwrap_or_default(),
             body: body.map(|b| b.body.clone()).unwrap_or_default(),
             reference: l.reference,
-            source: match l.source {
-                Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
-                Source::Silhouette { face } => LineSourceResult::Silhouette { face },
-            },
+            source: l.source.into(),
             pieces: l
                 .pieces
                 .iter()

@@ -37,10 +37,11 @@ use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
 use solidcraft_doc::{DocError, Document, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
+use solidcraft_geom::hlr::Source;
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Scene};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
 
-use crate::drawing_view::{CHORD_MM, LineRequest, MIN_MODEL_CHORD_MM, ShownSet, Stats, Unmeasured, paper_group};
+use crate::drawing_view::{CHORD_MM, LineRequest, MIN_MODEL_CHORD_MM, Shown, ShownSet, Stats, Unmeasured, paper_lines};
 use crate::params::bad;
 use crate::{EngineError, Result, Session};
 
@@ -176,6 +177,60 @@ pub fn hit(objects: &[SheetObject], point_mm: Vec2, band_mm: f64) -> Option<Hit>
     found.map(|(_, hit)| hit)
 }
 
+/// A line of a view under a point of its sheet ([`line_at`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct LineHit {
+    pub view: u64,
+    /// The occurrences that place its body, from the design's root.
+    pub occurrence: Vec<u64>,
+    /// Its body's name in its definition.
+    pub body: String,
+    pub reference: bool,
+    pub source: Source,
+    /// How far the point is from it, on paper.
+    pub distance_mm: f64,
+}
+
+/// The stroke of `items` nearest `point`, within `band_mm`, and how far it is: the one painted last
+/// when two are as near. Only strokes whose box reaches the point are measured.
+fn nearest_stroke(items: &[Item], point: Vec2, band_mm: f64) -> Option<(usize, f64)> {
+    let mut found: Option<(usize, f64)> = None;
+    for (at, item) in items.iter().enumerate() {
+        let Item::Stroke { path, .. } = item else { continue };
+        for seg in path.iter().filter(|seg| seg.bounds().inflated(band_mm).contains(point)) {
+            let distance = seg.point_at(seg.closest_param(point)).dist(point);
+            if distance <= band_mm && found.is_none_or(|(_, nearest)| distance <= nearest) {
+                found = Some((at, distance));
+            }
+        }
+    }
+    found
+}
+
+/// The line under `point_mm` on sheet `sheet` of the drawing open, among the lines the provider shows
+/// now: in the view under the point by [`hit`]'s rule, the nearest stroke within `band_mm`. It is
+/// asked on a press, so what a stroke drew is kept as plain data beside the scene and searched only
+/// then. A view whose lines came from the file has no such data, and is drawn once for it.
+pub fn line_at(s: &mut Session, sheet: u64, point_mm: Vec2, band_mm: f64) -> Result<Option<LineHit>> {
+    let objects = extract(s, sheet)?.objects;
+    let views: Vec<SheetObject> = objects.iter().filter(|o| o.kind == ObjectKind::View).copied().collect();
+    let Some(found) = hit(&views, point_mm, band_mm) else { return Ok(None) };
+    let id = found.object;
+    let d = s.drawing(CMD)?.clone();
+    if s.drawing_scenes.views.get(&id).is_some_and(|e| e.drawn.group.is_some() && e.drawn.owners.is_none()) {
+        let view = d.resolve_view(id).map_err(|e| bad(CMD, e.to_string()))?;
+        let (state, units) = (s.world_state(), s.doc.drawing_units(&d).to_string());
+        draw_now(s, &d, id, view, &state, &units);
+    }
+    let centre = d.view_centre(id).map_err(|e| bad(CMD, e.to_string()))?;
+    let Some(drawn) = s.drawing_scenes.views.get(&id).map(|e| &e.drawn) else { return Ok(None) };
+    let (Some(group), Some(owners)) = (&drawn.group, &drawn.owners) else { return Ok(None) };
+    let Some((at, distance_mm)) = nearest_stroke(&group.items, point_mm - centre, band_mm) else { return Ok(None) };
+    let Some((shown, source)) = owners.strokes.get(at) else { return Ok(None) };
+    let Some(body) = owners.bodies.get(*shown) else { return Ok(None) };
+    Ok(Some(LineHit { view: id, occurrence: body.path.clone(), body: body.body.clone(), reference: body.reference, source: *source, distance_mm }))
+}
+
 /// The id of the sheet `named` names in `drawing` (its id or its one name), refused as `cmd`: the
 /// sheet a command asks to draw.
 pub fn sheet_id(drawing: &Drawing, named: &str, cmd: &str) -> Result<u64> {
@@ -213,6 +268,17 @@ struct Drawn {
     boundary: Option<Aabb2>,
     /// The frame its lines were drawn through, for its dimensions.
     frame: Option<ViewFrame>,
+    /// What drew each of its strokes; none for lines read from the file.
+    owners: Option<Arc<Owners>>,
+}
+
+/// What drew a view's strokes, one for one: [`line_at`] reads it.
+#[derive(Debug)]
+struct Owners {
+    /// The bodies it shows.
+    bodies: Vec<Shown>,
+    /// For each stroke, its body among `bodies` and what on the body drew it.
+    strokes: Vec<(usize, Source)>,
 }
 
 /// A dimension's lines for a sheet scene, centred on its view, and how it read.
@@ -233,7 +299,7 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
     let measured = shown.as_ref().map_err(|why| *why).and_then(|set| crate::drawing_view::measure(set, &view.basis).map(|e| (set, e)));
     let extents = measured.as_ref().map(|(_, extents)| *extents).map_err(|why| *why);
     let boundary = crate::drawing_view::placed(view, extents, Vec2::ZERO, CMD).ok().map(|placed| placed.boundary);
-    let none = |status| Drawn { group: None, status, stats: None, boundary, frame: None };
+    let none = |status| Drawn { group: None, status, stats: None, boundary, frame: None, owners: None };
     // A style that draws hidden lines is refused here too, so the lines below are visible ones.
     if let Some(why) = crate::drawing_view::not_drawable(view.display_style.value, view.reference_style.value, true) {
         return none(Status::Failed(why.into()));
@@ -256,11 +322,13 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
     let request = LineRequest { shows: around, hidden: false, reference_hidden: false, reference_hides_model, tangent_edges, chord_mm };
     match crate::drawing_view::lines(s, set, &frame, &request, CMD) {
         Ok(lines) => {
-            let group = paper_group(&lines, id);
+            let (group, strokes) = paper_lines(&lines, id);
             if group.records() > MAX_RECORDS {
                 return none(Status::Failed(format!("its lines are more than a paper scene's {MAX_RECORDS} records: choose a smaller scale")));
             }
-            Drawn { group: Some(Arc::new(group)), status: Status::Drawn, stats: Some(lines.stats), boundary, frame: Some(frame) }
+            let strokes = strokes.iter().filter_map(|at| lines.lines.get(*at)).map(|line| (line.shown, line.source)).collect();
+            let owners = Some(Arc::new(Owners { bodies: set.bodies.clone(), strokes }));
+            Drawn { group: Some(Arc::new(group)), status: Status::Drawn, stats: Some(lines.stats), boundary, frame: Some(frame), owners }
         }
         Err(e) => none(Status::Failed(reason(e))),
     }
@@ -664,30 +732,34 @@ pub fn step(s: &mut Session) -> bool {
     let waiting: Vec<(u64, ResolvedView)> =
         on.iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &state, view)).map(|(id, view, _)| (*id, *view)).collect();
     let Some(&(id, view)) = waiting.first() else { return step_dimensions(s, &d, &on, &state, units) };
+    draw_now(s, &d, id, view, &state, &units);
+    waiting.len() > 1 || !s.drawing_scenes.stale_dimensions(&d, &on, &state, &units).is_empty()
+}
+
+/// Draws view `id`, drawing as `view` does, with its dimensions in the same swap, and keeps them.
+fn draw_now(s: &mut Session, d: &Drawing, id: u64, view: ResolvedView, state: &Arc<ModelState>, units: &str) {
     let shown = match s.drawing_scenes.shown.take() {
-        Some((was, shown)) if Arc::ptr_eq(&was, &state) => shown,
+        Some((was, shown)) if Arc::ptr_eq(&was, state) => shown,
         _ => crate::drawing_view::shown(s),
     };
     let drawn = draw(s, &shown, id, &view);
     let frame = drawn.frame;
-    let these = dimensions_on(&d, std::iter::once(id));
-    let lines = draw_dimensions(s, &d, &these, |_| frame);
+    let these = dimensions_on(d, std::iter::once(id));
+    let lines = draw_dimensions(s, d, &these, |_| frame);
     let cache = &mut s.drawing_scenes;
     cache.shown = Some((state.clone(), shown));
     cache.serial += 1;
     let serial = cache.serial;
-    let lines_kept = KeptView::of(&view, &state, &drawn);
+    let lines_kept = KeptView::of(&view, state, &drawn);
     cache.views.insert(id, Entry { state: state.clone(), view, drawn, serial });
-    cache.keep_dimensions(these, lines, &state, serial, &units);
+    cache.keep_dimensions(these, lines, state, serial, units);
     #[cfg(test)]
     {
         cache.projections += 1;
     }
-    let more = waiting.len() > 1 || !cache.stale_dimensions(&d, &on, &state, &units).is_empty();
     if let Some(kept) = lines_kept {
         Arc::make_mut(&mut s.kept_lines).0.entry(d.id).or_default().insert(id, kept);
     }
-    more
 }
 
 /// Reads the dimensions out of date of the first view that has any, through its frame, and says
@@ -722,7 +794,8 @@ fn take_last_lines(s: &mut Session, d: &Drawing, state: &Arc<ModelState>) {
         let fresh = current && saved.key == lines_key(&view);
         let cache = &mut s.drawing_scenes;
         cache.serial += 1;
-        let drawn = Drawn { group: Some(saved.group), status: Status::Drawn, stats: None, boundary: Some(saved.boundary), frame: Some(frame) };
+        let drawn =
+            Drawn { group: Some(saved.group), status: Status::Drawn, stats: None, boundary: Some(saved.boundary), frame: Some(frame), owners: None };
         let lines_kept = fresh.then(|| KeptView::of(&view, state, &drawn)).flatten();
         let serial = cache.serial;
         cache.views.insert(saved.view, Entry { state: if fresh { state.clone() } else { out_of_date.clone() }, view, drawn, serial });
