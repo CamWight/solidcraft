@@ -98,7 +98,10 @@ fn listed(on: &OnSheet) -> String {
         (!list.is_empty()).then(|| format!("{} {what}{s} ({})", list.len(), named(list)))
     };
     let mut kinds: Vec<String> =
-        [kind("view", &on.views), kind("dimension", &on.dimensions), kind("balloon", &on.balloons)].into_iter().flatten().collect();
+        [kind("view", &on.views), kind("dimension", &on.dimensions), kind("balloon", &on.balloons), kind("revision tag", &on.tags)]
+            .into_iter()
+            .flatten()
+            .collect();
     let last = kinds.pop().unwrap_or_default();
     if kinds.is_empty() { last } else { format!("{} and {last}", kinds.join(", ")) }
 }
