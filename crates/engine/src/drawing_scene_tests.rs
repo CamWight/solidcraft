@@ -342,7 +342,7 @@ fn closing_the_drawing_drops_its_scenes() {
     assert_eq!(s.drawing_scenes.views.len(), 2);
     run(&mut s, "drawing.close", json!({}));
     let cache = &s.drawing_scenes;
-    assert!(cache.views.is_empty() && cache.last.is_none() && cache.shown.is_none() && cache.drawing.is_none());
+    assert!(cache.views.is_empty() && cache.last.is_none() && cache.shown.is_empty() && cache.drawing.is_none());
     assert!(!step(&mut s));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
     let reopened = extract(&mut s, sheet).unwrap();
@@ -363,17 +363,18 @@ fn a_view_past_the_sheets_records_leaves_out_only_itself() {
         let items = vec![Item::Stroke { path, closed: false, width_mm: 0.5 }];
         Drawn {
             owners: None,
-            group: Some(Group { object: n as u64, kind: ObjectKind::View, items }),
+            group: Some(Arc::new(Group { object: n as u64, kind: ObjectKind::View, items })),
             status: Status::Drawn,
             stats: None,
             boundary: None,
+            frame: None,
         }
     };
     let left = MAX_RECORDS - border(&s, sheet).iter().map(Group::records).sum::<usize>();
     // The first leaves 20 records; the second needs 32; the third takes the last 20.
     let views = [lines(left - 22), lines(30), lines(18)];
     let centre = Vec2::new(100.0, 100.0);
-    let (scene, states, _) = assemble(record, views.iter().enumerate().map(|(i, v)| (i as u64, centre, v))).unwrap();
+    let (scene, states, ..) = assemble(record, views.iter().enumerate().map(|(i, v)| (i as u64, centre, v))).unwrap().finish().unwrap();
     let statuses: Vec<&'static str> = states.iter().map(|v| v.status.name()).collect();
     assert_eq!(statuses, ["drawn", "failed", "drawn"]);
     assert_eq!((scene.groups.len(), scene.groups.iter().map(Group::records).sum::<usize>()), (5, MAX_RECORDS));
@@ -769,7 +770,7 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
     let group = |items| Group { object: front, kind: ObjectKind::View, items };
     let view = Drawn {
         owners: None,
-        group: Some(group(Vec::new())),
+        group: Some(Arc::new(group(Vec::new()))),
         status: Status::Drawn,
         stats: None,
         boundary: None,
@@ -967,11 +968,12 @@ fn saved_drawn(path: &str) -> (Session, u64, [u64; 2]) {
     (s, sheet, views)
 }
 
-/// The cache's entries in the file at `path`, and how many views the first drawing's manifest lists.
+/// How many views' lines the file at `path` keeps, over all its drawings.
 fn cached_views(path: &str) -> usize {
     let bytes = std::fs::read(path).unwrap();
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
-    zip.file_names().filter(|n| n.starts_with("cache/drawings/") && n.contains("/views/")).count()
+    let digest = solidcraft_io::design_bytes_digest(&bytes).unwrap();
+    let design = solidcraft_io::read_design(&bytes).unwrap();
+    design.drawings.iter().filter_map(|d| solidcraft_io::read_sheet_lines(path, d.id, &digest)).map(|read| read.views.len()).sum()
 }
 
 /// A save writes the lines current now and draws nothing, on a copy as well. A view out of date isn't
