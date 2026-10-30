@@ -278,6 +278,114 @@ fn read(s: &mut Session, balloon: &str) -> Value {
     run(s, INSPECT, json!({"balloon": balloon}))
 }
 
+/// The balloon's group in a sheet's reply, and the reply's word on it.
+fn on_sheet(s: &mut Session, balloon: &str) -> (Value, Value) {
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    let reply = s.execute("drawing.scene", &json!({"sheet": sheet})).unwrap();
+    let schema = output_schema_for::<crate::schema::drawing_scene::SheetSceneResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    let wanted = ids::decode(balloon).unwrap();
+    let group = reply["scene"]["groups"].as_array().unwrap().iter().find(|g| g["object"] == json!(wanted)).cloned();
+    let word = reply["balloons"].as_array().unwrap().iter().find(|b| b["balloon"] == json!(balloon)).cloned();
+    (group.unwrap_or(Value::Null), word.unwrap())
+}
+
+fn items_of<'a>(group: &'a Value, kind: &str) -> Vec<&'a Value> {
+    group["items"].as_array().unwrap().iter().filter(|item| item["kind"] == json!(kind)).collect()
+}
+
+/// A balloon draws on its sheet after its view: a circle at its place from the view's centre, and a
+/// leader to its edge's middle, worked out by hand. The view is centred on what it shows, 0 to 210
+/// along X and 0 to 30 up, so at (200, 150) the middle of the bottom edge, (40, 0, 0), is at (135, 135).
+/// Its number comes with a list, follows the list, and goes when the list does; moving the view
+/// moves it all; an export writes it and says where it stands.
+#[test]
+fn a_balloon_draws_on_its_sheet_with_its_number_and_its_leader() {
+    let (mut s, view, [_, occurrence]) = placed();
+    let balloon = add(&mut s, view, occurrence)["balloon"].as_str().unwrap().to_string();
+
+    let (group, word) = on_sheet(&mut s, &balloon);
+    assert_eq!((group["kind"].as_str(), word["drawn"].as_bool(), word["status"].as_str()), (Some("balloon"), Some(true), Some("ok")), "{word}");
+    assert!(word["why"].as_str().is_some_and(|why| why.contains("no parts list")), "{word}");
+    assert!(items_of(&group, "text").is_empty(), "no number yet: {group}");
+    let circle = items_of(&group, "stroke").into_iter().find(|item| item["closed"] == json!(true)).unwrap().clone();
+    assert_eq!(circle["path"][0]["center"], json!([260.0, 190.0]), "{circle}");
+    assert_eq!(circle["path"][0]["radius"], json!(5.0), "{circle}");
+    let tip = |group: &Value| items_of(group, "fill")[0]["region"]["outer"]["segs"][0]["a"].clone();
+    let at = tip(&group);
+    assert!((at[0].as_f64().unwrap() - 135.0).abs() < 1e-9 && (at[1].as_f64().unwrap() - 135.0).abs() < 1e-9, "{at}");
+
+    let table = list(&mut s, json!({}));
+    let (group, word) = on_sheet(&mut s, &balloon);
+    assert_eq!(items_of(&group, "text")[0]["text"], json!("1"), "{group}");
+    assert!(word.get("why").is_none(), "{word}");
+
+    let exported = s.execute("drawing.export", &json!({"sheet": ids::encode(s.drawing("test").unwrap().sheets[0].id)})).unwrap();
+    assert_eq!(exported["balloons"][0]["drawn"], json!(true), "{exported}");
+    assert!(exported["svg"].as_str().is_some_and(|svg| svg.contains("BALLOON") || svg.contains("balloon")), "its layer in the file");
+
+    s.execute("drawing.table.delete", &json!({"table": table})).unwrap();
+    let (group, word) = on_sheet(&mut s, &balloon);
+    assert!(items_of(&group, "text").is_empty() && word["why"].as_str().is_some_and(|why| why.contains("no parts list")), "{word}");
+}
+
+/// A balloon whose edge is gone stays where it is, with its circle and its number and no leader, and
+/// says it is lost; put back, its leader returns. One in a scene it can't fit says so too.
+#[test]
+fn a_lost_balloon_keeps_its_circle_and_number() {
+    let (mut s, view, [_, occurrence]) = placed();
+    let balloon = add(&mut s, view, occurrence)["balloon"].as_str().unwrap().to_string();
+    list(&mut s, json!({}));
+    assert_eq!(items_of(&on_sheet(&mut s, &balloon).0, "fill").len(), 1, "its arrowhead");
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let was = d.clone();
+    Arc::make_mut(d.balloons.first_mut().unwrap()).edge.name = "gone".into();
+    s.doc_mut().put_drawing(Arc::new(d));
+    let (group, word) = on_sheet(&mut s, &balloon);
+    assert_eq!(word["status"], json!("lost"), "{word}");
+    assert_eq!(word["drawn"], json!(true), "{word}");
+    assert!(items_of(&group, "fill").is_empty(), "no arrowhead: {group}");
+    assert_eq!(items_of(&group, "stroke").len(), 1, "only its circle: {group}");
+    assert_eq!(items_of(&group, "text")[0]["text"], json!("1"), "{group}");
+    s.doc_mut().put_drawing(Arc::new(was));
+    assert_eq!(items_of(&on_sheet(&mut s, &balloon).0, "fill").len(), 1, "back");
+}
+
+/// The provider draws a balloon as a build does, and reads it again only when it or what it reads
+/// changes: an edit moves it, a new list gives it a number, and a step with nothing changed reads
+/// nothing.
+#[test]
+fn the_provider_keeps_a_balloon_until_what_it_reads_changes() {
+    let (mut s, view, [_, occurrence]) = placed();
+    let balloon = add(&mut s, view, occurrence)["balloon"].as_str().unwrap().to_string();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    let settled = |s: &mut Session| {
+        crate::drawing_scene::extract(s, sheet).unwrap();
+        while crate::drawing_scene::step(s) {}
+        crate::drawing_scene::extract(s, sheet).unwrap()
+    };
+    let first = settled(&mut s);
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!(*first.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene, "as a build draws it");
+    assert!(first.stale_annotations.is_empty());
+    let again = settled(&mut s);
+    assert_eq!(again.generation, first.generation, "nothing read again");
+
+    list(&mut s, json!({}));
+    let numbered = crate::drawing_scene::extract(&mut s, sheet).unwrap();
+    assert_eq!(numbered.stale_annotations, [ids::decode(&balloon).unwrap()], "a list to read");
+    let numbered = settled(&mut s);
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!(*numbered.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene);
+    assert_ne!(numbered.generation, first.generation);
+
+    run(&mut s, EDIT, json!({"balloon": balloon, "set": {"at": [70, 50]}}));
+    let moved = settled(&mut s);
+    assert_ne!(moved.generation, numbered.generation);
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!(*moved.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene);
+}
+
 /// A balloon with no list says so, and reads the only one when there is one: the row its part is
 /// counted in. Two lists leave it to choose, with the choices listed, until it names one. A list's
 /// delete reports the balloon that named it and leaves the balloon. One undo step each.

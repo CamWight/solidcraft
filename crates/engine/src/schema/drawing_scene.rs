@@ -33,7 +33,7 @@ impl JsonSchema for SheetPaperScene {
         "SheetPaperScene".into()
     }
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        paper_scene_schema(generator, &[ObjectKind::DrawingBorder, ObjectKind::View, ObjectKind::Dimension], true)
+        paper_scene_schema(generator, &[ObjectKind::DrawingBorder, ObjectKind::View, ObjectKind::Dimension, ObjectKind::Balloon], true)
     }
 }
 
@@ -67,6 +67,18 @@ impl From<ViewState> for SheetSceneView {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct SheetSceneDimension {
     pub dimension: String,
+    pub view: String,
+    pub status: &'static str,
+    pub drawn: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// One balloon of a view on the sheet: where what it points at stands with the model, whether it is
+/// drawn, and why not all of it is (no number, no leader).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetSceneBalloon {
+    pub balloon: String,
     pub view: String,
     pub status: &'static str,
     pub drawn: bool,
@@ -232,6 +244,8 @@ pub struct SheetSceneResult {
     pub objects: Vec<SheetObjectResult>,
     /// Each dimension of a view on the sheet, by view and id.
     pub dimensions: Vec<SheetSceneDimension>,
+    /// Each balloon of a view on the sheet, by view and id.
+    pub balloons: Vec<SheetSceneBalloon>,
     /// The views and annotations a deferred drawing shows as they last were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub out_of_date: Vec<String>,

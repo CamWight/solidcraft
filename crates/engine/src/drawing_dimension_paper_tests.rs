@@ -3,8 +3,11 @@ use solidcraft_doc::drawing::reference::{ModelEdge, ModelFace, Status};
 use solidcraft_geom::drawing_measure::{Measured, Reading, SilhouetteSide};
 use solidcraft_geom::drawing_view::{NamedView, Scale};
 use solidcraft_geom::paper::Scene;
+use solidcraft_geom::paper::text::TextRun;
 use solidcraft_geom::{Aabb2, Vec3};
-use solidcraft_sketch::{TextMetrics, font_data};
+use solidcraft_sketch::{TextMetrics, TextStyle, font_data};
+
+use crate::drawing_annotation_paper::TEXT_MM;
 
 use super::*;
 
