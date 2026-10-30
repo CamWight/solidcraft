@@ -2,7 +2,10 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 use solidcraft_doc::drawing::Source;
+use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
+use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_doc::{Document, Model};
+use solidcraft_geom::drawing_view::NamedView;
 use solidcraft_io::vfs::PathScope;
 
 use super::*;
@@ -178,5 +181,87 @@ fn a_warm_design_is_not_evaluated() {
     let (mut s, ids) = drawing_of(&[&file]);
     s.open_sources();
     assert_eq!(standing(&s, ids[0]), Ok(()));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A front view at 1:1 of `source`, on the first sheet at `at`: its id.
+fn view_of(s: &mut Session, source: u64, at: [f64; 2]) -> u64 {
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let id = d.allocate_id(&mut s.ids).unwrap();
+    let sheet = d.sheets[0].id;
+    let kind = ViewKind::Base { source, view: ViewDirection::Named(NamedView::Front) };
+    let settings = ViewOverrides { scale: Some("1:1".parse().unwrap()), ..ViewOverrides::default() };
+    d.add_views([Arc::new(View { id, sheet, kind, place: ViewPlace::At(at), settings, reference_margin_mm: 0.0 })]);
+    d.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(d));
+    id
+}
+
+/// How wide view `view` is on paper.
+fn width(s: &Session, view: u64) -> f64 {
+    let d = s.drawing("test").unwrap().clone();
+    let box_mm = crate::drawing_view::on_sheet(s, &d, view, "test").unwrap().boundary;
+    box_mm.max.x - box_mm.min.x
+}
+
+/// The provider's sheet once everything on it has been drawn.
+fn all_drawn(s: &mut Session, sheet: u64) -> crate::drawing_scene::SheetView {
+    crate::drawing_scene::extract(s, sheet).unwrap();
+    let mut steps = 0;
+    while crate::drawing_scene::step(s) {
+        steps += 1;
+        assert!(steps < 100, "the provider never settles");
+    }
+    crate::drawing_scene::extract(s, sheet).unwrap()
+}
+
+/// One sheet draws two designs: each view has its own design's size, and a dimension or a note on a view
+/// reads that view's design. When a design goes, its view keeps its last lines and says it is lost, and
+/// the other is left as it is.
+#[test]
+fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
+    let dir = folder("two");
+    let plate = saved_box(&dir, "plate.sc", 40.0);
+    let (mut s, linked) = drawing_of(&[&plate]);
+    let d = s.drawing("test").unwrap().clone();
+    let (own, sheet) = (d.sources[0].id, d.sheets[0].id);
+    let small = view_of(&mut s, own, [100.0, 150.0]);
+    let big = view_of(&mut s, linked[0], [250.0, 150.0]);
+    s.open_sources();
+    assert!((width(&s, small) - 10.0).abs() < 1e-6 && (width(&s, big) - 40.0).abs() < 1e-6);
+
+    let across = json!({"linear": {"a": [0, 0, 0], "b": [40, 0, 0], "direction": "horizontal"}});
+    let reply = run(&mut s, "drawing.dimension.add", json!({"view": ids::encode(big), "kind": across}));
+    assert_eq!(reply["status"], "ok", "{reply}");
+    assert!((reply["value"].as_f64().unwrap() - 40.0).abs() < 1e-9, "{reply}");
+    let far = json!({"anchor": {"corner": {"view": ids::encode(big), "corner": [40, 0, 40]}}, "at": [30, 30], "content": "Far corner"});
+    assert_eq!(run(&mut s, "drawing.note.add", far)["status"], "ok");
+    let on_small = json!({"view": ids::encode(small), "kind": {"linear": {"a": [0, 0, 0], "b": [40, 0, 0], "direction": "horizontal"}}});
+    assert!(s.execute("drawing.dimension.add", &on_small).is_err(), "the other design has no such corner");
+
+    let built = crate::drawing_scene::build(&s, s.drawing("test").unwrap(), sheet).unwrap();
+    assert!(built.views.iter().all(|v| v.status == crate::drawing_scene::Status::Drawn), "{:?}", built.views);
+    let before = all_drawn(&mut s, sheet);
+    assert!(before.views.iter().all(|v| v.status == crate::drawing_scene::Status::Drawn), "{:?}", before.views);
+    let groups = before.scene.groups.len();
+
+    std::fs::remove_file(&plate).unwrap();
+    s.linked.close();
+    s.open_sources();
+    let after = all_drawn(&mut s, sheet);
+    let status = |view: u64| after.views.iter().find(|v| v.view == view).map(|v| v.status.clone()).unwrap();
+    assert_eq!(status(small), crate::drawing_scene::Status::Drawn);
+    assert!(matches!(status(big), crate::drawing_scene::Status::Lost(why) if why.contains("not found")));
+    assert_eq!(after.scene.groups.len(), groups, "its last lines stay");
+    assert!(after.dimensions.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::dimension::Status::Lost(_))));
+
+    // Never drawn and missing: a placeholder to pick, and no lines. The sheet is still drawn.
+    let (mut fresh, linked) = drawing_of(&[&plate]);
+    let sheet = fresh.drawing("test").unwrap().sheets[0].id;
+    let lost = view_of(&mut fresh, linked[0], [250.0, 150.0]);
+    fresh.open_sources();
+    let view = all_drawn(&mut fresh, sheet);
+    assert!(matches!(&view.views[0].status, crate::drawing_scene::Status::Lost(_)));
+    assert!(view.objects.iter().any(|o| o.object == lost), "{:?}", view.objects);
     std::fs::remove_dir_all(&dir).unwrap();
 }

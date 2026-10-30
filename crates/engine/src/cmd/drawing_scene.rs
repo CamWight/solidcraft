@@ -72,7 +72,7 @@ fn status(s: &mut Session, p: &Value) -> Result<Value> {
         .map(|v| ViewStatusResult { view: ids::encode(v.view), sheet: ids::encode(v.sheet), status: v.status, reason: v.reason })
         .collect();
     let wanted: Vec<u64> = d.dimensions.iter().map(|dimension| dimension.id).collect();
-    let read = s.doc.resolve_dimensions(&s.model, &d, &wanted).map_err(|e| crate::params::bad(STATUS, e.to_string()))?;
+    let read = crate::drawing_sources::resolve_dimensions(s, &d, &wanted).map_err(|e| crate::params::bad(STATUS, e.to_string()))?;
     let dimensions = wanted
         .iter()
         .zip(read)

@@ -14,6 +14,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use solidcraft_doc::drawing::Drawing;
+use solidcraft_doc::drawing::dimension::Resolved;
 use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_io::vfs;
 
@@ -195,6 +196,12 @@ impl Session {
         }
     }
 
+    /// The session view `view` of `d` draws from.
+    pub(crate) fn drawn_by_view(&self, d: &Drawing, view: u64) -> Result<&Session, Unopened> {
+        let resolved = d.resolve_view(view).map_err(|e| problem(SourceState::Unreadable, e.to_string()))?;
+        self.drawn(d, resolved.source)
+    }
+
     /// The world state a view of `source` is drawn from now: what makes its lines current.
     pub(crate) fn drawn_state(&self, d: &Drawing, source: u64) -> Arc<ModelState> {
         match self.drawn(d, source) {
@@ -206,6 +213,32 @@ impl Session {
             }
         }
     }
+}
+
+/// The dimensions `wanted` of `d`, in `wanted`'s order, each read against the design its view draws:
+/// one read for each source, and one with no linked source. One whose design can't be drawn is lost,
+/// saying why. `Err` only for an id the drawing doesn't have.
+pub fn resolve_dimensions(s: &Session, d: &Drawing, wanted: &[u64]) -> solidcraft_doc::Result<Vec<Resolved>> {
+    if d.sources.iter().all(|source| source.path.is_none()) {
+        return s.doc.resolve_dimensions(&s.model, d, wanted);
+    }
+    let mut by_source: BTreeMap<u64, Vec<usize>> = BTreeMap::new();
+    for (at, id) in wanted.iter().enumerate() {
+        let record = d.dimension(*id).ok_or_else(|| DocError::Unknown(format!("dimension {}", ids::encode(*id))))?;
+        by_source.entry(d.resolve_view(record.view)?.source).or_default().push(at);
+    }
+    let mut read: Vec<(usize, Resolved)> = Vec::with_capacity(wanted.len());
+    for (source, places) in by_source {
+        match s.drawn(d, source) {
+            Ok(from) => {
+                let these: Vec<u64> = places.iter().filter_map(|at| wanted.get(*at).copied()).collect();
+                read.extend(places.into_iter().zip(from.doc.resolve_dimensions(&from.model, d, &these)?));
+            }
+            Err(why) => read.extend(places.into_iter().map(|at| (at, Resolved::lost(why.reason.clone())))),
+        }
+    }
+    read.sort_by_key(|(at, _)| *at);
+    Ok(read.into_iter().map(|(_, resolved)| resolved).collect())
 }
 
 #[cfg(test)]

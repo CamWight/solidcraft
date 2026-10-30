@@ -70,11 +70,17 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         AnchorParam::View(view) => Anchor::View(on_view(view.0)?),
         AnchorParam::Edge { view, edge } => Anchor::Edge {
             view: on_view(view.0)?,
-            edge: s.doc.edge_reference(&s.model, &edge.pick, &edge.path).map_err(|why| bad(ADD, why.to_string()))?,
+            edge: {
+                let from = s.drawn_by_view(&record, view.0).map_err(|why| bad(ADD, why.to_string()))?;
+                from.doc.edge_reference(&from.model, &edge.pick, &edge.path).map_err(|why| bad(ADD, why.to_string()))?
+            },
         },
         AnchorParam::Corner { view, corner } => Anchor::Corner {
             view: on_view(view.0)?,
-            point: s.doc.corner_reference(&s.model, &corner.pick, &corner.path).map_err(|why| bad(ADD, why.to_string()))?,
+            point: {
+                let from = s.drawn_by_view(&record, view.0).map_err(|why| bad(ADD, why.to_string()))?;
+                from.doc.corner_reference(&from.model, &corner.pick, &corner.path).map_err(|why| bad(ADD, why.to_string()))?
+            },
         },
     };
     let id = record.allocate_id(&mut s.ids).map_err(|e| bad(ADD, e.to_string()))?;
@@ -120,7 +126,9 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
     let note = d.note(id).ok_or_else(|| bad(cmd, format!("the drawing has no note {}", ids::encode(id))))?;
-    let resolved = s.doc.resolve_notes(&s.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
+    // A note on a sheet reads no model.
+    let from = note.anchor.view().map_or(Ok(s), |view| s.drawn_by_view(d, view)).map_err(|why| bad(cmd, why.to_string()))?;
+    let resolved = from.doc.resolve_notes(&from.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
     let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("note {} wasn't read", ids::encode(id))))?;
     let (status, why, candidates) = status_words(r.status);
     let reply = NoteResult {

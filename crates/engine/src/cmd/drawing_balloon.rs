@@ -76,7 +76,8 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let record = s.drawing(ADD)?.clone();
     let view = request.view.0;
     record.view(view).ok_or_else(|| bad(ADD, format!("the drawing has no view {}", ids::encode(view))))?;
-    let edge = s.doc.edge_reference(&s.model, &request.edge.pick, &request.edge.path).map_err(|why| bad(ADD, why.to_string()))?;
+    let from = s.drawn_by_view(&record, view).map_err(|why| bad(ADD, why.to_string()))?;
+    let edge = from.doc.edge_reference(&from.model, &request.edge.pick, &request.edge.path).map_err(|why| bad(ADD, why.to_string()))?;
     let id = record.allocate_id(&mut s.ids).map_err(|e| bad(ADD, e.to_string()))?;
     let balloon = Balloon { id, view, edge, at: request.at, parts_list: request.parts_list.map(|list| list.0) };
     s.edit_drawing(ADD, |d| {
@@ -116,7 +117,8 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
     let balloon = d.balloon(id).ok_or_else(|| bad(cmd, format!("the drawing has no balloon {}", ids::encode(id))))?;
-    let resolved = s.doc.resolve_balloons(&s.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
+    let from = s.drawn_by_view(d, balloon.view).map_err(|why| bad(cmd, why.to_string()))?;
+    let resolved = from.doc.resolve_balloons(&from.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
     let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("balloon {} wasn't read", ids::encode(id))))?;
     let (status, why, candidates) = status_words(r.status);
     let row = read_row(s, d, balloon);
@@ -155,8 +157,10 @@ fn read_row(s: &Session, d: &Drawing, balloon: &Balloon) -> RowRead {
         Ok(found) => found,
         Err(choices) => return RowRead { choices, status: "no_list", ..Default::default() },
     };
-    let state = s.model.state();
-    let mut tree = Tree::new(&s.doc, &state);
+    // The list reads the design it lists, which needn't be the one the drawing is in.
+    let Ok(from) = s.drawn(d, parts_list.of.source) else { return RowRead { list: Some(list), status: "not_found", ..Default::default() } };
+    let state = from.model.state();
+    let mut tree = Tree::new(&from.doc, &state);
     // Its component deleted, or too large to list: nothing it can read.
     let Ok(listed) = bom::list_with(&mut tree, &parts_list.request(), true) else {
         return RowRead { list: Some(list), status: "not_found", ..Default::default() };

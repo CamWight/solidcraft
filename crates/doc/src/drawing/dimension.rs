@@ -396,6 +396,13 @@ pub struct Resolved {
     pub points: Vec<Vec3>,
 }
 
+impl Resolved {
+    /// A dimension with nothing to read it from: why.
+    pub fn lost(why: String) -> Resolved {
+        Resolved { status: Status::Lost(why), measured: None, text: None, members: Vec::new(), exact: false, points: Vec::new() }
+    }
+}
+
 /// One of a chain's members as the model has it now.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Member {

@@ -48,6 +48,8 @@ pub enum Unmeasured {
     /// The assembly places more than a view walks, so a view of it would leave parts out.
     PastWalkLimit,
     NoBodies,
+    /// The design it draws isn't open, or can't be opened.
+    NotOpen,
 }
 
 impl Unmeasured {
@@ -56,6 +58,7 @@ impl Unmeasured {
         match self {
             Unmeasured::PastWalkLimit => "past_walk_limit",
             Unmeasured::NoBodies => "no_bodies",
+            Unmeasured::NotOpen => "not_open",
         }
     }
 }
@@ -68,6 +71,7 @@ impl fmt::Display for Unmeasured {
                 "the assembly is deeper than {MAX_PLACEMENT_DEPTH} levels or has more than {MAX_PLACEMENTS} placements: a view of it would leave parts out"
             ),
             Unmeasured::NoBodies => f.write_str("the view's source has no bodies"),
+            Unmeasured::NotOpen => f.write_str("the view's source isn't open"),
         }
     }
 }
@@ -198,14 +202,18 @@ pub fn boundary(basis: Plane, scale: Scale, shown: &Aabb2, centre: Vec2, cmd: &s
 }
 
 /// Saved view `id` of `drawing`, one of `s`'s design's drawings, on its sheet: the design's extents
-/// on its plane (a view's source is the design the drawing is in), grown by its reference margin,
+/// on its plane (the design its source names), grown by its reference margin,
 /// at its scale, with their middle on its centre ([`Drawing::view_centre`]); with nothing to
 /// measure, a placeholder [`PLACEHOLDER_MM`] each way round its centre. It reads the model as it
 /// is evaluated: no model is evaluated.
 pub fn on_sheet(s: &Session, drawing: &Drawing, id: u64, cmd: &str) -> Result<OnSheet> {
     let view = drawing.resolve_view(id).map_err(|e| bad(cmd, e.to_string()))?;
     let centre = drawing.view_centre(id).map_err(|e| bad(cmd, e.to_string()))?;
-    placed(&view, shown(s).and_then(|set| measure(&set, &view.basis)), centre, cmd)
+    let measured = match s.drawn(drawing, view.source) {
+        Ok(from) => shown(from).and_then(|set| measure(&set, &view.basis)),
+        Err(_) => Err(Unmeasured::NotOpen),
+    };
+    placed(&view, measured, centre, cmd)
 }
 
 /// A view drawing as `view` does on its sheet, with the middle of what [`measure`] said of it on

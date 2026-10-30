@@ -94,7 +94,8 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let record = s.drawing(ADD)?.clone();
     let view = request.view.0;
     record.view(view).ok_or_else(|| bad(ADD, format!("the drawing has no view {}", ids::encode(view))))?;
-    let (doc, model) = (&s.doc, &s.model);
+    let from = s.drawn_by_view(&record, view).map_err(|why| bad(ADD, why.to_string()))?;
+    let (doc, model) = (&from.doc, &from.model);
     let edge = |e: &EdgeParam| doc.edge_reference(model, &e.pick, &e.path).map_err(|why| bad(ADD, why.to_string()));
     let corner = |c: &CornerParam| doc.corner_reference(model, &c.pick, &c.path).map_err(|why| bad(ADD, why.to_string()));
     let face = |f: &FaceParam| doc.face_reference(model, &f.pick, &f.path).map_err(|why| bad(ADD, why.to_string()));
@@ -143,7 +144,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     // Read before it is added: a dimension its view can't measure would show nothing.
     let mut staged = Drawing::clone(&record);
     staged.add_dimensions([Arc::new(dimension.clone())]);
-    let read = s.doc.resolve_dimensions(&s.model, &staged, &[id]).map_err(|e| bad(ADD, e.to_string()))?;
+    let read = crate::drawing_sources::resolve_dimensions(s, &staged, &[id]).map_err(|e| bad(ADD, e.to_string()))?;
     if let Some(Status::Unmeasurable(why)) = read.first().map(|r| &r.status) {
         return Err(bad(ADD, why.clone()));
     }
@@ -284,7 +285,7 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &mut Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?.clone();
     let dimension = d.dimension(id).ok_or_else(|| bad(cmd, format!("the drawing has no dimension {}", ids::encode(id))))?;
-    let resolved = s.doc.resolve_dimensions(&s.model, &d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
+    let resolved = crate::drawing_sources::resolve_dimensions(s, &d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
     let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("dimension {} wasn't read", ids::encode(id))))?;
     let last_good = match r.measured {
         Some(m) => {
