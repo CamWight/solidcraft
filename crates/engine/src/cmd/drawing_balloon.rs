@@ -18,7 +18,7 @@ use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::ids;
 
 use super::CommandSpec;
-use super::drawing_dimension::located_result;
+use super::drawing_dimension::{located_result, set_field};
 use crate::params::bad;
 use crate::schema::drawing_balloon::{AddParams, BalloonResult, EditParams, EditResult, InspectParams};
 use crate::schema::{TypedContract, output_schema_for};
@@ -94,14 +94,8 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         let at = d.balloons.index_of(id).ok_or_else(|| bad(EDIT, format!("the drawing has no balloon {}", ids::encode(id))))?;
         let Some(balloon) = d.balloons.get_mut(at).map(Arc::make_mut) else { return Ok(Vec::new()) };
         let mut changed = Vec::new();
-        if let Some(place) = request.set.at.filter(|place| *place != balloon.at) {
-            balloon.at = place;
-            changed.push("at".to_string());
-        }
-        if let Some(list) = request.set.parts_list.map(|list| list.map(|id| id.0)).filter(|list| *list != balloon.parts_list) {
-            balloon.parts_list = list;
-            changed.push("parts_list".to_string());
-        }
+        set_field(&mut balloon.at, request.set.at, "at", &mut changed);
+        set_field(&mut balloon.parts_list, request.set.parts_list.map(|list| list.map(|id| id.0)), "parts_list", &mut changed);
         Ok(changed)
     })?;
     let reply = EditResult { balloon: ids::encode(id), changed, param_warnings: Vec::new() };
