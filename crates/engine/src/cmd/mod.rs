@@ -65,6 +65,7 @@ pub use view_dxf::sketch::exportable as view_dxf_exportable;
 pub use view_navigation::standard_view;
 mod component_link;
 pub use component_link::resolve_design_links;
+pub(crate) use design_link::absolute as absolute_path;
 mod config;
 mod design_link;
 mod file;
