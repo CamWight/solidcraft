@@ -1,4 +1,4 @@
-use solidcraft_doc::drawing::dimension::{Member, ModelEdge, ModelFace, Silhouette, Status};
+use solidcraft_doc::drawing::dimension::{DimensionKind, Member, ModelEdge, ModelFace, Silhouette, Status};
 use solidcraft_geom::drawing_measure::{Measured, Reading, SilhouetteSide};
 use solidcraft_geom::drawing_view::{NamedView, Scale};
 use solidcraft_geom::paper::Scene;
@@ -25,16 +25,32 @@ fn face() -> ModelFace {
     ModelFace { body: "B".into(), origin_feature: 1, name: "f".into(), path: Vec::new() }
 }
 
-fn read(points: &[[f64; 2]], text: &str) -> Resolved {
-    Resolved {
-        status: Status::Ok,
-        measured: None,
-        text: Some(text.into()),
-        members: Vec::new(),
-        exact: true,
-        // Front view: x along X and y along Z.
-        points: points.iter().map(|[x, y]| Vec3::new(*x, 0.0, *y)).collect(),
+/// What `kind` measures at `points`, in the order the helpers below give them; `None` for any other
+/// number of points.
+fn geometry(kind: &DimensionKind, points: &[Vec3]) -> Option<Geometry> {
+    match (kind, points) {
+        (DimensionKind::Linear { direction, .. } | DimensionKind::Length { direction, .. }, &[a, b]) => {
+            Some(Geometry::Line { a, b, direction: *direction })
+        }
+        (DimensionKind::Angle { other_side, .. }, &[a0, a1, b0, b1]) => Some(Geometry::Angle { a: [a0, a1], b: [b0, b1], other_side: *other_side }),
+        (DimensionKind::Radial { diameter, .. }, &[centre, start, middle, end]) => {
+            Some(Geometry::Arc { centre, start, middle, end, diameter: *diameter })
+        }
+        (DimensionKind::Chain { direction, .. }, points) => Some(Geometry::Chain { points: points.to_vec(), direction: *direction }),
+        (DimensionKind::Cylinder { .. }, &[a0, a1, b0, b1]) => {
+            Some(Geometry::Across { a: [a0, a1], b: [b0, b1], direction: LinearDirection::Aligned })
+        }
+        (DimensionKind::Silhouettes { direction, .. } | DimensionKind::Faces { direction, .. }, &[a0, a1, b0, b1]) => {
+            Some(Geometry::Across { a: [a0, a1], b: [b0, b1], direction: *direction })
+        }
+        _ => None,
     }
+}
+
+fn read(kind: &DimensionKind, points: &[[f64; 2]], text: &str) -> Resolved {
+    // Front view: x along X and y along Z.
+    let points: Vec<Vec3> = points.iter().map(|[x, y]| Vec3::new(*x, 0.0, *y)).collect();
+    Resolved { status: Status::Ok, measured: None, text: Some(text.into()), members: Vec::new(), exact: true, geometry: geometry(kind, &points) }
 }
 
 fn length(direction: LinearDirection) -> DimensionKind {
@@ -42,7 +58,8 @@ fn length(direction: LinearDirection) -> DimensionKind {
 }
 
 fn drawn(kind: DimensionKind, offset: f64, points: &[[f64; 2]], text: &str, scale: &str) -> Group {
-    paper_group(&dimension(kind, offset, TextPlace::Centred), &read(points, text), &view_at(scale)).unwrap()
+    let resolved = read(&kind, points, text);
+    paper_group(&dimension(kind, offset, TextPlace::Centred), &resolved, &view_at(scale)).unwrap()
 }
 
 /// A group's lines, each point by point, and its arrowheads' tips.
@@ -149,7 +166,10 @@ fn a_line_runs_in_its_dimensions_direction() {
     let tips = parts(&drawn(length(along), 5.0, &slant, "1", "1:1")).1;
     assert!(close(tips[0].x, tips[1].x), "{tips:?}");
     // A direction of no length, and an aligned line whose ends are one point, have no place.
-    let none = |kind, points: &[[f64; 2]]| paper_group(&dimension(kind, 5.0, TextPlace::Centred), &read(points, "1"), &view_at("1:1"));
+    let none = |kind: DimensionKind, points: &[[f64; 2]]| {
+        let resolved = read(&kind, points, "1");
+        paper_group(&dimension(kind, 5.0, TextPlace::Centred), &resolved, &view_at("1:1"))
+    };
     assert!(none(length(LinearDirection::Along(Vec2::ZERO)), &slant).is_none());
     assert!(none(length(LinearDirection::Aligned), &[[1.0, 1.0], [1.0, 1.0]]).is_none());
 }
@@ -177,7 +197,7 @@ fn an_angle_is_drawn_at_the_point_its_lines_meet() {
 
     // Parallel lines never meet; nearly parallel ones meet far away, and still lay out.
     let parallel = [[0.0, 0.0], [50.0, 0.0], [0.0, 10.0], [50.0, 10.0]];
-    assert!(paper_group(&dimension(kind(false), 20.0, TextPlace::Centred), &read(&parallel, "0"), &view_at("1:1")).is_none());
+    assert!(paper_group(&dimension(kind(false), 20.0, TextPlace::Centred), &read(&kind(false), &parallel, "0"), &view_at("1:1")).is_none());
     let nearly = [[0.0, 0.0], [50.0, 0.0], [0.0, 10.0], [50.0, 10.0 + 1e-7]];
     let far = drawn(kind(false), 20.0, &nearly, "0", "1:1");
     assert!(!far.items.is_empty());
@@ -210,7 +230,7 @@ fn a_radial_dimensions_arrows_sit_on_its_rim() {
 fn a_chain_is_one_line_with_each_extension_line_once() {
     let kind = DimensionKind::Chain { points: Vec::new(), direction: LinearDirection::Horizontal };
     let member = |text: &str| Member { measured: Measured { value: 1.0, foreshortened: false }, text: text.into() };
-    let mut r = read(&[[0.0, 0.0], [10.0, 5.0], [30.0, 0.0], [60.0, 8.0]], "60");
+    let mut r = read(&kind, &[[0.0, 0.0], [10.0, 5.0], [30.0, 0.0], [60.0, 8.0]], "60");
     r.text = None;
     r.members = vec![member("10.00"), member("20.00"), member("30.00")];
     let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap();
@@ -227,7 +247,7 @@ fn a_chain_is_one_line_with_each_extension_line_once() {
 fn a_chain_of_the_most_points_lays_out() {
     let kind = DimensionKind::Chain { points: Vec::new(), direction: LinearDirection::Aligned };
     let points: Vec<[f64; 2]> = (0..64).map(|i| [i as f64 * 1.5, 0.0]).collect();
-    let mut r = read(&points, "");
+    let mut r = read(&kind, &points, "");
     r.text = None;
     let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap();
     assert_eq!(parts(&group).1.len(), 2 * 63);
@@ -259,19 +279,16 @@ fn a_cylinder_is_dimensioned_across_its_silhouettes() {
     assert!(close((tips[0].y - tips[1].y).abs(), 8.0), "{tips:?}");
 }
 
-/// What isn't found has no lines; a kind with the wrong number of points never lays out.
+/// What isn't found has no lines.
 #[test]
 fn a_dimension_with_no_points_has_no_lines() {
-    let mut lost = read(&[], "");
-    lost.status = Status::Lost("gone".into());
+    let lost = Resolved::lost("gone".into());
     for kind in [length(LinearDirection::Aligned), DimensionKind::Radial { edge: edge(), diameter: false }, DimensionKind::Cylinder { face: face() }]
     {
         assert!(paper_group(&dimension(kind, 10.0, TextPlace::Centred), &lost, &view_at("1:1")).is_none());
     }
     let chain = DimensionKind::Chain { points: Vec::new(), direction: LinearDirection::Aligned };
     assert!(paper_group(&dimension(chain, 10.0, TextPlace::Centred), &lost, &view_at("1:1")).is_none());
-    let three = read(&[[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], "1");
-    assert!(paper_group(&dimension(length(LinearDirection::Aligned), 1.0, TextPlace::Centred), &three, &view_at("1:1")).is_none());
 }
 
 /// A text's own place, far off the sheet's middle, moves the text and the arc it sits on, never the
@@ -279,8 +296,12 @@ fn a_dimension_with_no_points_has_no_lines() {
 #[test]
 fn a_texts_place_keeps_the_span() {
     let at = TextPlace::At([1000.0, -500.0]);
-    let group =
-        paper_group(&dimension(length(LinearDirection::Horizontal), 10.0, at), &read(&[[0.0, 0.0], [40.0, 0.0]], "40.00"), &view_at("1:1")).unwrap();
+    let group = paper_group(
+        &dimension(length(LinearDirection::Horizontal), 10.0, at),
+        &read(&length(LinearDirection::Horizontal), &[[0.0, 0.0], [40.0, 0.0]], "40.00"),
+        &view_at("1:1"),
+    )
+    .unwrap();
     let tips = parts(&group).1;
     assert!(close((tips[1].x - tips[0].x).abs(), 40.0) && close(tips[0].y, 10.0), "{tips:?}");
 }
@@ -314,8 +335,9 @@ fn hostile_points_and_offsets_never_panic() {
             DimensionKind::Cylinder { face: face() },
         ];
         for kind in kinds {
+            let resolved = read(&kind, &points, "1");
             let d = dimension(kind, offset, text.clone());
-            if let Some(group) = paper_group(&d, &read(&points, "1"), &view_at("1:5")) {
+            if let Some(group) = paper_group(&d, &resolved, &view_at("1:5")) {
                 let _ = (Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![group] }).validate();
             }
         }
