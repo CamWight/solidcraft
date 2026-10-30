@@ -9,7 +9,7 @@ use solidcraft_doc::ids::IdSource;
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile, Orientation, PaperSize};
 
 use super::*;
-use crate::{read_design, write_design, write_design_container};
+use crate::{design_source_paths, read_design, write_design, write_design_container};
 
 /// A design with two drawings of it, each on one A3 sheet, in their order.
 fn plate() -> Document {
@@ -20,7 +20,7 @@ fn plate() -> Document {
         let taken: BTreeSet<u64> = doc.drawings.iter().map(|d| d.id).collect();
         let mut d = Drawing::new(name, "en-GB", "Sheet 1", a3, Some(DrawingBorderProfile::iso()), &taken, &mut ids).unwrap();
         let id = d.allocate_id(&mut ids).unwrap();
-        d.sources.push(Source { id });
+        d.sources.push(Source { id, path: None });
         doc.drawings.push(Arc::new(d));
     }
     doc
@@ -79,6 +79,30 @@ fn a_designs_drawings_round_trip_through_both_forms_byte_for_byte() {
     let read = read_design(&json).unwrap();
     assert_eq!(read.drawings, doc.drawings);
     assert_eq!(write_design(&read), json, "the plain form too");
+}
+
+/// A linked source's path goes through both forms as it is, and a file lists its drawings' sources
+/// each once, from either form, without reading another file.
+#[test]
+fn a_files_source_paths_are_listed_without_opening_them() {
+    let mut doc = plate();
+    let (mut first, mut second) = ((*doc.drawings[0]).clone(), (*doc.drawings[1]).clone());
+    first.sources.clear();
+    let (a, b) = (1 << 41, (1 << 41) + 1);
+    first.sources.extend([Source { id: a, path: Some("../parts/plate.sc".into()) }, Source { id: b, path: Some("/whole/bolt.sc".into()) }]);
+    second.sources.push(Source { id: b, path: Some("../parts/plate.sc".into()) });
+    doc.drawings = vec![Arc::new(first), Arc::new(second)];
+    assert_eq!(design_source_paths(&write_design(&plate())).unwrap(), Vec::<String>::new());
+    let bytes = write_design_container(&doc).unwrap();
+    let calls = crate::vfs::file_calls();
+    for file in [bytes.clone(), write_design(&doc)] {
+        assert_eq!(design_source_paths(&file).unwrap(), ["../parts/plate.sc", "/whole/bolt.sc"]);
+        assert_eq!(read_design(&file).unwrap().drawings, doc.drawings);
+    }
+    assert_eq!(crate::vfs::file_calls(), calls, "no file was asked for");
+    assert_eq!(write_design_container(&read_design(&bytes).unwrap()).unwrap(), bytes, "save, open, save: the same bytes");
+    assert!(design_source_paths(b"PK\x03\x04 not a zip").is_err());
+    assert!(design_source_paths(b"not a design").is_err());
 }
 
 /// An image on a sheet travels in its drawing's record through both forms, and an entry whose file

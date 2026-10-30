@@ -82,6 +82,10 @@ pub const MAX_NAME_BYTES: usize = 256;
 pub const MAX_LANGUAGE_CHARS: usize = 35;
 /// The largest drawing read, as JSON text.
 pub const MAX_DRAWING_BYTES: usize = 16 << 20;
+/// The most designs a drawing may draw.
+pub const MAX_SOURCES: usize = 64;
+/// A source's path is shorter than this, as a component link's is.
+pub const MAX_SOURCE_PATH_BYTES: usize = 4096;
 /// The resolution a sheet's pictures (its shaded views) are rendered at unless it says, in dots
 /// per inch.
 pub const DEFAULT_DPI: f64 = 300.0;
@@ -143,13 +147,27 @@ pub struct Drawing {
     pub revisions: Arc<RevisionRecord>,
 }
 
-/// A design the drawing draws: the design the drawing is in. Views and sheets name it by its id,
-/// so a drawing of other designs can add sources of another kind later.
+/// A design the drawing draws: the design the drawing is in, or the design in another file. Views and
+/// sheets name it by its id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Source {
     #[serde(with = "crate::ids")]
     pub id: u64,
+    /// The file it is in, none for the design the drawing is in. In a saved file it is relative to the
+    /// design, with `/`, once that design has a file; in a session it is whole, as a component link's
+    /// is, so Save As and undo never have to rewrite it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl Source {
+    fn check(&self) -> Result<()> {
+        let Some(path) = &self.path else { return Ok(()) };
+        require(!path.trim().is_empty() && path.len() < MAX_SOURCE_PATH_BYTES && !path.contains('\0'), || {
+            format!("source {}: its path is a file's, under {MAX_SOURCE_PATH_BYTES} bytes", ids::encode(self.id))
+        })
+    }
 }
 
 /// The length unit a drawing gives its measurements in.
@@ -425,7 +443,9 @@ impl Drawing {
     /// keeps.
     pub fn validate(&self) -> Result<()> {
         require((1..=MAX_SHEETS).contains(&self.sheets.len()), || format!("a drawing has 1 to {MAX_SHEETS} sheets"))?;
-        require(self.sources.len() <= 1, || "a drawing draws only the design it is in".into())?;
+        require(self.sources.len() <= MAX_SOURCES, || format!("a drawing has at most {MAX_SOURCES} sources"))?;
+        require(self.sources.iter().filter(|s| s.path.is_none()).count() <= 1, || "only one of a drawing's sources is the design it is in".into())?;
+        self.sources.iter().try_for_each(Source::check)?;
         check_name(&self.name, "the drawing's")?;
         require(is_language_tag(&self.language), || {
             format!("the language is not a BCP 47 tag of 2 to {MAX_LANGUAGE_CHARS} characters (such as `en` or `en-GB`)")

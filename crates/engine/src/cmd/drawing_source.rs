@@ -7,9 +7,13 @@
 //! A command that would leave a sketch open or a move uncaptured waits for the drawing to close: both
 //! are the model's own modes, with nothing here to finish them.
 
+use std::path::Path;
+
 use serde_json::Value;
+use solidcraft_doc::drawing::MAX_SOURCE_PATH_BYTES;
 use solidcraft_doc::ids;
 
+use super::design_link::absolute;
 use super::{CommandSpec, Part, find_command};
 use crate::params::bad;
 use crate::schema::drawing_source::{ExecuteParams, ExecuteResult};
@@ -31,6 +35,23 @@ pub static COMMANDS: &[CommandSpec] =
          edit.undo {model: true} takes it back from the drawing. Refused: anything but a model command; live: true; a command that \
          leaves a sketch open or a move uncaptured.",
         )];
+
+/// The file a drawing's source named `given` keeps, whole: a saved design that isn't this one, whose
+/// path may be reached. All of it is judged from the text, before anything asks the disk or the network.
+pub(super) fn source_file(s: &Session, cmd: &str, given: &str) -> Result<String> {
+    if given.trim().is_empty() || given.len() >= MAX_SOURCE_PATH_BYTES || given.contains('\0') {
+        return Err(bad(cmd, "`source` is the path of a saved .sc design"));
+    }
+    let file = absolute(Path::new(given));
+    if !solidcraft_io::is_design_container_path(&file) {
+        return Err(bad(cmd, "choose a saved .sc design"));
+    }
+    if s.path.as_deref().is_some_and(|own| absolute(Path::new(own)) == file) {
+        return Err(bad(cmd, "that is the design the drawing is in"));
+    }
+    super::component_link::link_refused(s.path.as_deref(), given).map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(file.to_string_lossy().into_owned())
+}
 
 fn execute(s: &mut Session, p: &Value) -> Result<Value> {
     let request: ExecuteParams = crate::schema::read(EXECUTE, p)?;

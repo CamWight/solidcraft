@@ -713,6 +713,14 @@ fn read_preview<R: Read + Seek>(reader: &mut PackageReader<R>) -> Result<DesignP
     Ok(preview)
 }
 
+/// The files a design's drawings draw, each once, as they are saved (relative to the design, or
+/// whole). Only this file's drawing records are read: no other design is opened and no model read.
+pub fn design_source_paths(bytes: &[u8]) -> Result<Vec<String>> {
+    let drawings = if is_design_container(bytes) { drawing::read(&mut PackageReader::new(Cursor::new(bytes))?)? } else { crate::read_design(bytes)?.drawings };
+    let paths: BTreeSet<&str> = drawings.iter().flat_map(|d| &d.sources).filter_map(|s| s.path.as_deref()).collect();
+    Ok(paths.into_iter().map(str::to_string).collect())
+}
+
 /// A bounded container reader over a seekable source.
 ///
 /// Opening inspects the directory, not the source blobs. `preview` reads only the

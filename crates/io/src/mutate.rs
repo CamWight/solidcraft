@@ -538,7 +538,7 @@ outer
             let taken = doc.drawings.iter().map(|d| d.id).collect();
             let mut drawing = Drawing::new(name, "en", "Sheet 1", a3, Some(DrawingBorderProfile::iso()), &taken, &mut ids).unwrap();
             let id = drawing.allocate_id(&mut ids).unwrap();
-            drawing.sources.push(Source { id });
+            drawing.sources.push(Source { id, path: None });
             doc.drawings.push(drawing.into());
         }
         let container = crate::write_design_container(&doc).unwrap();

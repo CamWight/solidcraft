@@ -4,7 +4,9 @@
 //! move together; before the design has a file the path is kept whole.
 
 use std::path::{Component as PathPart, Path, PathBuf};
+use std::sync::Arc;
 
+use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::{DesignLink, Document};
 
 /// The folder relative link paths are kept against: the design's own, once it has a file.
@@ -69,6 +71,24 @@ pub(super) fn resolve(design: Option<&str>, link: &str) -> PathBuf {
 /// The links of `doc` stored for a design saved at `to` instead of at `from`.
 pub(super) fn rebased(doc: &Document, from: Option<&str>, to: &str) -> std::collections::BTreeMap<u64, DesignLink> {
     doc.links.iter().map(|(c, l)| (*c, DesignLink { path: stored(Some(to), &resolve(from, &l.path)), ..l.clone() })).collect()
+}
+
+/// The drawings of `doc` with each linked source's path through `map`, when that changes any. A drawing
+/// none of whose paths change stays shared, so a design with no linked source pays one loop.
+pub(super) fn drawings_with_paths(doc: &Document, map: impl Fn(&str) -> String) -> Option<Vec<Arc<Drawing>>> {
+    let changes = |d: &Drawing| d.sources.iter().filter_map(|s| s.path.as_deref()).any(|path| map(path) != path);
+    doc.drawings.iter().any(|d| changes(d)).then(|| {
+        let moved = |d: &Arc<Drawing>| {
+            let mut d = d.clone();
+            if changes(&d) {
+                for path in Arc::make_mut(&mut d).sources.iter_mut().filter_map(|s| s.path.as_mut()) {
+                    *path = map(path);
+                }
+            }
+            d
+        };
+        doc.drawings.iter().map(moved).collect()
+    })
 }
 
 #[cfg(test)]

@@ -490,6 +490,10 @@ impl Session {
             if links != self.doc.links {
                 design.to_mut().links = links;
             }
+            let stored = |linked: &str| super::design_link::stored(Some(path), &super::design_link::resolve(self.path.as_deref(), linked));
+            if let Some(drawings) = super::design_link::drawings_with_paths(&self.doc, stored) {
+                design.to_mut().drawings = drawings;
+            }
         }
         if !self.visibility.is_empty() {
             design.to_mut().visibility = self.visibility.clone();
