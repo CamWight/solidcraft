@@ -6,6 +6,10 @@
 //! and where the view sits on its sheet ([`crate::drawing_view::on_sheet`]), and a change as one
 //! undo step that evaluates no model.
 //!
+//! `drawing.view.move` (#4816 E9) drags a saved view across its sheet: a view lined up with its
+//! parent keeps to its line, and the views lined up with it follow. One undo step, with no model
+//! evaluated.
+//!
 //! `drawing.view.move_to_sheet` and `drawing.view.copy_to_sheet` (#4816) put a saved view on a
 //! sheet: the views lined up with it go with it, and keep their places beside it. A copy is
 //! independent of the views it was copied from (Cameron, 2026-10-26). Each lists the views it puts
@@ -40,7 +44,7 @@ use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult,
     LineResult, LineSourceResult, LinesStatusResult, MoveParams, OutsideResult, PathSegResult, PieceResult, PlaceParam, ScaleResult, SceneResult,
-    SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewResult, ViewSet,
+    SettingResult, SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewMoveParams, ViewMoveResult, ViewResult, ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -51,6 +55,8 @@ const INSPECT: &str = "drawing.view.inspect";
 const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 const EDIT: &str = "drawing.view.edit";
 const EDIT_CONTRACT: TypedContract<EditParams> = TypedContract::new();
+const DRAG: &str = "drawing.view.move";
+const DRAG_CONTRACT: TypedContract<ViewMoveParams> = TypedContract::new();
 const MOVE: &str = "drawing.view.move_to_sheet";
 const MOVE_CONTRACT: TypedContract<MoveParams> = TypedContract::new();
 const COPY: &str = "drawing.view.copy_to_sheet";
@@ -77,7 +83,14 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .contract(&EDIT_CONTRACT)
         .output(output_schema_for::<EditResult>)
         .params("view: a saved view's id; set: {scale?, display_style?, reference_style?, reference_hides_model?, tangent_edges?: each a value, or null to follow the parent (a base view keeps a scale); reference_margin_mm?; view?: a base view's direction; place?: {at: [x, y]} or {aligned: n}; linked?: a projected view's display settings all following its parent (true) or all its own, as they are now (false)} → {view, changed: [fields], followers: [the views projected from it whose settings changed with it]}. One undo step; no model is evaluated."),
-    CommandSpec::new(MOVE, "Move View to Sheet", crate::checked!("drawing.view.move_to_sheet", move_to_sheet))
+    CommandSpec::new(DRAG, "Move View", crate::checked!("drawing.view.move", DRAG_CONTRACT, move_view))
+        .icon("move")
+        .in_drawing()
+        .doc_only()
+        .contract(&DRAG_CONTRACT)
+        .output(output_schema_for::<ViewMoveResult>)
+        .params("view: a saved view's id; to_mm: [x, y] for its centre; break_alignment?: place a view lined up with its parent apart (default false: it takes only its free axis) → {view, place, centre_mm, followers: the views lined up with it that went with it, outside: [{view, boundary_mm, unmeasured?}], those now outside the sheet's drawing space}. One undo step, no model evaluated; a move to where it is makes no step."),
+    CommandSpec::new(MOVE, "Move View to Sheet", crate::checked!("drawing.view.move_to_sheet", MOVE_CONTRACT, move_to_sheet))
         .icon("move")
         .in_drawing()
         .doc_only()
@@ -476,6 +489,37 @@ fn sheet_named(d: &Drawing, named: &str, cmd: &str) -> Result<(u64, Vec2)> {
     Ok((sheet.id, sheet.sheet.size_mm().map_err(|e| bad(cmd, e.to_string()))? * 0.5))
 }
 
+/// `d`'s view `id` placed where it goes dragged to `to`.
+fn drag(d: &mut Drawing, id: u64, to: Vec2, break_alignment: bool, cmd: &str) -> Result<()> {
+    let place = d.place_moved_to(id, to, break_alignment).map_err(|e| bad(cmd, e.to_string()))?;
+    if let Some(view) = d.view_index(id).and_then(|at| d.views.get_mut(at)) {
+        Arc::make_mut(view).place = place;
+    }
+    Ok(())
+}
+
+fn move_view(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: ViewMoveParams = crate::schema::read(DRAG, p)?;
+    let id = request.view.0;
+    let lined = lined_up(s.drawing(DRAG)?, id);
+    let centres = |d: &Drawing| lined.iter().map(|v| d.view_centre(*v).ok()).collect::<Vec<_>>();
+    let before = centres(s.drawing(DRAG)?);
+    s.edit_drawing(DRAG, |d| drag(d, id, request.to_mm.0, request.break_alignment, DRAG))?;
+    let d = s.drawing(DRAG)?.clone();
+    let view = find(&d, id, DRAG)?;
+    let place = match view.place {
+        ViewPlace::At(at) => PlaceParam::At(at),
+        ViewPlace::Aligned(along) => PlaceParam::Aligned(along),
+    };
+    let centre = d.view_centre(id).map_err(|e| bad(DRAG, e.to_string()))?;
+    let went: Vec<u64> = lined.iter().zip(before.iter().zip(centres(&d))).filter(|(_, (b, a))| **b != *a).map(|(v, _)| *v).collect();
+    let moved: Vec<u64> = std::iter::once(id).chain(went.iter().copied()).collect();
+    let outside = outside_results(crate::drawing_view::outside(s, &d, &moved, DRAG)?);
+    let followers = went.iter().map(|v| ids::encode(*v)).collect();
+    let reply = ViewMoveResult { view: ids::encode(id), place, centre_mm: [centre.x, centre.y], followers, outside, param_warnings: Vec::new() };
+    serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
+}
+
 fn move_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
     let request: MoveParams = crate::schema::read(MOVE, p)?;
     let id = request.view.0;
@@ -483,6 +527,10 @@ fn move_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
         let (sheet, middle) = sheet_named(d, &request.sheet, MOVE)?;
         let view = find(d, id, MOVE)?;
         if view.sheet == sheet {
+            // Already on it: a position is a move on its sheet, by the one rule.
+            if let Some(to) = request.position_mm {
+                drag(d, id, to.0, request.break_alignment, MOVE)?;
+            }
             return Ok((sheet, Vec::new()));
         }
         let lined = matches!(view.place, ViewPlace::Aligned(_));
