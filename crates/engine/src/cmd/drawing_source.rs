@@ -27,7 +27,7 @@ use crate::schema::drawing_source::{
     AddParams, ExecuteParams, ExecuteResult, RemoveParams, RemoveResult, RepointParams, SourceResult, SourcesResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
-use crate::{EngineError, Result, Session, frames};
+use crate::{Result, Session, frames};
 
 const EXECUTE: &str = "drawing.source.execute";
 const EXECUTE_CONTRACT: TypedContract<ExecuteParams> = TypedContract::new();
@@ -146,15 +146,11 @@ fn standing(s: &Session, d: &Drawing, source: &Source) -> SourceResult {
     }
 }
 
-fn reply<T: serde::Serialize>(answer: T) -> Result<Value> {
-    serde_json::to_value(answer).map_err(|e| EngineError::Other(e.to_string()))
-}
-
 fn list(s: &mut Session, _p: &Value) -> Result<Value> {
     s.linked.forget_unopened();
     s.open_sources();
     let d = s.drawing(LIST)?.clone();
-    reply(SourcesResult { sources: d.sources.iter().map(|source| standing(s, &d, source)).collect(), param_warnings: Vec::new() })
+    crate::schema::reply(SourcesResult { sources: d.sources.iter().map(|source| standing(s, &d, source)).collect(), param_warnings: Vec::new() })
 }
 
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
@@ -173,7 +169,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(())
     })?;
     let d = s.drawing(ADD)?.clone();
-    reply(standing(s, &d, &source))
+    crate::schema::reply(standing(s, &d, &source))
 }
 
 fn relink(s: &mut Session, p: &Value) -> Result<Value> {
@@ -199,7 +195,7 @@ fn relink(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(was) = was.filter(|was| *was != name) {
         answer.warnings.push(format!("this design is called `{name}`, and the one it replaces `{was}`: check the views"));
     }
-    reply(answer)
+    crate::schema::reply(answer)
 }
 
 fn locate(s: &mut Session, p: &Value) -> Result<Value> {
@@ -211,7 +207,7 @@ fn locate(s: &mut Session, p: &Value) -> Result<Value> {
     if let Some(path) = source.path.clone() {
         s.linked.locate(path, file);
     }
-    reply(standing(s, &record, &source))
+    crate::schema::reply(standing(s, &record, &source))
 }
 
 fn remove(s: &mut Session, p: &Value) -> Result<Value> {
@@ -227,7 +223,7 @@ fn remove(s: &mut Session, p: &Value) -> Result<Value> {
         d.sources.retain(|source| source.id != id);
         Ok(())
     })?;
-    reply(RemoveResult { removed: ids::encode(id), param_warnings: Vec::new() })
+    crate::schema::reply(RemoveResult { removed: ids::encode(id), param_warnings: Vec::new() })
 }
 
 fn execute(s: &mut Session, p: &Value) -> Result<Value> {
@@ -264,7 +260,7 @@ fn execute(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(EXECUTE, format!("`{id}` leaves a sketch open or a move uncaptured: close the drawing to do that")));
     }
     let reply = ExecuteResult { source: ids::encode(source), command: id.to_string(), result };
-    serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
+    crate::schema::reply(reply)
 }
 
 #[cfg(test)]

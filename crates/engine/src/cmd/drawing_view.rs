@@ -48,7 +48,7 @@ use solidcraft_io::paper::MAX_PICTURE_DPI;
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
-use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Unmeasured};
+use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS, MAX_PATHS, PlacedView, ShownSet, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, AlongParam, AngleFromParam, BaseParams, BoxResult, ChoicesResult, CopyParams, CreateResult, DPI_RANGE, EditParams, EditResult,
@@ -548,8 +548,8 @@ fn changed_fields(a: &View, b: &View) -> Vec<String> {
 
 /// Extents as the replies give them: measured on the display mesh, or a placeholder's and why.
 /// The views [`crate::drawing_view::outside`] lists, as the commands answer them.
-pub(super) fn outside_results(outside: Vec<(u64, OnSheet)>) -> Vec<OutsideResult> {
-    let result = |(id, placed): (u64, OnSheet)| OutsideResult {
+pub(super) fn outside_results(outside: Vec<(u64, PlacedView)>) -> Vec<OutsideResult> {
+    let result = |(id, placed): (u64, PlacedView)| OutsideResult {
         view: ids::encode(id),
         boundary_mm: BoxResult { min: placed.boundary.min.into(), max: placed.boundary.max.into() },
         unmeasured: placed.unmeasured.map(Unmeasured::name),
@@ -857,7 +857,7 @@ fn created(s: &Session, cmd: &str, id: u64, fitted: bool) -> Result<Value> {
     serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
 }
 
-fn to_sheet_answer(view: u64, sheet: u64, views: &[u64], outside: Vec<(u64, OnSheet)>) -> Result<Value> {
+fn to_sheet_answer(view: u64, sheet: u64, views: &[u64], outside: Vec<(u64, PlacedView)>) -> Result<Value> {
     let reply = ToSheetResult {
         view: ids::encode(view),
         sheet: ids::encode(sheet),
