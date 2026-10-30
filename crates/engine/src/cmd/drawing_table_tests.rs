@@ -94,7 +94,14 @@ fn a_new_list_lists_what_its_sheet_documents() {
 fn placing_a_list_keeps_the_numbers_its_view_shows() {
     let mut s = assembly();
     let sheet = sheet_of(&s);
-    let shown = |s: &mut Session| s.execute("assembly.bom", &json!({"levels": "flat"})).unwrap()["rows"].clone();
+    // A model read, so with the drawing closed for it.
+    let shown = |s: &mut Session| {
+        let drawing = ids::encode(s.open_drawing.unwrap());
+        s.execute("drawing.close", &json!({})).unwrap();
+        let rows = s.execute("assembly.bom", &json!({"levels": "flat"})).unwrap()["rows"].clone();
+        s.execute("drawing.open", &json!({"drawing": drawing})).unwrap();
+        rows
+    };
     let before = shown(&mut s);
     assert!(s.doc.assembly.item_numbers.is_empty());
     let (revision, model) = (s.revision, s.model.state());
