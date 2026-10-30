@@ -70,7 +70,7 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
             balloons.push(*object);
         } else if open.note(*object).is_some() {
             notes.push(*object);
-        } else if open.image(*object).is_some() {
+        } else if open.sheet_image(*object).is_some() {
             images.push(*object);
         } else {
             return Err(bad(cmd, format!("the drawing open has no view, dimension, balloon, note or image {}", ids::encode(*object))));

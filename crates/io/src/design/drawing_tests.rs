@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Cursor, Write};
 
 use serde_json::{Value, json};
-use solidcraft_doc::drawing::image::SheetImage;
+use solidcraft_doc::drawing::image::{ImageFile, SheetImage};
 use solidcraft_doc::drawing::{MAX_DRAWINGS, Source};
 use solidcraft_doc::format::DRAWING;
 use solidcraft_doc::ids::IdSource;
@@ -115,8 +115,10 @@ fn an_image_on_a_sheet_round_trips_and_a_lying_one_is_refused() {
     header.extend([8, 6, 0, 0, 0]);
     let mut doc = plate();
     let mut d = (*doc.drawings[0]).clone();
-    let id = d.allocate_id(&mut IdSource::seeded(5426)).unwrap();
-    d.add_images([Arc::new(SheetImage::from_file(id, d.sheets[0].id, [10.0, 20.0, 60.0, 45.0], &header).unwrap())]);
+    let mut ids = IdSource::seeded(5426);
+    let (file, placed) = (d.allocate_id(&mut ids).unwrap(), d.allocate_id(&mut ids).unwrap());
+    d.add_images([Arc::new(ImageFile::from_file(file, &header).unwrap())]);
+    d.add_sheet_images([Arc::new(SheetImage { id: placed, sheet: d.sheets[0].id, rect_mm: [10.0, 20.0, 60.0, 45.0], image: file })]);
     doc.drawings[0] = Arc::new(d);
     let bytes = write_design_container(&doc).unwrap();
     let read = read_design(&bytes).unwrap();

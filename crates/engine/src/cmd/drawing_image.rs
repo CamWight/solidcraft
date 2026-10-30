@@ -1,11 +1,12 @@
-//! `drawing.image.add` (W38e, #5426): a PNG or JPEG on a sheet, its bytes saved in the design. One
-//! undo step, and no model is evaluated. An image is deleted as a drawing's other objects are
-//! (`selection.delete`), and goes with its sheet.
+//! `drawing.image.add` (W38e, #5426): a PNG or JPEG on a sheet, its bytes saved in the design, once
+//! however many places it sits. One undo step, and no model is evaluated. A placed image is deleted as
+//! a drawing's other objects are (`selection.delete`), and goes with its sheet; its file goes with the
+//! last of them.
 
 use std::sync::Arc;
 
 use serde_json::Value;
-use solidcraft_doc::drawing::image::{MAX_IMAGE_BYTES, SheetImage};
+use solidcraft_doc::drawing::image::{ImageFile, MAX_IMAGE_BYTES, SheetImage};
 use solidcraft_doc::ids;
 
 use super::CommandSpec;
@@ -25,8 +26,8 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(ADD, "Add Image", crate
     .output(output_schema_for::<AddResult>)
     .params(
         "sheet: id or name; file: a PNG or JPEG, at most 4 MiB and 64 million pixels, read from the file's header before anything decodes it; \
-         rect_mm: [x0, y0, x1, y1] from the sheet's lower-left corner → {image, format, pixels}. Its bytes are saved in the design and its path \
-         isn't. At most 9 MiB of images a drawing. One undo step; no model is evaluated.",
+         rect_mm: [x0, y0, x1, y1] from the sheet's lower-left corner → {image, format, pixels}. Its bytes are saved in the design, once however many places it \
+         sits, and its path isn't. image is the placement's id, which selection.delete takes. At most 9 MiB of image files a drawing. One undo step; no model is evaluated.",
     )];
 
 fn add(s: &mut Session, p: &Value) -> Result<Value> {
@@ -38,11 +39,22 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(ADD, "`file` is the path of a PNG or JPEG"));
     }
     let bytes = solidcraft_io::vfs::read(file, MAX_IMAGE_BYTES).map_err(|e| EngineError::Other(format!("{file}: {e}")))?;
-    let id = record.allocate_id(&mut s.ids).map_err(|e| bad(ADD, e.to_string()))?;
-    let image = SheetImage::from_file(id, sheet, request.rect_mm, &bytes).map_err(|e| bad(ADD, format!("{file}: {e}")))?;
+    let (id, new_file) = (record.allocate_id(&mut s.ids), record.allocate_id(&mut s.ids));
+    let id = id.map_err(|e| bad(ADD, e.to_string()))?;
+    let new_file = new_file.map_err(|e| bad(ADD, e.to_string()))?;
+    let image = ImageFile::from_file(new_file, &bytes).map_err(|e| bad(ADD, format!("{file}: {e}")))?;
     let reply = AddResult { image: ids::encode(id), format: image.format.clone(), pixels: image.pixels, param_warnings: Vec::new() };
+    let rect_mm = request.rect_mm;
     s.edit_drawing(ADD, |d| {
-        d.add_images([Arc::new(image)]);
+        // The same bytes are the same file: a logo added to each sheet is stored once.
+        let shown = match d.images.iter().find(|known| known.data == image.data) {
+            Some(known) => known.id,
+            None => {
+                d.add_images([Arc::new(image)]);
+                new_file
+            }
+        };
+        d.add_sheet_images([Arc::new(SheetImage { id, sheet, rect_mm, image: shown })]);
         // Every drawing saved opens again, so one that couldn't be saved is refused here, not at the save.
         d.to_json().map_err(|e| bad(ADD, e.to_string()))?;
         Ok(())

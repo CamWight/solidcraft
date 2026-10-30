@@ -1,5 +1,8 @@
 //! A drawing's images (W38e, #5426): a PNG or JPEG placed on a sheet, such as a logo or a photo.
 //!
+//! - **A file and its placements are two records.** A logo sits on every sheet: [`Drawing::images`]
+//!   holds it once, and each [`SheetImage`] in [`Drawing::sheet_images`] says where one sits. A file
+//!   goes with the last thing that uses it ([`Drawing::images_in_use`]).
 //! - **The bytes** travel in the drawing's record (base64, as a canvas's do), so the design opens
 //!   without the original file, and the file's path is never saved.
 //! - **The caps** are checked from the file's bytes and header, before anything decodes its pixels:
@@ -7,10 +10,12 @@
 //!   too, so reading a drawing compares the two ([`Drawing::check_image_files`]); an edit, which only
 //!   ever adds a checked file, doesn't decode them again.
 //!
-//! The rules, beside the record's: its sheet is one of the drawing's; its rectangle is on paper and
-//! has a size; at most [`MAX_IMAGES`] images of at most [`MAX_IMAGE_BYTES`] and
-//! [`MAX_IMAGE_PIXELS`] each, and [`MAX_IMAGES_BYTES`] between them, listed by id.
+//! The rules, beside the record's: a file is used; a placement names a file the drawing has, and is
+//! on one of its sheets, in a rectangle on paper with a size; at most [`MAX_IMAGES`] files of at most
+//! [`MAX_IMAGE_BYTES`] and [`MAX_IMAGE_PIXELS`] each, and [`MAX_IMAGES_BYTES`] between them; at most
+//! [`MAX_SHEET_IMAGES`] placements; each list by id.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -21,17 +26,33 @@ use super::{Drawing, add_by_id, in_id_order, require};
 use crate::canvas::{base64_decode, base64_encode, image_info};
 use crate::{DocError, Result, ids};
 
-/// The most images a drawing may have.
+/// The most image files a drawing may have.
 pub const MAX_IMAGES: usize = 1_000;
+/// The most placements of them a drawing may have.
+pub const MAX_SHEET_IMAGES: usize = 1_000;
 /// The largest file an image may be.
 pub const MAX_IMAGE_BYTES: usize = 4 << 20;
-/// The most a drawing's images may be between them: two of the largest and some, whose 12 MiB of
-/// text leaves room under [`super::MAX_DRAWING_BYTES`] for the rest of the record.
+/// The most a drawing's image files may be between them: two of the largest and some, whose 12 MiB
+/// of text leaves room under [`super::MAX_DRAWING_BYTES`] for the rest of the record.
 pub const MAX_IMAGES_BYTES: usize = 9 << 20;
 /// The most pixels an image may have: 8,000 by 8,000, 256 MiB once decoded.
 pub const MAX_IMAGE_PIXELS: u64 = 64_000_000;
 
-/// One image on a sheet of a drawing.
+/// One image file of a drawing, however many places it sits.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageFile {
+    #[serde(with = "crate::ids")]
+    pub id: u64,
+    /// `png` or `jpeg`, as the file's header says.
+    pub format: String,
+    /// Its width and height in pixels, as the file's header says.
+    pub pixels: [u32; 2],
+    /// The file, base64.
+    pub data: String,
+}
+
+/// One place an image file sits, on a sheet of a drawing.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SheetImage {
@@ -41,12 +62,9 @@ pub struct SheetImage {
     pub sheet: u64,
     /// Where it sits, `[x0, y0, x1, y1]` in millimetres from the sheet's lower-left corner.
     pub rect_mm: [f64; 4],
-    /// `png` or `jpeg`, as the file's header says.
-    pub format: String,
-    /// Its width and height in pixels, as the file's header says.
-    pub pixels: [u32; 2],
-    /// The file, base64.
-    pub data: String,
+    /// The file it shows, by id.
+    #[serde(with = "crate::ids")]
+    pub image: u64,
 }
 
 /// The length of `bytes` bytes in base64.
@@ -63,46 +81,73 @@ fn file_info(bytes: &[u8]) -> Result<(&'static str, [u32; 2])> {
     Ok((format, pixels))
 }
 
-impl SheetImage {
-    /// The image of a file's `bytes`, when its caps allow it: nothing is decoded.
-    pub fn from_file(id: u64, sheet: u64, rect_mm: [f64; 4], bytes: &[u8]) -> Result<SheetImage> {
+impl ImageFile {
+    /// The image file of a file's `bytes`, when its caps allow it: nothing is decoded.
+    pub fn from_file(id: u64, bytes: &[u8]) -> Result<ImageFile> {
         let (format, pixels) = file_info(bytes)?;
-        Ok(SheetImage { id, sheet, rect_mm, format: format.into(), pixels, data: base64_encode(bytes) })
+        Ok(ImageFile { id, format: format.into(), pixels, data: base64_encode(bytes) })
     }
 }
 
 impl Drawing {
-    /// Adds `images`, each where its id puts it, as [`Drawing::add_notes`] adds notes.
-    pub fn add_images(&mut self, images: impl IntoIterator<Item = Arc<SheetImage>>) {
-        add_by_id(&mut self.images, images, |i| i.id);
+    /// Adds image `files`, each where its id puts it, as [`Drawing::add_notes`] adds notes.
+    pub fn add_images(&mut self, files: impl IntoIterator<Item = Arc<ImageFile>>) {
+        add_by_id(&mut self.images, files, |i| i.id);
     }
 
-    /// Image `id`, found by halves in the images' id order.
-    pub fn image(&self, id: u64) -> Option<&SheetImage> {
+    /// Adds `placements`, each where its id puts it.
+    pub fn add_sheet_images(&mut self, placements: impl IntoIterator<Item = Arc<SheetImage>>) {
+        add_by_id(&mut self.sheet_images, placements, |i| i.id);
+    }
+
+    /// Image file `id`, found by halves in the files' id order.
+    pub fn image(&self, id: u64) -> Option<&ImageFile> {
         let at = self.images.binary_search_by_key(&id, |i| i.id).ok()?;
         self.images.get(at).map(|i| &**i)
     }
 
+    /// Placement `id`, found by halves in the placements' id order.
+    pub fn sheet_image(&self, id: u64) -> Option<&SheetImage> {
+        let at = self.sheet_images.binary_search_by_key(&id, |i| i.id).ok()?;
+        self.sheet_images.get(at).map(|i| &**i)
+    }
+
+    /// The image files something in the drawing uses: the one list of what keeps a file. Anything new
+    /// that shows a file adds its own here.
+    pub fn images_in_use(&self) -> BTreeSet<u64> {
+        self.sheet_images.iter().map(|placement| placement.image).collect()
+    }
+
+    /// Takes out each image file nothing uses now.
+    pub(super) fn drop_unused_images(&mut self) {
+        let used = self.images_in_use();
+        self.images.retain(|file| used.contains(&file.id));
+    }
+
     pub(super) fn check_images(&self) -> Result<()> {
         require(self.images.len() <= MAX_IMAGES, || format!("a drawing has at most {MAX_IMAGES} images"))?;
+        require(self.sheet_images.len() <= MAX_SHEET_IMAGES, || format!("a drawing places images at most {MAX_SHEET_IMAGES} times"))?;
         require(in_id_order(&self.images, |i| i.id), || "a drawing lists its images by id".into())?;
+        require(in_id_order(&self.sheet_images, |i| i.id), || "a drawing lists its placed images by id".into())?;
         let total = self.images.iter().fold(0, |total: usize, i| total.saturating_add(i.data.len()));
         require(total <= encoded(MAX_IMAGES_BYTES), || format!("a drawing's images are at most {} MiB between them", MAX_IMAGES_BYTES >> 20))?;
-        for image in &self.images {
-            self.check_image(image).map_err(|e| DocError::Invalid(format!("image {}: {e}", ids::encode(image.id))))?;
+        let used = self.images_in_use();
+        for file in &self.images {
+            check_image(file).map_err(|e| DocError::Invalid(format!("image {}: {e}", ids::encode(file.id))))?;
+            require(used.contains(&file.id), || format!("image {}: nothing uses it", ids::encode(file.id)))?;
+        }
+        for placement in &self.sheet_images {
+            self.check_sheet_image(placement).map_err(|e| DocError::Invalid(format!("placed image {}: {e}", ids::encode(placement.id))))?;
         }
         Ok(())
     }
 
-    fn check_image(&self, i: &SheetImage) -> Result<()> {
+    fn check_sheet_image(&self, i: &SheetImage) -> Result<()> {
+        require(self.image(i.image).is_some(), || format!("it shows image {}, which the drawing doesn't have", ids::encode(i.image)))?;
         require(self.sheets.iter().any(|s| s.id == i.sheet), || format!("it is on sheet {}, which the drawing doesn't have", ids::encode(i.sheet)))?;
         let [x0, y0, x1, y1] = i.rect_mm;
         let on_paper = [x0, y0, x1, y1].into_iter().all(is_paper_coordinate);
-        require(on_paper && x0 < x1 && y0 < y1, || format!("its rectangle has a size and is at most {MAX_SIDE_MM} mm on paper"))?;
-        require(matches!(i.format.as_str(), "png" | "jpeg"), || "it is a PNG or a JPEG".into())?;
-        let [w, h] = i.pixels;
-        require(w > 0 && h > 0 && u64::from(w) * u64::from(h) <= MAX_IMAGE_PIXELS, || format!("it has 1 to {MAX_IMAGE_PIXELS} pixels"))?;
-        require(i.data.len() <= encoded(MAX_IMAGE_BYTES), || format!("its file is at most {} MiB", MAX_IMAGE_BYTES >> 20))
+        require(on_paper && x0 < x1 && y0 < y1, || format!("its rectangle has a size and is at most {MAX_SIDE_MM} mm on paper"))
     }
 
     /// Each image's bytes are the file its record says: what reading a drawing checks once, as it
@@ -114,6 +159,14 @@ impl Drawing {
             require(format == i.format && pixels == i.pixels, || format!("image {}: its record and its file disagree", ids::encode(i.id)))
         })
     }
+}
+
+/// A file's own rules, from its record alone: what every edit keeps, without decoding it.
+fn check_image(i: &ImageFile) -> Result<()> {
+    require(matches!(i.format.as_str(), "png" | "jpeg"), || "it is a PNG or a JPEG".into())?;
+    let [w, h] = i.pixels;
+    require(w > 0 && h > 0 && u64::from(w) * u64::from(h) <= MAX_IMAGE_PIXELS, || format!("it has 1 to {MAX_IMAGE_PIXELS} pixels"))?;
+    require(i.data.len() <= encoded(MAX_IMAGE_BYTES), || format!("its file is at most {} MiB", MAX_IMAGE_BYTES >> 20))
 }
 
 #[cfg(test)]
