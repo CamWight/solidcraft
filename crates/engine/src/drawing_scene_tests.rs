@@ -966,7 +966,7 @@ fn cached_views(path: &str) -> usize {
 /// written as current; a drawing with none keeps what the file has; plain JSON has none.
 #[test]
 fn a_save_keeps_only_current_lines_and_draws_nothing() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-sheet");
     let path = folder.path("sheet.solidcraft");
     let (mut s, sheet, [front, _]) = saved_drawn(&path);
     assert_eq!(cached_views(&path), 2);
@@ -994,7 +994,7 @@ fn a_save_keeps_only_current_lines_and_draws_nothing() {
 /// longer current, and the file's older ones stay with their old stamp.
 #[test]
 fn a_closed_drawings_lines_keep_until_the_next_save() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-closed");
     let path = folder.path("closed.solidcraft");
     let (mut s, _, _) = saved_drawn(&path);
     run(&mut s, "drawing.close", json!({}));
@@ -1022,7 +1022,7 @@ fn reopened(s: &mut Session, path: &str) -> u64 {
 /// none either. A later save without drawing anything keeps them.
 #[test]
 fn reopening_unchanged_draws_nothing() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-again");
     let path = folder.path("again.solidcraft");
     let (mut s, sheet, [front, _]) = saved_drawn(&path);
     let before = settled(&mut s, sheet);
@@ -1046,7 +1046,7 @@ fn reopening_unchanged_draws_nothing() {
 /// One view's scale changed and saved: only it draws again, after a reopen. The other's lines stayed.
 #[test]
 fn only_the_view_that_changed_draws_again() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-one");
     let path = folder.path("one.solidcraft");
     let (mut s, _, [front, _]) = saved_drawn(&path);
     run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"scale": "1:4"}}));
@@ -1061,7 +1061,7 @@ fn only_the_view_that_changed_draws_again() {
 /// saved edit, reopened, is right either way. A file with no cache is the same as drawing from scratch.
 #[test]
 fn an_edited_model_shows_the_last_lines_then_draws_them_again() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-edited");
     let path = folder.path("edited.solidcraft");
     let (mut s, _, [front, top]) = saved_drawn(&path);
     let sheet = reopened(&mut s, &path);
@@ -1087,7 +1087,7 @@ fn an_edited_model_shows_the_last_lines_then_draws_them_again() {
 /// Damaged or missing lines are the same as none: the drawing opens and draws.
 #[test]
 fn a_missing_cache_draws_as_ever() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-none");
     let path = folder.path("none.solidcraft");
     let (mut s, _, _) = saved_drawn(&path);
     let sheet = reopened(&mut s, &path);
