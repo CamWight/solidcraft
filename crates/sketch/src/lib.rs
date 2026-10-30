@@ -30,6 +30,7 @@ mod loci;
 mod model;
 mod offset;
 mod offset_topology;
+mod paper_text;
 mod pattern;
 mod periodic;
 mod profiles;
@@ -49,7 +50,8 @@ pub use curves::{
 };
 pub use decompose::Budget;
 pub use dims::{
-    DimFrame, DimLayout, DimSizes, chain_centres, default_text, default_text_offset, dim_frame, dim_layout, dim_layout_reaching, dim_layout_sized, dim_reach, encode_text,
+    DimFrame, DimLayout, DimSizes, chain_centres, default_text, default_text_offset, dim_frame, dim_layout, dim_layout_reaching, dim_layout_sized,
+    dim_reach, encode_text,
 };
 pub use ends::{END_TOL, EndReport, EndTouch, UntiedEnd, loose_ends};
 pub use equation::{EquationCurve, MAX_EQUATION_TEXT};
@@ -62,6 +64,7 @@ pub use model::{
 };
 pub use offset::OffsetChain;
 pub use offset_topology::{OffsetCreated, OffsetRole, OffsetRoleFlags, OffsetRoleKind, OffsetTopology};
+pub use paper_text::{DRAWING_FONTS, DrawingFont, paper_text};
 pub use pattern::{PatternAlignment, PatternInstance, SketchPattern, SketchPatternKind};
 pub use periodic::periodic_beziers;
 pub use profiles::{

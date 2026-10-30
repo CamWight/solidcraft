@@ -453,8 +453,8 @@ fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, 
         let bounds_mm = border.iter().map(Group::bounds).fold(Aabb2::EMPTY, |all, one| all.union(&one));
         objects.push(SheetObject { object: record.id, kind: ObjectKind::DrawingBorder, bounds_mm, boundary_mm: None });
     }
-    let scene = Scene { size_mm, groups: border };
-    let alone = Scene { size_mm, groups: Vec::with_capacity(1) };
+    let scene = Scene::new(size_mm, border);
+    let alone = Scene::new(size_mm, Vec::with_capacity(1));
     let mut assembly = Assembly { scene, records, alone, states: Vec::new(), objects, placed: BTreeMap::new(), annotations: Vec::new() };
     for (view, centre, drawn) in views {
         let drawn: &Drawn = drawn.borrow();
