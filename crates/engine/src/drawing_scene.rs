@@ -870,6 +870,9 @@ pub(crate) fn forget_closed(s: &mut Session) {
     if s.drawing_scenes.drawing.is_some_and(|d| s.open_drawing != Some(d)) {
         s.drawing_scenes = Cache::default();
     }
+    if s.open_drawing.is_none() {
+        s.linked.close();
+    }
 }
 
 #[cfg(test)]

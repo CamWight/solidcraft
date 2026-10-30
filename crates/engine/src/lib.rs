@@ -18,6 +18,7 @@ pub mod cosmetic_threads;
 pub mod crash;
 pub mod drawing_dimension_paper;
 pub mod drawing_scene;
+pub mod drawing_sources;
 pub mod drawing_view;
 pub mod easyprint;
 pub mod frames;
@@ -530,6 +531,8 @@ pub struct Session {
     pub(crate) drawing_scenes: drawing_scene::Cache,
     /// Each drawing's last lines a save can keep, shared with a copy that saves ([`Session::scratch`]).
     pub(crate) kept_lines: Arc<drawing_scene::KeptLines>,
+    /// The designs the drawing open draws from other files, read-only ([`Session::drawn`]).
+    pub(crate) linked: drawing_sources::LinkedDesigns,
     /// The design file this session last read or saved, and the digest of its `document.json`: where
     /// a drawing's last lines are, and what they must be for.
     pub(crate) file: Option<(String, String)>,
@@ -723,6 +726,7 @@ impl Session {
             dimension_values: Default::default(),
             drawing_scenes: Default::default(),
             kept_lines: Default::default(),
+            linked: Default::default(),
             file: None,
             #[cfg(test)]
             evaluations: 0,
@@ -1346,6 +1350,9 @@ impl Session {
             }
         }
         spec.allowed(self).map_err(|why| EngineError::Disabled(spec.id.to_string(), why))?;
+        if spec.part == cmd::Part::Drawing {
+            self.open_sources();
+        }
         let open_drawing = self.open_drawing;
         let before = Snapshot { part: open_drawing.filter(|_| spec.part == cmd::Part::Drawing), ..Snapshot::of(self, spec.label) };
         let ids = self.ids.clone();
@@ -1651,6 +1658,7 @@ impl Session {
             render_jobs: self.render_jobs.scratch(),
             drawing_scenes: Default::default(),
             kept_lines: self.kept_lines.clone(),
+            linked: self.linked.scratch(),
             file: self.file.clone(),
             saved_visibility: self.saved_visibility.clone(),
             dimension_values: self.dimension_values.clone(),
