@@ -67,7 +67,7 @@ pub mod view;
 
 use balloon::Balloon;
 use dimension::Dimension;
-use image::SheetImage;
+use image::{ImageFile, SheetImage};
 use note::{Anchor, Note};
 use table::SheetTable;
 use view::View;
@@ -139,9 +139,12 @@ pub struct Drawing {
     /// By id ([`Drawing::add_notes`]), as the balloons are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<Arc<Note>>,
-    /// By id ([`Drawing::add_images`]), as the balloons are.
+    /// The image files, by id ([`Drawing::add_images`]), as the balloons are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<Arc<SheetImage>>,
+    pub images: Vec<Arc<ImageFile>>,
+    /// Where they sit on the sheets, by id ([`Drawing::add_sheet_images`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheet_images: Vec<Arc<SheetImage>>,
     /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
     #[serde(default, skip_serializing_if = "no_revisions")]
     pub revisions: Arc<RevisionRecord>,
@@ -248,7 +251,7 @@ pub struct OnSheet {
     pub tables: Vec<u64>,
     /// The notes on it and in its views.
     pub notes: Vec<u64>,
-    /// The images on it.
+    /// The images placed on it: the placements, whose files go with the last of them.
     pub images: Vec<u64>,
 }
 
@@ -303,6 +306,7 @@ impl Drawing {
             tables: Vec::new(),
             notes: Vec::new(),
             images: Vec::new(),
+            sheet_images: Vec::new(),
             revisions: Arc::default(),
         };
         drawing.validate()?;
@@ -336,6 +340,8 @@ impl Drawing {
         d.add_notes(notes);
         let images = std::mem::take(&mut d.images);
         d.add_images(images);
+        let placements = std::mem::take(&mut d.sheet_images);
+        d.add_sheet_images(placements);
         d.validate().map_err(damaged)?;
         d.check_image_files().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
@@ -381,7 +387,7 @@ impl Drawing {
 
     /// Whether `id` names an object a sheet shows: a view, a dimension or a balloon.
     pub fn has_object(&self, id: u64) -> bool {
-        self.view(id).is_some() || self.dimension(id).is_some() || self.balloon(id).is_some() || self.note(id).is_some() || self.image(id).is_some()
+        self.view(id).is_some() || self.dimension(id).is_some() || self.balloon(id).is_some() || self.note(id).is_some() || self.sheet_image(id).is_some()
     }
 
     /// What is on sheet `id`: its views and the dimensions and balloons in them. Each later kind of record on a
@@ -393,7 +399,7 @@ impl Drawing {
         let notes =
             self.notes.iter().filter(|n| n.anchor == Anchor::Sheet(id) || n.anchor.view().is_some_and(|v| on.views.binary_search(&v).is_ok()));
         let notes = notes.map(|n| n.id).collect();
-        let images = self.images.iter().filter(|i| i.sheet == id).map(|i| i.id).collect();
+        let images = self.sheet_images.iter().filter(|i| i.sheet == id).map(|i| i.id).collect();
         OnSheet { tags, notes, images, tables: self.tables.iter().filter(|t| t.sheet == id).map(|t| t.id).collect(), ..on }
     }
 
@@ -423,7 +429,8 @@ impl Drawing {
         self.balloons.retain(|b| objects.balloons.binary_search(&b.id).is_err());
         self.tables.retain(|t| objects.tables.binary_search(&t.id).is_err());
         self.notes.retain(|n| objects.notes.binary_search(&n.id).is_err());
-        self.images.retain(|i| objects.images.binary_search(&i.id).is_err());
+        self.sheet_images.retain(|i| objects.images.binary_search(&i.id).is_err());
+        self.drop_unused_images();
         // A balloon outlives the list it named, and goes back to the lists it could read.
         for balloon in &mut self.balloons {
             if balloon.parts_list.is_some_and(|list| objects.tables.binary_search(&list).is_ok()) {
@@ -447,6 +454,7 @@ impl Drawing {
             .chain(self.tables.iter().map(|t| t.id))
             .chain(self.notes.iter().map(|n| n.id))
             .chain(self.images.iter().map(|i| i.id))
+            .chain(self.sheet_images.iter().map(|i| i.id))
             .chain(self.revisions.ids())
     }
 

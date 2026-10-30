@@ -55,17 +55,53 @@ fn an_image_is_read_saved_without_its_path_and_one_undo_step() {
     std::fs::remove_dir_all(&dir).unwrap();
     let record = s.drawing("test").unwrap().clone();
     let id = ids::decode(reply["image"].as_str().unwrap()).unwrap();
-    assert_eq!(base64_decode(&record.image(id).unwrap().data).unwrap(), bytes);
+    assert_eq!(base64_decode(&record.image(record.sheet_image(id).unwrap().image).unwrap().data).unwrap(), bytes);
     assert!(!record.to_json().unwrap().contains("logo"));
 
     s.execute("edit.undo", &json!({})).unwrap();
     assert!(s.drawing("test").unwrap().images.is_empty());
     s.execute("edit.redo", &json!({})).unwrap();
-    assert!(s.drawing("test").unwrap().image(id).is_some());
+    assert!(s.drawing("test").unwrap().sheet_image(id).is_some());
 
     let item = json!({"type": "drawing", "drawing": ids::encode(record.id), "object": ids::encode(id)});
     s.execute("selection.delete", &json!({"items": [item]})).unwrap();
-    assert!(s.drawing("test").unwrap().images.is_empty());
+    let left = s.drawing("test").unwrap();
+    assert!(left.sheet_images.is_empty() && left.images.is_empty(), "its file goes with it");
+}
+
+/// The same logo on two sheets is one file, and it goes when the last of them goes. Other bytes are
+/// another file. A sheet's delete takes its placements, and the file stays for the other sheet.
+#[test]
+fn the_same_bytes_are_one_file_on_each_sheet() {
+    let (dir, file) = on_disk("logo", &png(32, 32));
+    let (other_dir, other) = on_disk("logo-other", &png(64, 64));
+    let (mut s, first) = drawing();
+    s.execute("drawing.sheet.add", &json!({})).unwrap();
+    let second = ids::encode(s.drawing("test").unwrap().sheets[1].id);
+    let add = |s: &mut Session, sheet: &str, file: &str| s.execute(ADD, &json!({"sheet": sheet, "file": file, "rect_mm": RECT})).unwrap();
+    let a = add(&mut s, &first, &file);
+    let b = add(&mut s, &second, &file);
+    assert_ne!(a["image"], b["image"], "each place has its own id");
+    assert_eq!(b["pixels"], json!([32, 32]));
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!((d.images.len(), d.sheet_images.len()), (1, 2), "stored once");
+    assert_eq!(d.sheet_images[0].image, d.sheet_images[1].image);
+    add(&mut s, &first, &other);
+    assert_eq!(s.drawing("test").unwrap().images.len(), 2, "other bytes are another file");
+
+    let drawing = ids::encode(d.id);
+    let item = |image: &Value| json!({"type": "drawing", "drawing": drawing, "object": image});
+    s.execute("selection.delete", &json!({"items": [item(&a["image"])]})).unwrap();
+    assert_eq!(s.drawing("test").unwrap().images.len(), 2, "the other sheet still uses it");
+    s.execute("selection.delete", &json!({"items": [item(&b["image"])]})).unwrap();
+    assert_eq!(s.drawing("test").unwrap().images.len(), 1, "the last place took its file");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.drawing("test").unwrap().images.len(), 2, "an undo brings it back");
+    let unused = s.drawing("test").unwrap().to_json().unwrap();
+    assert!(solidcraft_doc::drawing::Drawing::from_json(&unused).is_ok());
+    for d in [dir, other_dir] {
+        std::fs::remove_dir_all(d).unwrap();
+    }
 }
 
 #[test]
@@ -121,10 +157,24 @@ fn an_image_a_drawing_has_no_room_for_is_refused() {
     full.resize(MAX_IMAGE_BYTES, 0);
     let (dir, file) = on_disk("room", &full);
     let (mut s, sheet) = drawing();
-    let p = json!({"sheet": sheet, "file": file, "rect_mm": RECT});
-    s.execute(ADD, &p).unwrap();
-    s.execute(ADD, &p).unwrap();
-    assert!(refused(&mut s, p).contains("between them"));
+    let (dir_b, file_b) = on_disk("room-b", &{
+        let mut b = png(5, 4);
+        b.resize(MAX_IMAGE_BYTES, 0);
+        b
+    });
+    let (dir_c, file_c) = on_disk("room-c", &{
+        let mut c = png(6, 4);
+        c.resize(MAX_IMAGE_BYTES / 2, 0);
+        c
+    });
+    let p = |file: &str| json!({"sheet": sheet, "file": file, "rect_mm": RECT});
+    s.execute(ADD, &p(&file)).unwrap();
+    s.execute(ADD, &p(&file_b)).unwrap();
+    s.execute(ADD, &p(&file)).unwrap();
+    assert!(refused(&mut s, p(&file_c)).contains("between them"), "the same file again costs nothing; a third doesn't fit");
     s.drawing("test").unwrap().to_json().unwrap();
+    for d in [dir_b, dir_c] {
+        std::fs::remove_dir_all(d).unwrap();
+    }
     std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -22,6 +22,7 @@ pub struct AddParams {
 /// What `drawing.image.add` returns.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct AddResult {
+    /// The placement's id, which `selection.delete` takes.
     pub image: String,
     /// `png` or `jpeg`.
     pub format: String,
