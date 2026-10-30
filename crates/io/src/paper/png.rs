@@ -5,17 +5,20 @@
 //!   ([`paper::flatten`]) and tiny-skia is given lines only: its own flattening stops at 64 lines a
 //!   curve, more than a pixel off on a large arc at a high dpi.
 //! - **Paint** as the scene says: black, strokes with butt caps and miter joins (limit 4), fills
-//!   even-odd. Each line is stroked once, then filled band by band; a line under a pixel wide is
-//!   drawn as tiny-skia's hairline instead, its coverage scaled by its width, so it never vanishes.
+//!   even-odd, text as its glyph outlines filled nonzero. Each line is stroked once, then filled
+//!   band by band; a line under a pixel wide is drawn as tiny-skia's hairline instead, its coverage
+//!   scaled by its width, so it never vanishes.
 //! - **Bands:** the sheet is drawn [`BAND_BYTES`] of pixels at a time, with a row above and below
 //!   that isn't written, and streamed into the file, so an A0 sheet at 2400 dpi (8.9 billion
-//!   pixels) needs no more memory than an A4 one, and the bytes are the same whatever the band.
+//!   pixels) needs no more memory than an A4 one. The band is a fixed size, so a sheet gives the
+//!   same bytes every time. tiny-skia cuts the lines at a band's edges, so a pixel next to one may
+//!   be a sixteenth of coverage off what a sheet drawn as one band has there.
 //! - **The file** records its dpi (`pHYs`), so it prints at the sheet's size, and is sRGB.
 
 use std::io::Write;
 use std::ops::RangeInclusive;
 
-use solidcraft_geom::paper::{self, Grid, GridItem, GridPath, GridReport, Prepared};
+use solidcraft_geom::paper::{self, Grid, GridPath, GridReport, Prepared};
 use tiny_skia::{Color, FillRule, LineCap, LineJoin, Paint, Path, PathBuilder, Pixmap, Stroke, Transform};
 
 use crate::{IoError, Result};
@@ -80,11 +83,11 @@ fn write(scene: &Prepared, options: PngOptions, out: impl Write, band_bytes: usi
     let mut sheet = Sheet { px, height: on.size.y as f64, tolerance: 0.125 / px, points: 0 };
     let mut shapes = Vec::new();
     for item in on.groups.iter().flat_map(|g| &g.items) {
-        match item {
-            GridItem::Stroke { width, path } => {
+        match item.paint() {
+            paper::Paint::Stroke { width, path } => {
                 let mut builder = PathBuilder::new();
                 sheet.trace(&mut builder, path)?;
-                let width = (*width as f64 * px) as f32;
+                let width = (width as f64 * px) as f32;
                 let stroke = Stroke {
                     width: if colour == PngColour::BlackWhite { width.max(1.0) } else { width },
                     miter_limit: 4.0,
@@ -99,12 +102,12 @@ fn write(scene: &Prepared, options: PngOptions, out: impl Write, band_bytes: usi
                     builder.finish().and_then(|line| if thin { Some(Shape::Thin(line, stroke)) } else { line.stroke(&stroke, 1.0).map(Shape::Fill) }),
                 );
             }
-            GridItem::Fill { loops } => {
+            paper::Paint::Fill { loops, rule } => {
                 let mut builder = PathBuilder::new();
                 for l in loops {
                     sheet.trace(&mut builder, l)?;
                 }
-                shapes.extend(builder.finish().map(Shape::EvenOdd));
+                shapes.extend(builder.finish().map(if rule == paper::FillRule::EvenOdd { Shape::EvenOdd } else { Shape::Fill }));
             }
         }
     }
@@ -174,7 +177,7 @@ fn write(scene: &Prepared, options: PngOptions, out: impl Write, band_bytes: usi
 
 /// What a band draws for one item.
 enum Shape {
-    /// A stroke's outline, filled non-zero.
+    /// Filled non-zero: a stroke's outline, or a text run's glyphs.
     Fill(Path),
     /// A fill's loops, filled even-odd.
     EvenOdd(Path),
@@ -222,3 +225,7 @@ impl Sheet {
 #[cfg(test)]
 #[path = "png_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "png_text_tests.rs"]
+mod text_tests;
