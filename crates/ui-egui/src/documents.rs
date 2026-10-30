@@ -644,6 +644,18 @@ fn tab_paths(app: &SolveApp) -> Vec<Option<String>> {
     app.docs.slots.iter().map(|s| s.as_ref().map_or(&app.session, |d| &d.session).path.clone()).collect()
 }
 
+/// The drawing open in each tab's design, in `tabs_info`'s order, as `ui.documents` reports it.
+fn tab_drawings(app: &SolveApp) -> Vec<Option<Value>> {
+    let open = |s: &Session| {
+        let drawing = s.open_drawing.and_then(|id| s.doc.drawing(id))?;
+        Some(json!({"id": solidcraft_engine::doc::ids::encode(drawing.id), "name": drawing.name}))
+    };
+    if app.docs.slots.is_empty() {
+        return vec![open(&app.session)];
+    }
+    app.docs.slots.iter().map(|s| open(s.as_ref().map_or(&app.session, |d| &d.session))).collect()
+}
+
 /// A tab's tooltip: where its design is saved (home shortened to `~`), or that it isn't yet; with
 /// the full name above when the tab cut it short (#5868).
 fn tab_tooltip(name: &str, path: Option<&str>, cut: bool) -> String {
@@ -707,7 +719,15 @@ pub fn control(app: &mut SolveApp, p: &Value) -> Value {
         Some("cancel") => answer_disk(app, DiskAnswer::Cancel),
         _ => {}
     }
-    let tabs: Vec<Value> = tabs_info(app).into_iter().map(|(name, dirty)| json!({"name": name, "dirty": dirty})).collect();
+    let drawings = tab_drawings(app);
+    let tabs: Vec<Value> = tabs_info(app)
+        .into_iter()
+        .zip(drawings)
+        .map(|((name, dirty), drawing)| match drawing {
+            Some(drawing) => json!({"name": name, "dirty": dirty, "drawing": drawing}),
+            None => json!({"name": name, "dirty": dirty}),
+        })
+        .collect();
     json!({
         "documents": tabs,
         "active": app.docs.active,
@@ -1331,6 +1351,40 @@ mod tests {
         open_tab(&mut a, Session::default()).unwrap();
         assert_eq!(a.docs.count(), 4);
         a
+    }
+
+    /// A tab keeps the drawing open in its design: `ui.documents` says which, a tab with none says
+    /// nothing, and going to another tab and back leaves it open. Model commands wait only in the tab
+    /// whose drawing is open. Closing it asks once, as for any unsaved design.
+    #[test]
+    fn each_tab_keeps_its_open_drawing() {
+        let mut a = app();
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        a.run("drawing.create", json!({})).unwrap();
+        let id = a.session.open_drawing.unwrap();
+        let name = a.session.doc.drawing(id).unwrap().name.clone();
+        let reported = json!({"id": solidcraft_engine::doc::ids::encode(id), "name": name});
+        let v = control(&mut a, &json!({}));
+        assert_eq!(v["documents"][0]["drawing"], reported, "{v}");
+
+        let v = control(&mut a, &json!({"action": "new"}));
+        assert_eq!(v["documents"][0]["drawing"], reported, "{v}");
+        assert!(v["documents"][1].get("drawing").is_none(), "{v}");
+        a.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).unwrap();
+
+        let v = control(&mut a, &json!({"action": "switch", "index": 0}));
+        assert_eq!((a.session.open_drawing, &v["documents"][0]["drawing"]), (Some(id), &reported), "{v}");
+        assert!(a.run("solid.box", json!({"length": 5, "width": 5, "height": 5})).is_err(), "this tab's drawing is open");
+
+        let v = control(&mut a, &json!({"action": "close", "index": 0}));
+        assert_eq!(v["closing"], json!(0), "{v}");
+        let v = control(&mut a, &json!({"answer": "cancel"}));
+        assert_eq!((a.docs.count(), a.session.open_drawing), (2, Some(id)), "{v}");
+        let v = control(&mut a, &json!({"action": "close", "index": 0}));
+        assert_eq!(v["closing"], json!(0), "{v}");
+        let v = control(&mut a, &json!({"answer": "dont_save"}));
+        assert_eq!(a.docs.count(), 1, "{v}");
+        assert!(a.docs.closing.is_none() && v["documents"][0].get("drawing").is_none(), "{v}");
     }
 
     /// #3055: Close Other Tabs on the first tab closes the blank fourth, asks about the third
