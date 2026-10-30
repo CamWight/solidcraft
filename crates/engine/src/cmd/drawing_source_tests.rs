@@ -156,3 +156,85 @@ fn a_new_row_takes_its_item_number() {
     assert_eq!(count(&s), before + 1, "numbered");
     assert_eq!(s.undo.len(), steps + 1, "in the one step");
 }
+
+/// A folder of this test's own, and a design saved in it as `a.sc`: a box.
+fn saved_design(test: &str) -> (std::path::PathBuf, String, Session) {
+    let dir = std::env::temp_dir().join(format!("solidcraft-drawing-source-{}-{test}", std::process::id()));
+    std::fs::create_dir_all(dir.join("parts")).unwrap();
+    std::fs::create_dir_all(dir.join("moved").join("deep")).unwrap();
+    let path = dir.join("a.sc").to_string_lossy().into_owned();
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10}));
+    run(&mut s, "file.save", json!({"path": path}));
+    (dir, path, s)
+}
+
+/// The path each drawing's linked source has in the file at `path`.
+fn in_file(path: &str) -> Vec<Option<String>> {
+    let (doc, _) = solidcraft_io::read_design_file(path, None::<fn(solidcraft_io::DesignPreview)>).unwrap();
+    doc.drawings.iter().map(|d| d.sources[0].path.clone()).collect()
+}
+
+/// #6860's reproduction, with a linked source: Save As moves the design, and undo, redo and a checkpoint
+/// bring back a design whose source is still the same file. In memory it is whole; each file keeps it
+/// relative to where that file is. A save rewrites nothing in the session's history.
+#[test]
+fn a_source_path_follows_save_as_through_undo_redo_and_checkpoints() {
+    let (dir, path, mut s) = saved_design("save-as");
+    let part = dir.join("parts").join("plate.sc").to_string_lossy().into_owned();
+    run(&mut s, "drawing.create", json!({"source": part}));
+    let drawing = s.open_drawing.unwrap();
+    let held = |s: &Session| s.doc.drawing(drawing).and_then(|d| d.sources[0].path.clone());
+    assert_eq!(held(&s).as_deref(), Some(part.as_str()), "whole in memory");
+    run(&mut s, "file.save", json!({"path": path}));
+    assert_eq!(in_file(&path), [Some("parts/plate.sc".to_string())]);
+
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "edit.checkpoint", json!({"name": "before"}));
+    let moved = dir.join("moved").join("deep").join("a.sc").to_string_lossy().into_owned();
+    run(&mut s, "file.save_as", json!({"path": moved}));
+    assert_eq!(in_file(&moved), [Some("../../parts/plate.sc".to_string())]);
+    assert_eq!(in_file(&path), [Some("parts/plate.sc".to_string())], "the file it came from is as it was");
+    assert_eq!(held(&s).as_deref(), Some(part.as_str()), "a save changes nothing in memory");
+
+    run(&mut s, "solid.box", json!({"length": 5, "width": 5, "height": 5}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(held(&s).as_deref(), Some(part.as_str()));
+    run(&mut s, "edit.redo", json!({}));
+    assert_eq!(held(&s).as_deref(), Some(part.as_str()));
+    run(&mut s, "edit.restore_checkpoint", json!({"name": "before"}));
+    assert_eq!(held(&s).as_deref(), Some(part.as_str()));
+    run(&mut s, "file.save", json!({}));
+    assert_eq!(in_file(&moved), [Some("../../parts/plate.sc".to_string())]);
+
+    // Opened again from where it moved to: whole in memory, and the same file.
+    run(&mut s, "doc.open", json!({"path": moved}));
+    assert_eq!(s.doc.drawings[0].sources[0].path.as_deref(), Some(part.as_str()));
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// A drawing of another design may be made in an empty one, and nothing about the source is asked of
+/// the disk or the network. A path that can't be a source is refused from its text alone.
+#[test]
+fn a_source_is_judged_from_its_text() {
+    let (dir, path, mut s) = saved_design("text");
+    let calls = solidcraft_io::vfs::file_calls();
+    let mut hostile = vec![String::new(), " ".into(), "a\0b.sc".into(), "x".repeat(4096), "plate.step".into(), path.clone(), r"\\.\COM1\plate.sc".into()];
+    if cfg!(windows) {
+        hostile.push(r"\\evil.example\share\plate.sc".into());
+    }
+    let before = s.doc.clone();
+    for given in hostile {
+        let refused = s.execute("drawing.create", &json!({"source": given}));
+        assert!(refused.is_err(), "{given:?}");
+        assert!(Arc::ptr_eq(&s.doc, &before), "{given:?}");
+    }
+    assert_eq!(solidcraft_io::vfs::file_calls(), calls, "a file call was made");
+
+    let mut empty = Session::default();
+    assert!(empty.execute("drawing.create", &json!({})).is_err(), "a drawing of nothing");
+    let part = dir.join("parts").join("missing.sc").to_string_lossy().into_owned();
+    let reply = run(&mut empty, "drawing.create", json!({"source": part}));
+    assert_eq!(reply["sources"][0]["path"], json!(part), "{reply}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
