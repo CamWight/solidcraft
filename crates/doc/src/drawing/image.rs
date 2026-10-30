@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
-use solidcraft_geom::paper::MAX_SIDE_MM;
+use solidcraft_geom::paper::{MAX_IMAGE_PIXELS, MAX_SIDE_MM};
 
 use super::{Drawing, add_by_id, in_id_order, require};
 use crate::canvas::{base64_decode, base64_encode, image_info};
@@ -35,8 +35,6 @@ pub const MAX_IMAGE_BYTES: usize = 4 << 20;
 /// The most a drawing's image files may be between them: two of the largest and some, whose 12 MiB
 /// of text leaves room under [`super::MAX_DRAWING_BYTES`] for the rest of the record.
 pub const MAX_IMAGES_BYTES: usize = 9 << 20;
-/// The most pixels an image may have: 8,000 by 8,000, 256 MiB once decoded.
-pub const MAX_IMAGE_PIXELS: u64 = 64_000_000;
 
 /// One image file of a drawing, however many places it sits.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
