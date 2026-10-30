@@ -231,6 +231,8 @@ fn a_record_round_trips_through_json_and_damaged_ones_are_refused() {
     assert_eq!(record.ids().filter(|id| *id == a).count(), 1);
     record.delete(a).unwrap();
     assert_eq!(record.ids().filter(|id| *id == a).count(), 1, "the copy keeps its id with its row gone");
+    // A tag still bound, beside the one that has lost its row and answers for it itself.
+    add_tag(&mut record, b).unwrap();
     let json = serde_json::to_value(&record).unwrap();
     assert_eq!(json["numbering"], json!("letters"));
     let id = json!(crate::ids::encode(a));
@@ -265,7 +267,7 @@ fn a_record_round_trips_through_json_and_damaged_ones_are_refused() {
         (&|v| v["tags"][0]["size_mm"] = json!(0.5), "a tag's side is 1 to 50 mm"),
         (&|v| v["tags"][0]["size_mm"] = json!(50.001), "a tag's side is 1 to 50 mm"),
         (&|v| v["tags"][0]["at"] = json!([6000.0, 0.0]), "a tag is on paper"),
-        (&|v| v["tags"][0]["row"] = json!(crate::ids::encode(99)), "a tag is bound to a row"),
+        (&|v| v["tags"][1]["row"] = json!(crate::ids::encode(99)), "a tag is bound to a row"),
         (&|v| v["rows"] = json!([]), "a tag is bound to a row"),
         (&|v| v["rows"][0]["revision"] = json!("A\nB"), "a label is one line of at most 4096 bytes"),
         (&|v| v["issued"][0]["date"] = json!("\u{1}"), "a cell's text has no control character but a line break"),
