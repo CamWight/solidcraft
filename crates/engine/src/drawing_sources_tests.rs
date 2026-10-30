@@ -252,7 +252,8 @@ fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
     let status = |view: u64| after.views.iter().find(|v| v.view == view).map(|v| v.status.clone()).unwrap();
     assert_eq!(status(small), crate::drawing_scene::Status::Drawn);
     assert!(matches!(status(big), crate::drawing_scene::Status::Lost(why) if why.contains("not found")));
-    assert_eq!(after.scene.groups.len(), groups, "its last lines stay");
+    assert!(after.scene.groups.iter().any(|g| g.object == big), "its last lines stay");
+    assert_eq!(after.scene.groups.len(), groups - 1, "and its lost dimension, centred on what it lost, isn't drawn");
     assert!(after.dimensions.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::dimension::Status::Lost(_))));
 
     // Never drawn and missing: a placeholder to pick, and no lines. The sheet is still drawn.
