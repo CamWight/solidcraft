@@ -8,6 +8,9 @@
 //!   [`Source`] and key, with a [`Format`]. Keys, units and decimals are kept as written; the
 //!   resolver checks them against each source. [`Content::validate`] bounds its size, and
 //!   [`check_label`] a label's.
+//! - [`Content::shown`] is what a cell shows once its caller gives each field's value, shown by
+//!   the field's format: [`MISSING`] for a field without one. Text typed over a value hides it
+//!   ([`Shown`]). Title blocks and sheet tables show their cells by this one rule.
 //! - A value is never cut: when it has more than its [`Fit`] allows, or a word is wider than its
 //!   box, it is shown whole with a [`Warning`].
 //!
@@ -27,6 +30,8 @@
 //! Breaking a value into lines that fit the box's width, and warning about width, need the text
 //! measured: they come with the paper scene's text.
 
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::paper::MAX_COORDINATE_MM;
@@ -38,6 +43,9 @@ pub const MAX_PARTS: usize = 64;
 pub const MAX_TEXT_BYTES: usize = 4096;
 /// The longest name a cell or a column may have.
 const MAX_NAME_BYTES: usize = 64;
+/// What a cell shows for a field without a value: a row field its row doesn't have, a property
+/// nobody gave.
+pub const MISSING: &str = "-";
 /// The space between the inner edge of a cell's lines and its text, in millimetres.
 pub const PADDING_MM: f64 = 1.0;
 /// How far a line's descenders reach below its baseline, as a share of its cap height: ISO 3098's
@@ -159,7 +167,7 @@ pub(crate) fn is_snake_case(name: &str) -> bool {
 
 /// Checks text by the module's rule: at most [`MAX_TEXT_BYTES`] in all, and no control character
 /// but a line break.
-pub(crate) fn check_text<'a>(texts: impl IntoIterator<Item = &'a str>) -> Result<()> {
+pub fn check_text<'a>(texts: impl IntoIterator<Item = &'a str>) -> Result<()> {
     let mut bytes = 0usize;
     for text in texts {
         bytes = bytes.saturating_add(text.len());
@@ -180,7 +188,43 @@ impl Part {
     }
 }
 
+/// What a cell shows: its value, or the text typed over it with the value that text hides.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shown {
+    pub text: String,
+    /// The value typed text hides; none when nothing was typed over it.
+    pub replaced: Option<String>,
+}
+
+impl Shown {
+    /// `value`, or `typed` over it.
+    pub fn over(value: String, typed: Option<&str>) -> Shown {
+        match typed {
+            Some(typed) => Shown { text: typed.to_string(), replaced: Some(value) },
+            None => Shown { text: value, replaced: None },
+        }
+    }
+}
+
 impl Content {
+    /// The text the content shows: its text parts as written, and each field as `value` gives it,
+    /// shown by the field's format; [`MISSING`] for a field without a value, and `empty` for one
+    /// whose value is empty (a title block shows [`MISSING`], a table nothing).
+    pub fn shown<'v>(&self, value: impl Fn(Source, &str, &Format) -> Option<Cow<'v, str>>, empty: &str) -> String {
+        let mut out = String::new();
+        for part in &self.0 {
+            match part {
+                Part::Text(text) => out.push_str(text),
+                Part::Field { source, key, format } => match value(*source, key, format) {
+                    Some(v) if v.is_empty() => out.push_str(empty),
+                    Some(v) => out.push_str(&v),
+                    None => out.push_str(MISSING),
+                },
+            }
+        }
+        out
+    }
+
     /// Checks the content's size: at most [`MAX_PARTS`] parts, counted first, and its text, keys
     /// and units by the module's text rule.
     pub fn validate(&self) -> Result<()> {

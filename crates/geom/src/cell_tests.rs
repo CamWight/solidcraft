@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use serde_json::json;
 
 use super::*;
@@ -13,6 +15,26 @@ fn text(s: &str) -> Part {
 
 fn field(source: Source, key: &str) -> Part {
     Part::Field { source, key: key.to_string(), format: Format::default() }
+}
+
+/// Content shows its text as written and each field as the caller gives it, with the field's
+/// format; "-" for a field without a value, and the caller's text for an empty one. Typed text
+/// hides the value and keeps it.
+#[test]
+fn content_is_shown_with_its_fields_values() {
+    let mass = Part::Field { source: Source::Component, key: "mass".into(), format: Format { unit: Some("g".into()), decimals: Some(1) } };
+    let content = Content(vec![text("Sheet "), field(Source::Sheet, "number"), text(" of "), field(Source::Sheet, "count"), text(", "), mass]);
+    let value = |source: Source, key: &str, format: &Format| match (source, key) {
+        (Source::Sheet, "number") => Some(Cow::Borrowed("2")),
+        (Source::Sheet, "count") => Some(Cow::Borrowed("")),
+        (Source::Component, "mass") => Some(Cow::Owned(format!("{:?} {:?}", format.unit, format.decimals))),
+        _ => None,
+    };
+    assert_eq!(content.shown(value, MISSING), "Sheet 2 of -, Some(\"g\") Some(1)");
+    assert_eq!(content.shown(value, ""), "Sheet 2 of , Some(\"g\") Some(1)");
+    assert_eq!(content.shown(|_, _, _| None, ""), "Sheet - of -, -");
+    assert_eq!(Shown::over("12".into(), None), Shown { text: "12".into(), replaced: None });
+    assert_eq!(Shown::over("12".into(), Some("A")), Shown { text: "A".into(), replaced: Some("12".into()) });
 }
 
 /// The title cell's value box on an A3 sheet: the cell (230, 10)-(342, 24) under a 2.5 mm label.
