@@ -604,6 +604,8 @@ pub(crate) fn drawing(scene: &Scene, sketch: &[Part], view: &View) -> Result<Dra
                     a,
                     b,
                     bounds: bounds([a, b]),
+                    // A sketch curve is the model's: a reference part hides it only as it hides the model.
+                    sees_through_reference: !scene.reference_hides_model,
                     covered,
                     budget: &mut budget,
                 };
