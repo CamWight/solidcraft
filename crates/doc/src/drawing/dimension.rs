@@ -22,6 +22,8 @@
 //!
 //! A reference names its body, the feature that made the body (so a suppressed feature can be told
 //! from a deleted one) and its occurrence path (so a part placed twice has a dimension on each copy).
+//! The feature and the names on the body are what it is; the body's own name is a label, so a
+//! renamed body keeps its references and no record is rewritten ([`Lookup::body`]).
 //! The dimension line sits `offset_mm` of paper from what it measures, and the text at a place on
 //! paper from its view's centre, so it moves with the view and not with the model; or centred on
 //! the dimension line.
@@ -575,7 +577,16 @@ pub(super) struct Edges {
     pub(super) whole: bool,
     pub(super) exact: bool,
     body: usize,
+    /// The body's name now, which may not be the one saved.
+    body_name: String,
     frame: Mat,
+}
+
+/// What a reference names on its body, to tell a renamed body by ([`Lookup::body`]).
+#[derive(Clone, Copy)]
+enum OnBody<'n> {
+    Edges(&'n [String]),
+    Face(&'n str),
 }
 
 impl<'a> Lookup<'a> {
@@ -625,7 +636,7 @@ impl<'a> Lookup<'a> {
                 let found = self.edges(edge)?;
                 // A split edge's length is no longer one number.
                 if !found.whole {
-                    return Err(Status::Ambiguous(edge_candidates(&edge.body, &found)));
+                    return Err(Status::Ambiguous(edge_candidates(&found)));
                 }
                 let ends = found.pieces.first().and_then(|(_, line)| straight(line));
                 let [a, b] = ends.ok_or_else(|| Status::Unmeasurable(format!("edge `{}` isn't straight", edge.name)))?;
@@ -644,7 +655,7 @@ impl<'a> Lookup<'a> {
                 let found = self.edges(edge)?;
                 // A split edge is several arcs, each drawn in its own place.
                 if !found.whole {
-                    return Err(Status::Ambiguous(edge_candidates(&edge.body, &found)));
+                    return Err(Status::Ambiguous(edge_candidates(&found)));
                 }
                 let (radius, points) = self.arc(edge, &found, basis)?;
                 let value = if *diameter { 2.0 * radius } else { radius };
@@ -664,22 +675,56 @@ impl<'a> Lookup<'a> {
     }
 
     /// The body a reference names, as the model has it now: its index, and the frame its geometry
-    /// is in through the reference's occurrence path.
-    fn body(&self, body: &str, feature: u64, path: &[u64]) -> std::result::Result<(usize, Mat), Status> {
-        let found = self.state.bodies.iter().enumerate().find(|(_, b)| b.name == body && b.feature == feature && !b.body.is_mesh());
-        let Some((i, b)) = found else {
-            if self.model.results.iter().any(|r| r.id == feature && r.skipped) {
-                return Err(Status::Suppressed);
-            }
-            let remade = self.state.bodies.iter().any(|b| b.name == body);
-            return Err(Status::Lost(if remade {
-                format!("body `{body}` is made by another feature now")
-            } else {
-                format!("body `{body}` no longer exists")
-            }));
+    /// is in through the reference's occurrence path. Among the bodies its feature made: the one
+    /// with its name, or, when none has it, the one that has what it names, so a renamed body keeps
+    /// its references; two that do are ambiguous, and it never chooses.
+    fn body(&mut self, body: &str, feature: u64, path: &[u64], on: OnBody) -> std::result::Result<(usize, Mat), Status> {
+        let state = Arc::clone(&self.state);
+        let made: Vec<usize> =
+            (0..state.bodies.len()).filter(|i| state.bodies.get(*i).is_some_and(|b| b.feature == feature && !b.body.is_mesh())).collect();
+        let named = made.iter().copied().find(|i| state.bodies.get(*i).is_some_and(|b| b.name == body));
+        let i = match named {
+            Some(i) => i,
+            None => self.renamed(body, feature, &made, on)?,
         };
+        let b = state.bodies.get(i).ok_or_else(|| Status::Lost("its body no longer exists".into()))?;
         let frame = self.doc.body_frame_at(b, path).map_err(|_| Status::Lost("the occurrence its body is placed through no longer exists".into()))?;
         Ok((i, frame))
+    }
+
+    /// The one of the bodies `made` by `feature`, none named `body`, that has what `on` names.
+    fn renamed(&mut self, body: &str, feature: u64, made: &[usize], on: OnBody) -> std::result::Result<usize, Status> {
+        let holding: Vec<(usize, Candidate)> = made.iter().filter_map(|i| self.holds(*i, on).map(|found| (*i, found))).collect();
+        match holding.as_slice() {
+            [(i, _)] => Ok(*i),
+            [] if !made.is_empty() => Err(Status::Lost(format!("what it names on body `{body}` no longer exists"))),
+            [] if self.model.results.iter().any(|r| r.id == feature && r.skipped) => Err(Status::Suppressed),
+            [] if self.state.bodies.iter().any(|b| b.name == body) => Err(Status::Lost(format!("body `{body}` is made by another feature now"))),
+            [] => Err(Status::Lost(format!("body `{body}` no longer exists"))),
+            several => Err(Status::Ambiguous(several.iter().take(MAX_CANDIDATES).map(|(_, found)| found.clone()).collect())),
+        }
+    }
+
+    /// What `on` names on body `i`, as a candidate, if it has it all.
+    fn holds(&mut self, i: usize, on: OnBody) -> Option<Candidate> {
+        let state = Arc::clone(&self.state);
+        let b = state.bodies.get(i)?;
+        match on {
+            OnBody::Edges(names) => {
+                let edges = self.names(i).ok()?;
+                let found: Vec<Option<EdgeMatch>> = names.iter().map(|name| edges.matching(name)).collect();
+                let index = match found.first()?.as_ref()? {
+                    EdgeMatch::Edge(e) => *e,
+                    EdgeMatch::Pieces(pieces) => *pieces.first()?,
+                };
+                found.iter().all(Option::is_some).then(|| Candidate::Edge { body: b.name.clone(), index })
+            }
+            OnBody::Face(name) => {
+                let named = (0..b.body.face_count()).find(|f| face_has_name(b, *f, name));
+                let index = named.or_else(|| faces_with_stem(b, name).first().copied())?;
+                Some(Candidate::Face { body: b.name.clone(), index })
+            }
+        }
     }
 
     /// Body `i`'s edge names, worked out on first use.
@@ -690,7 +735,8 @@ impl<'a> Lookup<'a> {
 
     /// The edges `edge` names: the one edge, or the pieces of it.
     pub(super) fn edges(&mut self, edge: &ModelEdge) -> std::result::Result<Edges, Status> {
-        let (i, frame) = self.body(&edge.body, edge.origin_feature, &edge.path)?;
+        let (i, frame) = self.body(&edge.body, edge.origin_feature, &edge.path, OnBody::Edges(std::slice::from_ref(&edge.name)))?;
+        let body_name = self.state.bodies.get(i).map_or_else(String::new, |b| b.name.clone());
         let names = self.names(i)?;
         let (indices, whole) = match names.matching(&edge.name) {
             Some(EdgeMatch::Edge(e)) => (vec![e], true),
@@ -699,7 +745,7 @@ impl<'a> Lookup<'a> {
         };
         let exact = whole && indices.iter().all(|e| names.verified(*e));
         let placed = |e: &usize| names.mesh.edges.get(*e).map(|line| (*e, line.iter().map(|p| apply_point(&frame, *p)).collect()));
-        Ok(Edges { pieces: indices.iter().filter_map(placed).collect(), whole, exact, body: i, frame })
+        Ok(Edges { pieces: indices.iter().filter_map(placed).collect(), whole, exact, body: i, body_name, frame })
     }
 
     /// The circle or arc that `found` (one whole edge) is, as the view through `basis` sees it face
@@ -728,7 +774,7 @@ impl<'a> Lookup<'a> {
         match straight(&points) {
             Some(ends) => Ok((ends, found.exact)),
             None if found.whole => Err(not_straight()),
-            None => Err(Status::Ambiguous(edge_candidates(&edge.body, &found))),
+            None => Err(Status::Ambiguous(edge_candidates(&found))),
         }
     }
 
@@ -738,7 +784,7 @@ impl<'a> Lookup<'a> {
         if point.centre {
             return self.centre(point);
         }
-        let (i, frame) = self.body(&point.body, point.origin_feature, &point.path)?;
+        let (i, frame) = self.body(&point.body, point.origin_feature, &point.path, OnBody::Edges(&point.edges))?;
         let names = self.names(i)?;
         let mut exact = true;
         let mut ends: Vec<Vec<Vec3>> = Vec::with_capacity(point.edges.len());
@@ -767,7 +813,7 @@ impl<'a> Lookup<'a> {
         let found = self.edges(&edge)?;
         // A split edge is several arcs.
         if !found.whole {
-            return Err(Status::Ambiguous(edge_candidates(&edge.body, &found)));
+            return Err(Status::Ambiguous(edge_candidates(&found)));
         }
         let round = found.pieces.first().and_then(|(_, line)| as_circle(line));
         let (centre, ..) = round.ok_or_else(|| Status::Unmeasurable(format!("edge `{name}` isn't a circle or an arc")))?;
@@ -777,7 +823,7 @@ impl<'a> Lookup<'a> {
     /// The cylinder `face` lies on (or the pieces it was cut into, all on one cylinder), with every
     /// face of the body on that cylinder.
     fn on_cylinder(&mut self, face: &ModelFace) -> std::result::Result<OnCylinder, Status> {
-        let (i, frame) = self.body(&face.body, face.origin_feature, &face.path)?;
+        let (i, frame) = self.body(&face.body, face.origin_feature, &face.path, OnBody::Face(&face.name))?;
         let state = Arc::clone(&self.state);
         let b = state.bodies.get(i).ok_or_else(|| Status::Lost("its body no longer exists".into()))?;
         let named: Vec<usize> = (0..b.body.face_count()).filter(|f| face_has_name(b, *f, &face.name)).collect();
@@ -786,7 +832,7 @@ impl<'a> Lookup<'a> {
             [] => (faces_with_stem(b, &face.name), false),
             _ => (named.clone(), false),
         };
-        let candidates = || found.iter().take(MAX_CANDIDATES).map(|f| Candidate::Face { body: face.body.clone(), index: *f }).collect();
+        let candidates = || found.iter().take(MAX_CANDIDATES).map(|f| Candidate::Face { body: b.name.clone(), index: *f }).collect();
         let cylinders = self.cylinders.entry(i).or_insert_with(|| cylinders_of(b));
         let on = |f: &usize| cylinders.get(*f).copied().flatten();
         let first = match found.first() {
@@ -1027,8 +1073,8 @@ fn at(pick: &EdgePick) -> String {
 }
 
 /// The pieces a name found, as candidates.
-pub(super) fn edge_candidates(body: &str, found: &Edges) -> Vec<Candidate> {
-    found.pieces.iter().take(MAX_CANDIDATES).map(|(index, _)| Candidate::Edge { body: body.to_string(), index: *index }).collect()
+pub(super) fn edge_candidates(found: &Edges) -> Vec<Candidate> {
+    found.pieces.iter().take(MAX_CANDIDATES).map(|(index, _)| Candidate::Edge { body: found.body_name.clone(), index: *index }).collect()
 }
 
 /// The angle between two lines, from `between` (from one's direction to the other's, 0 to π): the

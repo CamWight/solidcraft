@@ -512,3 +512,99 @@ fn an_override_shows_its_text_and_still_reads_the_model() {
     assert_eq!((&r.status, r.text.as_deref()), (&Status::Overridden, Some("≈80")));
     assert_reads(&r, 100.0, false);
 }
+
+/// Renamed: everything names the same things and reads the same, with no record rewritten; its
+/// candidates show the name it has now; undo of the rename reads as before. A new body with the old
+/// name from another feature doesn't take a dimension.
+#[test]
+fn a_renamed_body_keeps_its_references() {
+    let mut f = boxed();
+    let front = f.front;
+    let across = f.linear(front, [0.0, 0.0, 0.0], [80.0, 0.0, 0.0], LinearDirection::Horizontal, Reading::Projected);
+    let kind = DimensionKind::Length { edge: f.edge([0.0, 0.0, 30.0], [80.0, 0.0, 30.0]), direction: LinearDirection::Aligned, reading: Reading::Projected };
+    let length = f.add(front, kind, None);
+    let record = f.d.clone();
+    run(&mut f.s, "body.rename", json!({"body": "Box", "name": "Lid"}));
+    assert_reads(&f.resolve(across), 80.0, false);
+    assert_reads(&f.resolve(length), 80.0, false);
+    assert_eq!(f.d, record, "no record is rewritten");
+
+    run(&mut f.s, "edit.undo", json!({}));
+    assert_reads(&f.resolve(across), 80.0, false);
+    run(&mut f.s, "edit.redo", json!({}));
+
+    // A body of the old name from another feature, away from the box: the dimension stays.
+    run(&mut f.s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [200, 0, 0], "body_name": "Box", "operation": "new"}));
+    assert_reads(&f.resolve(across), 80.0, false);
+    assert_reads(&f.resolve(length), 80.0, false);
+    // And the box gone, the new one doesn't take it.
+    let r = {
+        let feature = f.feature;
+        run(&mut f.s, "timeline.delete", json!({"feature": feature.to_string()}));
+        f.resolve(length)
+    };
+    assert!(matches!(&r.status, Status::Lost(why) if why.contains("another feature")), "{r:?}");
+}
+
+/// The two bodies a split makes come from one feature. A name that stays on one of them stays with
+/// it, whatever the other is called. Both renamed, what the dimension names decides, and when both
+/// have it they are ambiguous, with their names now: it never chooses.
+#[test]
+fn two_bodies_of_a_feature_never_choose_for_a_renamed_one() {
+    let mut f = boxed();
+    let front = f.front;
+    let plane = json!({"origin": [30, 0, 0], "normal": [1, 0, 0]});
+    run(&mut f.s, "solid.split_body", json!({"body": "Box", "plane": plane}));
+    let state = f.s.model.state();
+    let mut made: Vec<&ModelBody> = state.bodies.iter().collect();
+    made.sort_by(|a, b| a.name.cmp(&b.name));
+    let [box_body, other] = made.as_slice() else { panic!("{} bodies", made.len()) };
+    assert_eq!(box_body.feature, other.feature, "one feature made both");
+    let (other_name, feature) = (other.name.clone(), box_body.feature);
+    let line = |b: &ModelBody| {
+        let bounds = b.mesh().edges.iter().position(|line| line.len() == 2 && (line[0].z - line[1].z).abs() < 1e-9 && line[0].y == 0.0 && line[1].y == 0.0).unwrap();
+        (edge_names(b)[bounds].clone(), (b.mesh().edges[bounds][0].x - b.mesh().edges[bounds][1].x).abs())
+    };
+    let (name, length) = line(box_body);
+    let kind = DimensionKind::Length {
+        edge: ModelEdge { body: box_body.name.clone(), origin_feature: feature, name, path: Vec::new() },
+        direction: LinearDirection::Aligned,
+        reading: Reading::Projected,
+    };
+    let id = f.add(front, kind, None);
+    assert_reads(&f.resolve(id), length, false);
+
+    // The other one renamed: the name is still found, on the body with that name.
+    run(&mut f.s, "body.rename", json!({"body": other_name, "name": "Second"}));
+    assert_reads(&f.resolve(id), length, false);
+    // Both: read from the one that has the edge, never from the other; if both have it, ambiguous.
+    run(&mut f.s, "body.rename", json!({"body": "Box", "name": "First"}));
+    let r = f.resolve(id);
+    match &r.status {
+        Status::Ok => assert_reads(&r, length, false),
+        Status::Ambiguous(found) => {
+            let on: Vec<&str> = found.iter().map(|c| if let Candidate::Edge { body, .. } = c { body.as_str() } else { "" }).collect();
+            assert_eq!(on, ["First", "Second"], "{r:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// A balloon and a face reference follow a rename too: both find their body the same way.
+#[test]
+fn a_balloon_and_a_cylinder_follow_a_renamed_body() {
+    let mut f = boxed();
+    let (front, right) = (f.front, f.right);
+    run(&mut f.s, "solid.cylinder", json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"], "name": "Hole"}));
+    let kind = DimensionKind::Cylinder { face: f.face([46.0, 20.0, 15.0]) };
+    let across = f.add(right, kind, None);
+    let round = f.round([40.0, 0.0, 15.0], 6.0);
+    let radial = f.add(front, DimensionKind::Radial { edge: round.clone(), diameter: true }, None);
+    let id = f.d.allocate_id(&mut f.ids).unwrap();
+    f.d.add_balloons([Arc::new(solidcraft_doc::drawing::balloon::Balloon { id, view: front, edge: round, at: [60.0, 60.0] })]);
+    run(&mut f.s, "body.rename", json!({"body": "Box", "name": "Lid"}));
+    assert_reads(&f.resolve(across), 12.0, false);
+    assert_reads(&f.resolve(radial), 12.0, false);
+    let read = f.s.doc.resolve_balloons(&f.s.model, &f.d, &[id]).unwrap();
+    assert!(matches!(read[0].status, Status::Ok), "{:?}", read[0]);
+}
