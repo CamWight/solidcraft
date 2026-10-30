@@ -96,6 +96,16 @@ impl LinkedDesigns {
     pub(crate) fn close(&mut self) {
         self.designs.clear();
     }
+
+    /// Forgets each design that couldn't be opened, so the next attempt reads it again.
+    pub(crate) fn forget_unopened(&mut self) {
+        self.designs.retain(|_, l| l.opened.is_ok());
+    }
+
+    /// The file `path` is found at from now on, this session only.
+    pub(crate) fn locate(&mut self, path: String, file: String) {
+        self.located.insert(path, file);
+    }
 }
 
 /// The world state of a source no design is open for yet.
@@ -169,6 +179,17 @@ impl Session {
                 self.linked.designs.insert(file, Linked { opened, nothing: Arc::default() });
             }
         }
+    }
+
+    /// The design at `file`, opened and kept for a source about to name it, or why it can't be: what a
+    /// source command reads before it changes anything.
+    pub(crate) fn open_source_file(&mut self, file: &str) -> Result<&Session, Unopened> {
+        let linked = match self.linked.designs.remove(file) {
+            Some(open) if open.opened.is_ok() => open,
+            _ => Linked { opened: open(file, self.path.as_deref()).map(Box::new), nothing: Arc::default() },
+        };
+        let kept = self.linked.designs.entry(file.to_string()).or_insert(linked);
+        kept.opened.as_deref().map_err(Clone::clone)
     }
 
     /// The session `source` of `d` draws from: this one for the design the drawing is in, or the design
