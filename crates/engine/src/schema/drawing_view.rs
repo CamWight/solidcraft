@@ -71,11 +71,11 @@ pub struct SnapshotParams {
     /// Values to read on the view, as it shows them, with their labels: at most 100.
     pub measure: Vec<MeasureParam>,
     /// The length unit of the labels, `mm`, `cm`, `m`, `in` or `ft` (the design's when not given).
-    #[serde(deserialize_with = "super::present")]
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub units: Option<String>,
     /// The decimals of the labels, 0 to 6 (2 when not given).
-    #[serde(deserialize_with = "super::present")]
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u8")]
     pub decimals: Option<u8>,
 }
