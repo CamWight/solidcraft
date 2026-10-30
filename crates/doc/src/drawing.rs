@@ -21,6 +21,7 @@
 //! - **Dimensions** on its views, each measuring named corners or edges of the view's model
 //!   ([`dimension`]).
 //! - **Balloons** on its views, each pointing at a placed part by a named edge of it ([`balloon`]).
+//! - **Tables** on its sheets: parts lists and revision tables ([`table`]).
 //! - **Revisions**: one revision record for the whole drawing ([`RevisionRecord`]), its rows in the
 //!   order they were added, the newest last.
 //!
@@ -58,10 +59,12 @@ use crate::{DocError, Metadata, Result, expr};
 
 pub mod balloon;
 pub mod dimension;
+pub mod table;
 pub mod view;
 
 use balloon::Balloon;
 use dimension::Dimension;
+use table::SheetTable;
 use view::View;
 
 /// The most drawings a design may hold.
@@ -121,6 +124,9 @@ pub struct Drawing {
     /// By id ([`Drawing::add_balloons`]), as the dimensions are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub balloons: Vec<Arc<Balloon>>,
+    /// By id ([`Drawing::add_tables`]), as the balloons are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tables: Vec<Arc<SheetTable>>,
     /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
     #[serde(default, skip_serializing_if = "no_revisions")]
     pub revisions: Arc<RevisionRecord>,
@@ -209,12 +215,14 @@ pub struct OnSheet {
     pub balloons: Vec<u64>,
     /// The revision tags on it.
     pub tags: Vec<u64>,
+    /// The tables on it.
+    pub tables: Vec<u64>,
 }
 
 impl OnSheet {
     /// Nothing is on the sheet.
     pub fn is_empty(&self) -> bool {
-        self.views.is_empty() && self.dimensions.is_empty() && self.balloons.is_empty() && self.tags.is_empty()
+        self.views.is_empty() && self.dimensions.is_empty() && self.balloons.is_empty() && self.tags.is_empty() && self.tables.is_empty()
     }
 }
 
@@ -253,6 +261,7 @@ impl Drawing {
             views: Vec::new(),
             dimensions: Vec::new(),
             balloons: Vec::new(),
+            tables: Vec::new(),
             revisions: Arc::default(),
         };
         drawing.validate()?;
@@ -277,9 +286,11 @@ impl Drawing {
         DRAWING.upgrade(&mut v, version, applied.as_deref())?;
         let mut d: Drawing = serde_json::from_value(v).map_err(damaged)?;
         let (views, dimensions, balloons) = (std::mem::take(&mut d.views), std::mem::take(&mut d.dimensions), std::mem::take(&mut d.balloons));
+        let tables = std::mem::take(&mut d.tables);
         d.add_views(views);
         d.add_dimensions(dimensions);
         d.add_balloons(balloons);
+        d.add_tables(tables);
         d.validate().map_err(damaged)?;
         Ok(Drawing { format: DRAWING.format_string(DRAWING.current()), format_pending: DRAWING.pending_names(), ..d })
     }
@@ -323,14 +334,15 @@ impl Drawing {
     pub fn on_sheet(&self, id: u64) -> OnSheet {
         // The views are listed by id, so the sheet's are too.
         let on = self.with_contents(self.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect());
-        OnSheet { tags: self.revisions.tags().iter().filter(|t| t.sheet == id).map(|t| t.id).collect(), ..on }
+        let tags = self.revisions.tags().iter().filter(|t| t.sheet == id).map(|t| t.id).collect();
+        OnSheet { tags, tables: self.tables.iter().filter(|t| t.sheet == id).map(|t| t.id).collect(), ..on }
     }
 
     /// `views`, listed by id, with the dimensions and balloons in them.
     pub fn with_contents(&self, views: Vec<u64>) -> OnSheet {
         let dimensions = self.dimensions.iter().filter(|d| views.binary_search(&d.view).is_ok()).map(|d| d.id).collect();
         let balloons = self.balloons.iter().filter(|b| views.binary_search(&b.view).is_ok()).map(|b| b.id).collect();
-        OnSheet { views, dimensions, balloons, tags: Vec::new() }
+        OnSheet { views, dimensions, balloons, tags: Vec::new(), tables: Vec::new() }
     }
 
     /// Takes sheet `id` out with everything on it ([`Drawing::on_sheet`]), and answers what that
@@ -349,6 +361,7 @@ impl Drawing {
         self.views.retain(|v| objects.views.binary_search(&v.id).is_err());
         self.dimensions.retain(|d| objects.dimensions.binary_search(&d.id).is_err());
         self.balloons.retain(|b| objects.balloons.binary_search(&b.id).is_err());
+        self.tables.retain(|t| objects.tables.binary_search(&t.id).is_err());
         if !objects.tags.is_empty() {
             Arc::make_mut(&mut self.revisions).delete_tags(&objects.tags);
         }
@@ -363,6 +376,7 @@ impl Drawing {
             .chain(self.views.iter().map(|v| v.id))
             .chain(self.dimensions.iter().map(|d| d.id))
             .chain(self.balloons.iter().map(|b| b.id))
+            .chain(self.tables.iter().map(|t| t.id))
             .chain(self.revisions.ids())
     }
 
@@ -396,7 +410,8 @@ impl Drawing {
         })?;
         self.check_views()?;
         self.check_dimensions()?;
-        self.check_balloons()
+        self.check_balloons()?;
+        self.check_tables()
     }
 
     /// A sheet's own rules, and that the source it documents is one of the drawing's.
