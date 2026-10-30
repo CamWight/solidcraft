@@ -39,7 +39,7 @@ use solidcraft_geom::{Aabb2, Vec2};
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
-use crate::drawing_view::{CHORD_RANGE, Extents, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Unmeasured};
+use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult,
@@ -146,8 +146,15 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     if !on_paper {
         return Err(bad(CMD, format!("at scale {scale} the view reaches past ±{MAX_COORDINATE_MM} mm on paper: choose a smaller scale")));
     }
-    let hidden = settings.display_style == VisualStyle::VisibleHidden;
-    let drawn = crate::drawing_view::lines(s, &set, &frame, hidden, settings.tangent_edges == TangentEdges::Show, chord_mm, CMD)?;
+    let request = LineRequest {
+        shows: shown,
+        hidden: settings.display_style == VisualStyle::VisibleHidden,
+        reference_hidden: settings.reference_style == VisualStyle::VisibleHidden,
+        reference_hides_model: settings.reference_hides_model,
+        tangent_edges: settings.tangent_edges == TangentEdges::Show,
+        chord_mm,
+    };
+    let drawn = crate::drawing_view::lines(s, &set, &frame, &request, CMD)?;
     if let Some(max) = request.max_error_mm {
         certify(&drawn, max, scale)?;
     }
@@ -190,7 +197,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
         },
         stats: drawn.stats.into(),
         scene,
-        source: SourceResult { bodies: extents.bodies, timeline_at_end: s.doc.marker.is_none() },
+        source: SourceResult { bodies: set.bodies.len(), timeline_at_end: s.doc.marker.is_none() },
         param_warnings: Vec::new(),
     };
     serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
@@ -247,7 +254,7 @@ fn line_results(shown: &ShownSet, drawn: &Lines) -> Vec<LineResult> {
         LineResult {
             occurrence: body.map(|b| b.path.clone()).unwrap_or_default(),
             body: body.map(|b| b.body.clone()).unwrap_or_default(),
-            reference: false,
+            reference: l.reference,
             source: match l.source {
                 Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
                 Source::Silhouette { face } => LineSourceResult::Silhouette { face },

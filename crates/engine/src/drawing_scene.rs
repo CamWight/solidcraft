@@ -40,7 +40,7 @@ use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Scene};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
 
-use crate::drawing_view::{CHORD_MM, MIN_MODEL_CHORD_MM, ShownSet, Stats, Unmeasured, paper_group};
+use crate::drawing_view::{CHORD_MM, LineRequest, MIN_MODEL_CHORD_MM, ShownSet, Stats, Unmeasured, paper_group};
 use crate::params::bad;
 use crate::{EngineError, Result, Session};
 
@@ -239,6 +239,7 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
         return none(Status::Failed(why.into()));
     }
     // Every body the design places, until saved views have `source` and `hide` (V4) to keep a part.
+    // Its reference parts draw too, around what the extents measure.
     let (set, extents) = match measured {
         Ok(measured) => measured,
         Err(why) => return none(Status::Placeholder(why)),
@@ -251,7 +252,9 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
         Ok(frame) => frame,
         Err(e) => return none(Status::Failed(reason(e))),
     };
-    match crate::drawing_view::lines(s, set, &frame, false, tangent_edges, chord_mm, CMD) {
+    let reference_hides_model = view.reference_hides_model.value;
+    let request = LineRequest { shows: around, hidden: false, reference_hidden: false, reference_hides_model, tangent_edges, chord_mm };
+    match crate::drawing_view::lines(s, set, &frame, &request, CMD) {
         Ok(lines) => {
             let group = paper_group(&lines, id);
             if group.records() > MAX_RECORDS {

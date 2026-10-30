@@ -22,6 +22,11 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
 pub(crate) fn front_and_top() -> (Session, u64, [u64; 2]) {
     let mut s = Session::default();
     run(&mut s, "solid.box", json!({"length": 100, "width": 50, "height": 20, "body_name": "Block"}));
+    front_and_top_of(s)
+}
+
+/// [`front_and_top`]'s drawing of the design `s`.
+fn front_and_top_of(mut s: Session) -> (Session, u64, [u64; 2]) {
     run(&mut s, "drawing.create", json!({}));
     let mut d = (**s.drawing("test").unwrap()).clone();
     let mut id_source = solidcraft_doc::ids::IdSource::seeded(4890);
@@ -1097,4 +1102,29 @@ fn a_missing_cache_draws_as_ever() {
     assert_eq!(first.stale.len(), 2);
     settled(&mut s, sheet);
     assert_eq!(s.drawing_scenes.projections, 2);
+}
+
+/// Setting a part as reference evaluates nothing, yet the views of it are out of date: its lines
+/// join the reference parts', so no longer hide what is under them or stop at its own extents.
+#[test]
+fn a_change_of_reference_parts_redraws_the_views() {
+    let mut design = Session::default();
+    let mut part = |name: &str, body: &str| {
+        let occurrence = run(&mut design, "component.create", json!({"name": name}))["occurrence"].as_u64().unwrap();
+        run(&mut design, "solid.box", json!({"length": 20, "width": 20, "height": 10, "body_name": body, "operation": "new"}));
+        run(&mut design, "component.activate", json!({"component": 0}));
+        occurrence
+    };
+    part("Under", "BodyUnder");
+    let over = part("Over", "BodyOver");
+    run(&mut design, "occurrence.move", json!({"occurrence": over, "translate": [10, 0, 10]}));
+    let (mut s, sheet, [front, top]) = front_and_top_of(design);
+    let before = settled(&mut s, sheet);
+    let drawing = json!({"drawing": ids::encode(s.drawing("test").unwrap().id)});
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "occurrence.bom_type", json!({"occurrence": over, "bom_type": "reference"}));
+    run(&mut s, "drawing.open", drawing);
+    assert_eq!(extract(&mut s, sheet).unwrap().stale, [front, top]);
+    let after = settled(&mut s, sheet);
+    assert_ne!(bytes(&before.scene), bytes(&after.scene));
 }
