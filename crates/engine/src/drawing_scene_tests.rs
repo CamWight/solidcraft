@@ -371,7 +371,8 @@ fn a_view_past_the_sheets_records_leaves_out_only_itself() {
     let lines = |n: usize| {
         let path = (0..n).map(|i| Seg2::Line { a: Vec2::new(i as f64 * 1e-3, 0.0), b: Vec2::new((i + 1) as f64 * 1e-3, 0.0) }).collect();
         let items = vec![Item::Stroke { path, closed: false, width_mm: 0.5 }];
-        Drawn { group: Some(Group { object: n as u64, kind: ObjectKind::View, items }), status: Status::Drawn, stats: None, boundary: None, frame: None }
+        let group = Some(Arc::new(Group { object: n as u64, kind: ObjectKind::View, items }));
+        Drawn { group, status: Status::Drawn, stats: None, boundary: None, frame: None }
     };
     let left = MAX_RECORDS - border(&s, sheet).iter().map(Group::records).sum::<usize>();
     // The first leaves 20 records; the second needs 32; the third takes the last 20.
@@ -645,7 +646,7 @@ fn a_views_box_is_what_it_draws() {
     let moved = [101.0, 102.0];
     let moved_to = [105.0, 107.0];
     for (items, min, max) in [(vec![], [70.0, 80.0], [130.0, 120.0]), (vec![fill], moved, moved_to), (vec![picture], moved, moved_to)] {
-        let group = Some(Group { object: 7, kind: ObjectKind::View, items });
+        let group = Some(Arc::new(Group { object: 7, kind: ObjectKind::View, items }));
         let drawn = Drawn { group, status: Status::Drawn, stats: None, boundary: Some(boundary), frame: None };
         let Assembly { objects, .. } = assemble(&record, [(7, centre, &drawn)].into_iter()).unwrap();
         let object = objects.iter().find(|o| o.object == 7).unwrap();
@@ -933,7 +934,7 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
     let record = sheet_of(&d, sheet).unwrap();
     let group = |items| Group { object: front, kind: ObjectKind::View, items };
     let view = Drawn {
-        group: Some(group(Vec::new())),
+        group: Some(Arc::new(group(Vec::new()))),
         status: Status::Drawn,
         stats: None,
         boundary: None,
@@ -1121,4 +1122,66 @@ fn a_model_edit_from_the_drawing_makes_its_views_stale() {
     assert!(extract(&mut s, sheet).unwrap().stale.contains(&front));
     settled(&mut s, sheet);
     assert!(extract(&mut s, sheet).unwrap().stale.is_empty());
+}
+
+/// The block's drawing saved at `path`, its sheet drawn first.
+fn saved_drawn(path: &str) -> (Session, u64, [u64; 2]) {
+    let (mut s, sheet, views) = front_and_top();
+    settled(&mut s, sheet);
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    (s, sheet, views)
+}
+
+/// The cache's entries in the file at `path`, and how many views the first drawing's manifest lists.
+fn cached_views(path: &str) -> usize {
+    let bytes = std::fs::read(path).unwrap();
+    let digest = solidcraft_io::design_bytes_digest(&bytes).unwrap();
+    let design = solidcraft_io::read_design(&bytes).unwrap();
+    design.drawings.iter().filter_map(|d| solidcraft_io::read_sheet_lines(path, d.id, &digest)).map(|read| read.views.len()).sum()
+}
+
+/// A save writes the lines current now and draws nothing, on a copy as well. A view out of date isn't
+/// written as current; a drawing with none keeps what the file has; plain JSON has none.
+#[test]
+fn a_save_keeps_only_current_lines_and_draws_nothing() {
+    let folder = crate::tests::Folder::new("sheet-save");
+    let path = folder.path("sheet.solidcraft");
+    let (mut s, sheet, [front, _]) = saved_drawn(&path);
+    assert_eq!(cached_views(&path), 2);
+
+    let before = s.drawing_scenes.projections;
+    let bytes = s.scratch().design_container(solidcraft_io::DesignCompression::Fast, false, true).unwrap();
+    assert_eq!(s.drawing_scenes.projections, before, "a save draws nothing");
+    let digest = solidcraft_io::design_bytes_digest(&bytes).unwrap();
+    let other = folder.path("copy.solidcraft");
+    std::fs::write(&other, &bytes).unwrap();
+    let id = s.open_drawing.unwrap();
+    assert_eq!(solidcraft_io::read_sheet_lines(&other, id, &digest).unwrap().views.len(), 2, "a copy keeps them, shared");
+
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"scale": "1:4"}}));
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    assert_eq!(cached_views(&path), 1, "the changed view isn't written");
+    let _ = sheet;
+
+    let json_path = folder.path("sheet.json");
+    run(&mut s, "file.save_as", json!({"path": json_path, "format": "json"}));
+    assert_eq!(s.file, None, "a plain design has no lines to come back to");
+}
+
+/// A closed drawing's lines stay as plain data until the next save; a model edit since makes them no
+/// longer current, and the file's older ones stay with their old stamp.
+#[test]
+fn a_closed_drawings_lines_keep_until_the_next_save() {
+    let folder = crate::tests::Folder::new("sheet-closed");
+    let path = folder.path("closed.solidcraft");
+    let (mut s, _, _) = saved_drawn(&path);
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    assert_eq!(cached_views(&path), 2, "kept, closed");
+    run(&mut s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [200, 0, 0], "operation": "new"}));
+    run(&mut s, "file.save_as", json!({"path": path, "format": "container"}));
+    assert_eq!(cached_views(&path), 2, "the file's own");
+    let (file, digest) = s.file.clone().unwrap();
+    let read = solidcraft_io::read_sheet_lines(&file, s.doc.drawings[0].id, &digest).unwrap();
+    assert!(!read.current, "not for this model");
 }
