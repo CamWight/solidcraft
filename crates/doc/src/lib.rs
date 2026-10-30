@@ -22,6 +22,7 @@ pub use component_removal::RemovedTree;
 pub mod config;
 pub mod construct;
 pub mod display_quality;
+pub mod content_words;
 pub mod display_units;
 mod document;
 pub mod drawing;
