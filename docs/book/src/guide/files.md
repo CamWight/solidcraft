@@ -249,6 +249,14 @@ Design properties are first saved in format 21. Inserting or linking another des
 copy its properties; Save As keeps them. A command script of the design
 (`timeline.export_script`) sets them in one step.
 
+## Drawings in a design
+
+A design holds its drawings: they are saved in its file, travel with it, and need no file of their
+own. A drawing reads the model as it is now, so a change to the model shows on the drawing's views and
+dimensions the next time they are drawn, and what a dimension can no longer find says so. Undo keeps
+the two apart: undo in a drawing undoes the drawing's steps and leaves the model, and undo in the
+model leaves the drawings.
+
 ## Designs in shared or synced folders
 
 A design kept on a network share or in a synced folder (Dropbox, OneDrive, Syncthing, Google
