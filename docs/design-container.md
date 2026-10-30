@@ -252,6 +252,33 @@ using format/application constants rather than source-tree hashing build scripts
 retain JSON Save As/MCP/script compatibility and the documented legacy shims, and
 run standalone wasm validation on each published code revision.
 
+## Drawings
+
+Each of a design's drawings is one entry, `drawings/<id>.json` (Deflate, as `document.json`), named by
+the drawing's id and holding its record with its own format version (`solidcraft-drawing/N`).
+`document.json` holds nothing of them, so its bytes, and the model cache keyed to them, stay the same
+when only a drawing changes. At most 1,000 drawings of at most 16 MiB of text each. An entry under
+`drawings/` that isn't a drawing's, whose record has another id, or a `document.json` that has
+drawings of its own too, is damage: the design is refused. Plain JSON holds the same records in
+`drawings` in the document.
+
+A drawing saves what is authored: its sheets, views, dimensions and other annotations, each naming
+what it measures by persistent name. Nothing derived is saved.
+
+## Sheet cache
+
+A warm save may add each drawing's last lines, so opening it draws nothing that hasn't changed:
+`cache/drawings/<id>/manifest.json` (`solidcraft-sheet-cache/1`, the build that wrote it, the document's
+SHA-256 and each view's key) and one `cache/drawings/<id>/views/<view>.json` per view (Deflate), the
+view's paper group, centred on the view, so moving a view needs no new entry. Only lines current when
+the design is saved are written, and a save never draws to get them. Entries of a drawing not opened
+this session are kept from the file the design came from.
+
+It is a cache: a mismatch or damage is a miss, never a failed open, and means drawing again, so it has
+no format version to migrate. Lines from another build or for another document are shown as out of date
+until they are drawn again. At most 10,000 views a drawing, 64 MiB a view; written only when the file's
+budget has room. Plain JSON and `cache: false` have none.
+
 ## Portable thumbnail
 
 A warm save (with `cache`, the default) may add `cache/thumbnail.png` and its small
