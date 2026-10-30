@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use std::f64::consts::FRAC_PI_2;
 
-use crate::{EPS, Region2, Seg2, Vec2};
+use crate::{Aabb2, EPS, Loop2, Region2, Seg2, Vec2};
 
 pub mod annotate;
 
@@ -70,6 +70,38 @@ pub struct Group {
 }
 
 impl Group {
+    /// The box round what the group draws, along its lines' paths.
+    pub fn bounds(&self) -> Aabb2 {
+        let mut bounds = Aabb2::EMPTY;
+        let mut add = |path: &[Seg2]| path.iter().for_each(|seg| bounds = bounds.union(&seg.bounds()));
+        for item in &self.items {
+            match item {
+                Item::Stroke { path, .. } => add(path),
+                Item::Fill { region } => region.loops().for_each(|ring| add(&ring.segs)),
+            }
+        }
+        bounds
+    }
+
+    /// The group moved `by` on paper: each point plus `by`, exactly, so the same lines moved to the
+    /// same centre are the same bytes however they got there.
+    pub fn moved(&self, by: Vec2) -> Group {
+        let segs = |path: &[Seg2]| -> Vec<Seg2> {
+            let shift = |seg: &Seg2| match *seg {
+                // An arc's centre moves; its radius and its angles stay.
+                Seg2::Arc { center, radius, start, sweep } => Seg2::Arc { center: center + by, radius, start, sweep },
+                _ => seg.map_controls(|p| p + by),
+            };
+            path.iter().map(shift).collect()
+        };
+        let ring = |l: &Loop2| Loop2 { segs: segs(&l.segs) };
+        let items = self.items.iter().map(|item| match item {
+            Item::Stroke { path, closed, width_mm } => Item::Stroke { path: segs(path), closed: *closed, width_mm: *width_mm },
+            Item::Fill { region } => Item::Fill { region: Region2 { outer: ring(&region.outer), holes: region.holes.iter().map(ring).collect() } },
+        });
+        Group { object: self.object, kind: self.kind, items: items.collect() }
+    }
+
     /// The records the group counts toward [`MAX_RECORDS`]: itself, each item, each stroke's pieces,
     /// and each loop of a fill with its pieces. Saturates rather than overflows.
     pub fn records(&self) -> usize {

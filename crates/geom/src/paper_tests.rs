@@ -306,3 +306,25 @@ fn unknown_fields_kinds_and_ids_are_refused_when_read() {
     v["groups"][0]["object"] = json!(u64::MAX);
     read(v).unwrap().validate().unwrap();
 }
+
+/// A group's box runs along its paths, the arc's bulge and a fill's holes included, and moving it
+/// moves each point exactly and keeps an arc's radius and angles.
+#[test]
+fn a_group_has_a_box_and_moves_exactly() {
+    let arc = Seg2::Arc { center: p(10.0, 10.0), radius: 5.0, start: 0.0, sweep: PI };
+    let items = vec![stroke(vec![line(p(0.0, 0.0), p(20.0, 0.0)), arc], false, 0.25), fill(rectangle(p(30.0, -2.0), p(40.0, 2.0)), Vec::new())];
+    let group = Group { object: 7, kind: ObjectKind::View, items };
+    let bounds = group.bounds();
+    assert_eq!((bounds.min, bounds.max), (p(0.0, -2.0), p(40.0, 15.0)));
+    assert_eq!(Group { items: Vec::new(), ..group.clone() }.bounds(), Aabb2::EMPTY);
+
+    let by = p(0.1, -0.2);
+    let moved = group.moved(by);
+    assert_eq!((moved.object, moved.kind), (7, ObjectKind::View));
+    let Item::Stroke { path, .. } = &moved.items[0] else { panic!("{moved:?}") };
+    assert_eq!(path[0], line(p(0.0, 0.0) + by, p(20.0, 0.0) + by));
+    assert_eq!(path[1], Seg2::Arc { center: p(10.0, 10.0) + by, radius: 5.0, start: 0.0, sweep: PI });
+    let Item::Fill { region } = &moved.items[1] else { panic!("{moved:?}") };
+    assert_eq!(region.outer.segs[0], line(p(30.0, -2.0) + by, p(40.0, -2.0) + by));
+    assert_eq!(moved.moved(p(0.0, 0.0)), moved, "by nothing, the same bytes");
+}

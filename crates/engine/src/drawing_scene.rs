@@ -39,7 +39,7 @@ use solidcraft_doc::{DocError, Document, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::hlr::Source;
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Scene};
-use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
+use solidcraft_geom::{Aabb2, Vec2};
 
 use crate::drawing_sources::Unopened;
 use crate::drawing_view::{CHORD_MM, LineRequest, MIN_MODEL_CHORD_MM, Shown, ShownSet, Stats, Unmeasured, paper_lines};
@@ -413,13 +413,13 @@ impl Assembly {
         if self.records.saturating_add(more) > MAX_RECORDS {
             return Err(LeftOut::TooManyRecords);
         }
-        self.alone.groups.push(moved(group, centre));
+        self.alone.groups.push(group.moved(centre));
         if let Err(e) = self.alone.validate() {
             self.alone.groups.clear();
             return Err(LeftOut::Invalid(e.to_string()));
         }
         self.records += more;
-        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, group_bounds);
+        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, Group::bounds);
         self.scene.groups.append(&mut self.alone.groups);
         Ok(bounds)
     }
@@ -467,7 +467,7 @@ fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, 
     let mut objects = Vec::new();
     if !border.is_empty() {
         // The border's groups are one object.
-        let bounds_mm = border.iter().map(group_bounds).fold(Aabb2::EMPTY, |all, one| all.union(&one));
+        let bounds_mm = border.iter().map(Group::bounds).fold(Aabb2::EMPTY, |all, one| all.union(&one));
         objects.push(SheetObject { object: record.id, kind: ObjectKind::DrawingBorder, bounds_mm, boundary_mm: None });
     }
     let scene = Scene { size_mm, groups: border };
@@ -500,38 +500,6 @@ fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, 
         assembly.states.push(ViewState { view, status, stats: drawn.stats });
     }
     Ok(assembly)
-}
-
-/// The box round what `group` draws, along its lines' paths.
-fn group_bounds(group: &Group) -> Aabb2 {
-    let mut bounds = Aabb2::EMPTY;
-    let mut add = |path: &[Seg2]| path.iter().for_each(|seg| bounds = bounds.union(&seg.bounds()));
-    for item in &group.items {
-        match item {
-            Item::Stroke { path, .. } => add(path),
-            Item::Fill { region } => region.loops().for_each(|ring| add(&ring.segs)),
-        }
-    }
-    bounds
-}
-
-/// `group` moved `by` on paper: each point plus `by`, exactly, so the same lines moved to the same
-/// centre are the same bytes however they got there.
-fn moved(group: &Group, by: Vec2) -> Group {
-    let segs = |path: &[Seg2]| -> Vec<Seg2> {
-        let shift = |seg: &Seg2| match *seg {
-            // An arc's centre moves; its radius and its angles stay.
-            Seg2::Arc { center, radius, start, sweep } => Seg2::Arc { center: center + by, radius, start, sweep },
-            _ => seg.map_controls(|p| p + by),
-        };
-        path.iter().map(shift).collect()
-    };
-    let ring = |l: &Loop2| Loop2 { segs: segs(&l.segs) };
-    let items = group.items.iter().map(|item| match item {
-        Item::Stroke { path, closed, width_mm } => Item::Stroke { path: segs(path), closed: *closed, width_mm: *width_mm },
-        Item::Fill { region } => Item::Fill { region: Region2 { outer: ring(&region.outer), holes: region.holes.iter().map(ring).collect() } },
-    });
-    Group { object: group.object, kind: group.kind, items: items.collect() }
 }
 
 /// Sheet `sheet` of `d`.
