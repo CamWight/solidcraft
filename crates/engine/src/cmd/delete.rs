@@ -548,13 +548,17 @@ mod tests {
         refused(&mut s, json!([item(drawing, front)]));
     }
 
-    /// A selected object that goes leaves the selection, and the rest stay: deleting the balloon, then
-    /// closing the drawing takes the others. (An undo clears the whole selection, as it always has.)
+    /// A selected object that goes leaves the selection, and the rest stay: a note going with its
+    /// sheet, then closing the drawing takes the others. (An undo or a selection's delete clears the
+    /// whole selection, as they always have.)
     #[test]
     fn a_selected_object_that_goes_leaves_the_selection() {
-        let (mut s, [front, ..], dimension, balloon, drawing) = sheet_objects();
-        run(&mut s, "select.set", json!({"items": [item(drawing, front), item(drawing, dimension), item(drawing, balloon)]}));
-        run(&mut s, "selection.delete", json!({"items": [item(drawing, balloon)]}));
+        let (mut s, [front, ..], dimension, _, drawing) = sheet_objects();
+        run(&mut s, "drawing.sheet.add", json!({"name": "Notes"}));
+        let note = run(&mut s, "drawing.note.add", json!({"anchor": {"sheet": "Notes"}, "at": [20, 20], "content": "On the other sheet"}));
+        let note = ids::decode(note["record"]["id"].as_str().unwrap()).unwrap();
+        run(&mut s, "select.set", json!({"items": [item(drawing, front), item(drawing, dimension), item(drawing, note)]}));
+        run(&mut s, "drawing.sheet.delete", json!({"sheet": "Notes", "contents": "delete"}));
         assert_eq!(s.selection, [Sel::Drawing { drawing, object: front }, Sel::Drawing { drawing, object: dimension }]);
         run(&mut s, "drawing.close", json!({}));
         assert!(s.selection.is_empty());
@@ -659,7 +663,7 @@ mod tests {
         let before = s.drawing("test").unwrap().clone();
         let good = item(drawing, front);
         for (p, says) in [
-            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension or balloon"),
+            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension, balloon, note or image"),
             (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension, balloon, note or image"),
             (json!({"items": [good, item(99, front)]}), "isn't the drawing open"),
             (json!({"items": [good, {"type": "body", "name": "Block"}]}), "a drawing is open"),
