@@ -1140,3 +1140,124 @@ fn a_change_of_paper_lists_the_views_it_leaves_outside_and_moves_none() {
     assert_eq!((views, listed[0]["unmeasured"].as_str()), (vec![right], Some("past_walk_limit")));
     assert_box(&listed[0], [290.0, 140.0], [310.0, 160.0]);
 }
+
+/// A drawing of the block in `projection`: its front view at (150, 150) with a view to its right
+/// lined up at x 300 and a view above it lined up at y 220. The session and the three views' ids.
+fn lined_up_views(projection: Projection) -> (Session, [u64; 3]) {
+    let mut s = block();
+    run(&mut s, "drawing.create", json!({}));
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    d.projection = projection;
+    let mut id_source = solidcraft_doc::ids::IdSource::seeded(9193);
+    let (sheet, source) = (d.sheets[0].id, d.sources[0].id);
+    let mut add = |d: &mut Drawing, kind: ViewKind, place: ViewPlace, settings: ViewOverrides| {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        d.add_views([Arc::new(View { id, sheet, kind, place, settings, reference_margin_mm: 0.0 })]);
+        id
+    };
+    let half = ViewOverrides { scale: Some("1:2".parse().unwrap()), ..ViewOverrides::default() };
+    let front = ViewKind::Base { source, view: ViewDirection::Named(NamedView::Front) };
+    let front = add(&mut d, front, ViewPlace::At([150.0, 150.0]), half);
+    let side = |side| ViewKind::Projected { parent: front, side };
+    let right = add(&mut d, side(ProjectedSide::Right), ViewPlace::Aligned(300.0), ViewOverrides::default());
+    let top = add(&mut d, side(ProjectedSide::Above), ViewPlace::Aligned(220.0), ViewOverrides::default());
+    d.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(d));
+    (s, [front, right, top])
+}
+
+fn centre_of(s: &Session, view: u64) -> [f64; 2] {
+    let centre = s.drawing("test").unwrap().view_centre(view).unwrap();
+    [centre.x, centre.y]
+}
+
+fn dragged(s: &mut Session, view: u64, to: [f64; 2]) -> Value {
+    let reply = run(s, DRAG, json!({"view": ids::encode(view), "to_mm": to}));
+    let schema = output_schema_for::<ViewMoveResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    reply
+}
+
+/// Front moved (+20, +5) moves the top view (+20, 0) and the right view (0, +5), in both angles, and
+/// a lined-up view dragged off its line takes only its free axis, with its parent still. One step:
+/// undo puts all three back. Nothing is evaluated.
+#[test]
+fn a_dragged_view_keeps_its_line_up_and_its_followers_follow() {
+    for projection in [Projection::First, Projection::Third] {
+        let (mut s, [front, right, top]) = lined_up_views(projection);
+        let evaluations = s.evaluations;
+        let reply = dragged(&mut s, front, [170.0, 155.0]);
+        assert_eq!(centre_of(&s, front), [170.0, 155.0]);
+        assert_eq!(centre_of(&s, right), [300.0, 155.0]);
+        assert_eq!(centre_of(&s, top), [170.0, 220.0]);
+        assert_eq!(reply["place"], json!({"at": [170.0, 155.0]}), "{reply}");
+        assert_eq!(reply["followers"], json!([ids::encode(right), ids::encode(top)]), "{reply}");
+        run(&mut s, "edit.undo", json!({}));
+        assert_eq!((centre_of(&s, front), centre_of(&s, right), centre_of(&s, top)), ([150.0, 150.0], [300.0, 150.0], [150.0, 220.0]));
+
+        // Off its line: the right view takes only x.
+        let reply = dragged(&mut s, right, [320.0, 999.0]);
+        assert_eq!(centre_of(&s, right), [320.0, 150.0]);
+        assert_eq!(reply["place"], json!({"aligned": 320.0}), "{reply}");
+        assert_eq!(reply["followers"], json!([]), "{reply}");
+        // Above: the top view takes only y.
+        dragged(&mut s, top, [999.0, 240.0]);
+        assert_eq!(centre_of(&s, top), [150.0, 240.0]);
+        assert_eq!(s.evaluations, evaluations);
+    }
+}
+
+/// `break_alignment` places a lined-up view apart, where it was dragged; the views lined up with it
+/// go with it, and a view placed at a point takes both axes.
+#[test]
+fn breaking_alignment_places_a_view_apart() {
+    let (mut s, [front, right, _]) = lined_up_views(Projection::Third);
+    let reply = run(&mut s, DRAG, json!({"view": ids::encode(right), "to_mm": [320.0, 90.0], "break_alignment": true}));
+    assert_eq!(reply["place"], json!({"at": [320.0, 90.0]}), "{reply}");
+    assert_eq!(centre_of(&s, right), [320.0, 90.0]);
+    assert_eq!(centre_of(&s, front), [150.0, 150.0], "its parent stays");
+    dragged(&mut s, right, [330.0, 95.0]);
+    assert_eq!(centre_of(&s, right), [330.0, 95.0], "both axes now");
+    // Lined up with a view placed apart, a child follows that view.
+    let (mut s, [_, right, top]) = three_views();
+    let before = centre_of(&s, top);
+    dragged(&mut s, right, [310.0, 0.0]);
+    assert_eq!(centre_of(&s, top), before, "placed apart, it stays");
+}
+
+/// A move to where it is makes no step, and neither does one that off-axis leaves it on its line. A
+/// view off the sheet is listed. Hostile places are refused and change nothing.
+#[test]
+fn a_move_to_where_it_is_makes_no_step_and_hostile_places_are_refused() {
+    let (mut s, [front, right, _]) = lined_up_views(Projection::Third);
+    let doc = s.doc.clone();
+    dragged(&mut s, front, [150.0, 150.0]);
+    assert!(Arc::ptr_eq(&doc, &s.doc), "no step");
+    dragged(&mut s, right, [300.0, 777.0]);
+    assert!(Arc::ptr_eq(&doc, &s.doc), "still on the same place");
+
+    let out = dragged(&mut s, front, [1000.0, 150.0]);
+    assert_eq!(out["outside"][0]["view"], json!(ids::encode(front)), "{out}");
+    run(&mut s, "edit.undo", json!({}));
+
+    let doc = s.doc.clone();
+    for to in [json!([1e300, 0.0]), json!([0.0, -1e300]), json!([5001.0, 0.0]), json!(["a", 0.0]), json!([0.0]), json!(null)] {
+        assert!(s.execute(DRAG, &json!({"view": ids::encode(front), "to_mm": to})).is_err(), "{to}");
+    }
+    assert!(s.execute(DRAG, &json!({"view": ids::encode(right), "to_mm": [1e300, 0.0]})).is_err());
+    assert!(s.execute(DRAG, &json!({"view": "AAAAAAAAAAAA", "to_mm": [0.0, 0.0]})).is_err());
+    assert!(Arc::ptr_eq(&doc, &s.doc));
+    run(&mut s, "drawing.close", json!({}));
+    assert!(s.execute(DRAG, &json!({"view": ids::encode(front), "to_mm": [0.0, 0.0]})).is_err(), "no drawing open");
+}
+
+/// A move to the view's own sheet with a position goes by the same rule as a drag: it was ignored.
+#[test]
+fn a_position_on_the_views_own_sheet_is_a_move() {
+    let (mut s, [front, right, _]) = lined_up_views(Projection::Third);
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    run(&mut s, MOVE, json!({"view": ids::encode(front), "sheet": sheet, "position_mm": [170.0, 155.0]}));
+    assert_eq!(centre_of(&s, front), [170.0, 155.0]);
+    run(&mut s, MOVE, json!({"view": ids::encode(right), "sheet": sheet, "position_mm": [320.0, 999.0]}));
+    assert_eq!(centre_of(&s, right), [320.0, 155.0], "on its line");
+}
