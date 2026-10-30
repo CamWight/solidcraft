@@ -912,16 +912,16 @@ fn hit_says_what_is_under_a_point_of_a_sheet() {
 fn a_views_dimensions_swap_with_its_lines() {
     let (mut s, sheet, [front, top]) = front_and_top();
     let id = top_edge(&mut s, front);
-    let old = settled(&mut s, sheet);
+    settled(&mut s, sheet);
     let drawing = ids::encode(s.open_drawing.unwrap());
     run(&mut s, "drawing.close", json!({}));
     let block = s.doc.features[0].id;
     run(&mut s, "timeline.edit", json!({"feature": block.to_string(), "set": {"height": 40}}));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
 
+    // Closing the drawing dropped its scene, and an unsaved design has no lines to come back to.
     let waiting = extract(&mut s, sheet).unwrap();
-    assert!(waiting.scene.groups.iter().all(|g| g.object != id), "a reopened drawing's old lines come back without their dimension");
-    assert_eq!(bytes_of(group_of(&waiting.scene, front)), bytes_of(group_of(&old.scene, front)));
+    assert!(waiting.scene.groups.iter().all(|g| g.object != id && g.object != front), "{:?}", waiting.stale);
 
     // One step: the front view (the lower id) and its dimension together; the top view still waits.
     assert!(step(&mut s));
