@@ -8,6 +8,7 @@
 use std::collections::BTreeSet;
 
 use serde_json::{Value, json};
+use solidcraft_doc::drawing::{SELECTABLE, Selectable};
 use solidcraft_doc::{FeatureKind, ids};
 use solidcraft_geom::Vec3;
 
@@ -56,25 +57,21 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
     }
     let with_projected = super::drawing_sheet::contents_delete(cmd, p, "a view goes with the views projected from it")?;
     let open = s.drawing(cmd)?.clone();
-    let (mut views, mut dimensions, mut balloons, mut notes) = (BTreeSet::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut views, mut others) = (BTreeSet::new(), Vec::new());
     for item in items {
         let Sel::Drawing { drawing, object } = item else { return Err(model()) };
         if *drawing != open.id {
             return Err(bad(cmd, format!("{} isn't the drawing open", ids::encode(*drawing))));
         }
-        if open.view(*object).is_some() {
-            views.insert(*object);
-        } else if open.dimension(*object).is_some() {
-            dimensions.push(*object);
-        } else if open.balloon(*object).is_some() {
-            balloons.push(*object);
-        } else if open.note(*object).is_some() {
-            notes.push(*object);
-        } else {
-            return Err(bad(cmd, format!("the drawing open has no view, dimension, balloon or note {}", ids::encode(*object))));
+        match open.kind_of(*object) {
+            Some(Selectable::View) => {
+                views.insert(*object);
+            }
+            Some(kind) => others.push((kind, *object)),
+            None => return Err(bad(cmd, format!("the drawing open has no {SELECTABLE} {}", ids::encode(*object)))),
         }
     }
-    if views.is_empty() && dimensions.is_empty() && balloons.is_empty() && notes.is_empty() {
+    if views.is_empty() && others.is_empty() {
         return Err(bad(cmd, "nothing to delete"));
     }
     let all = open.with_projected(&views);
@@ -84,15 +81,8 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
         return Err(bad(cmd, format!("views {names} are projected from what is selected: give `\"contents\": \"delete\"` to delete them too")));
     }
     let mut gone = open.with_contents(all.into_iter().collect());
-    gone.dimensions.extend(dimensions);
-    gone.dimensions.sort_unstable();
-    gone.dimensions.dedup();
-    gone.balloons.extend(balloons);
-    gone.balloons.sort_unstable();
-    gone.balloons.dedup();
-    gone.notes.extend(notes);
-    gone.notes.sort_unstable();
-    gone.notes.dedup();
+    others.into_iter().for_each(|(kind, id)| gone.add(kind, id));
+    gone.finish();
     s.edit_drawing(cmd, |d| {
         d.remove_objects(&gone);
         Ok(())
@@ -517,7 +507,7 @@ mod tests {
         assert!(s.selection.is_empty());
     }
 
-    /// What isn't a view, dimension or balloon of the drawing open is refused, and the selection stays
+    /// What a selection can't name in the drawing open is refused, and the selection stays
     /// as it was: an unknown id, a sheet's, another drawing's, a malformed id, too many items, and
     /// any of them with no drawing open.
     #[test]
@@ -696,8 +686,8 @@ mod tests {
         let before = s.drawing("test").unwrap().clone();
         let good = item(drawing, front);
         for (p, says) in [
-            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension or balloon"),
-            (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension or balloon"),
+            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension, balloon or note"),
+            (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension, balloon or note"),
             (json!({"items": [good, item(99, front)]}), "isn't the drawing open"),
             (json!({"items": [good, {"type": "body", "name": "Block"}]}), "a drawing is open"),
             (json!({"items": [{"type": "feature", "id": 1}]}), "a drawing is open"),
