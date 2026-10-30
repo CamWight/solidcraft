@@ -291,7 +291,7 @@ fn a_balloon_reads_its_row_in_a_parts_list() {
     let first = list(&mut s, json!({}));
     let read1 = read(&mut s, &balloon);
     assert_eq!((&read1["row_status"], &read1["item"], &read1["parts_list"]), (&json!("ok"), &json!("1"), &json!(first)), "{read1}");
-    assert!(s.drawing("test").unwrap().balloon(ids::decode(&balloon).unwrap()).unwrap().parts_list.is_none(), "worked out, not saved");
+    assert!(s.drawing("test").unwrap().balloons.by_id(ids::decode(&balloon).unwrap()).unwrap().parts_list.is_none(), "worked out, not saved");
 
     let second = list(&mut s, json!({"list": {"levels": "top"}}));
     let both = read(&mut s, &balloon);

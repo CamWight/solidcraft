@@ -96,7 +96,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     CommandSpec::new("select.set", "Select", select_set).any_part().icon("select")
         .noundo()
-        .params("items: [{type: body|edge|face|feature|sketch_curve|sketch_point|profile, …} or {type: drawing, drawing, object: ids of the drawing open and of a view, dimension or balloon of it}], add?: bool"),
+        .params("items: [{type: body|edge|face|feature|sketch_curve|sketch_point|profile, …} or {type: drawing, drawing, object: ids of the drawing open and of a view, dimension, balloon, note or image of it}], add?: bool"),
     CommandSpec::new("select.filter", "Selection filter", select_filter).icon("select").noundo().doc_only()
         .params("mode: body|face|component → validated UI pick granularity; headless echo only, no document edits or undo"),
     CommandSpec::new("select.clear", "Clear Selection", select_clear).any_part().icon("select").noundo(),
@@ -1342,7 +1342,7 @@ fn select_set(s: &mut Session, p: &Value) -> Result<Value> {
             && !s.selectable_in_drawing(*drawing, *object)
         {
             let object = solidcraft_doc::ids::encode(*object);
-            return Err(bad("select.set", format!("the drawing open has no view, dimension or balloon {object}")));
+            return Err(bad("select.set", format!("the drawing open has no {} {object}", solidcraft_doc::drawing::SELECTABLE)));
         }
         sel.push(one);
     }
