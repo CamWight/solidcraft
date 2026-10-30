@@ -5,6 +5,7 @@ use solidcraft_doc::MAX_PLACEMENT_DEPTH;
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
+use solidcraft_geom::Seg2;
 use solidcraft_geom::paper::ObjectKind;
 
 use super::*;
@@ -294,7 +295,7 @@ fn a_move_and_its_undo_project_nothing() {
     assert!(after.generation > before.generation);
     assert_eq!(bytes(&after.scene), bytes(&built(&s, sheet).scene));
     for (was, now) in before.scene.groups.iter().zip(&after.scene.groups).skip(3) {
-        assert!(same_within(now, &moved(was, Vec2::new(50.0, 0.0)), 1e-9), "{now:?}");
+        assert!(same_within(now, &was.moved(Vec2::new(50.0, 0.0)), 1e-9), "{now:?}");
     }
     run(&mut s, "edit.undo", json!({}));
     let undone = extract(&mut s, sheet).unwrap();
@@ -687,7 +688,7 @@ fn a_moved_view_moves_its_dimensions_and_an_edit_reads_one() {
     let after = settled(&mut s, sheet);
     assert_eq!(s.drawing_scenes.projections, projections, "a move projects nothing");
     assert_eq!(s.drawing_scenes.dimensions[&other].serial, serial, "and reads nothing");
-    assert_eq!(bytes_of(group_of(&after.scene, id)), bytes_of(&moved(group_of(&before.scene, id), Vec2::new(20.0, -20.0))));
+    assert_eq!(bytes_of(group_of(&after.scene, id)), bytes_of(&group_of(&before.scene, id).moved(Vec2::new(20.0, -20.0))));
 
     run(&mut s, "drawing.dimension.edit", json!({"dimension": ids::encode(id), "set": {"offset_mm": 20.0}}));
     let edited = settled(&mut s, sheet);
