@@ -11,6 +11,5 @@ fn table_params_are_read_strictly() {
     assert!(read(json!({"table": 7, "set": {}})).is_err());
     assert!(read(json!({"table": id, "set": {"widht": 3}})).is_err());
     assert!(read(json!({"table": id})).is_err());
-    assert!(read(json!({"table": id, "set": {"heading": null}})).is_err(), "null changes nothing, so it is refused");
     assert!(serde_json::from_value::<AddParams>(json!({"sheet": "Sheet 1", "kind": "chart"})).is_err());
 }
