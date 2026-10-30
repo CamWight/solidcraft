@@ -22,7 +22,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use solidcraft_doc::drawing::view::ResolvedView;
+use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
 use solidcraft_doc::{DocError, ModelState, ids};
@@ -341,6 +341,42 @@ impl Cache {
     fn fresh(&self, id: u64, state: &Arc<ModelState>, view: &ResolvedView) -> bool {
         self.views.get(&id).is_some_and(|e| Arc::ptr_eq(&e.state, state) && e.view == *view)
     }
+}
+
+/// Where one view of a drawing stands with the provider ([`standing`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct ViewStanding {
+    pub view: u64,
+    pub sheet: u64,
+    /// `current`, `out_of_date` (not drawn yet, or drawn from another model or with other settings
+    /// than it has now), `placeholder` or `failed`.
+    pub status: &'static str,
+    /// Why, for a placeholder or a failed view.
+    pub reason: Option<String>,
+}
+
+/// Each view of `d`, the drawing open, in id order, as the provider last drew it, whichever sheet it
+/// is on. It reads the cache: nothing is drawn. A view that drew but didn't fit its sheet's scene is
+/// as the last assembly left it, as long as nothing has been drawn since.
+pub fn standing(s: &Session, d: &Drawing) -> Vec<ViewStanding> {
+    let state = s.world_state();
+    let cache = &s.drawing_scenes;
+    let assembled = cache.last.as_ref().filter(|last| last.serial == cache.serial).map_or(&[][..], |last| last.answer.views.as_slice());
+    let in_assembly = |id: u64| assembled.binary_search_by_key(&id, |v| v.view).ok().and_then(|at| assembled.get(at));
+    let word = |status: &Status| match status {
+        Status::Drawn => ("current", None),
+        Status::Placeholder(why) => ("placeholder", Some(why.to_string())),
+        Status::Failed(why) => ("failed", Some(why.clone())),
+    };
+    let one = |view: &Arc<View>| {
+        let fresh = d.resolve_view(view.id).is_ok_and(|resolved| cache.fresh(view.id, &state, &resolved));
+        let (status, reason) = match cache.views.get(&view.id).filter(|_| fresh) {
+            Some(entry) => word(in_assembly(view.id).map_or(&entry.drawn.status, |v| &v.status)),
+            None => ("out_of_date", None),
+        };
+        ViewStanding { view: view.id, sheet: view.sheet, status, reason }
+    };
+    d.views.iter().map(one).collect()
 }
 
 /// Sheet `sheet` of the drawing open, as the provider last drew it: at once, as nothing is drawn
