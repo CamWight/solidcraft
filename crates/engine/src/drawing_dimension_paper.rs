@@ -6,21 +6,22 @@
 //! Its text joins once the paper scene has text (B1). Until then the text only decides whether the
 //! arrows fit inside, from an estimate of its length.
 
-use std::f64::consts::{FRAC_1_SQRT_2, TAU};
+use std::f64::consts::{FRAC_1_SQRT_2, PI, TAU};
 
 use solidcraft_doc::drawing::dimension::{Dimension, DimensionKind, Resolved, TextPlace};
 use solidcraft_geom::drawing_measure::LinearDirection;
 use solidcraft_geom::drawing_view::ViewFrame;
+use solidcraft_geom::paper::annotate::{ArrowShape, Terminator};
 use solidcraft_geom::paper::{Group, Item, ObjectKind};
-use solidcraft_geom::{Loop2, Region2, Seg2, Vec2};
+use solidcraft_geom::{Seg2, Vec2};
 use solidcraft_sketch::{DimFrame, DimSizes, dim_layout_sized};
 
 /// A dimension's sizes on paper, with its text above an unbroken line (ISO 129-1).
 const SIZES: DimSizes = DimSizes { arrow: 3.0, gap: 1.0, overshoot: 2.0, offset: 10.0, above: true };
 /// A dimension's lines, half as wide as a view's visible ones (ISO 128).
 const LINE_MM: f64 = 0.25;
-/// Half an arrowhead's width at its base.
-const ARROW_HALF_WIDTH_MM: f64 = 0.5;
+/// A filled arrowhead, its line stopped at its base by [`stop_at_base`].
+const ARROW: Terminator = Terminator::Arrow { shape: ArrowShape::Filled, length_mm: SIZES.arrow, angle: PI / 9.0 };
 /// The height of a dimension's text, for its estimated size.
 const TEXT_MM: f64 = 3.5;
 /// How close two points of a layout are when they are one point.
@@ -55,8 +56,10 @@ pub fn paper_group(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame
     for (tip, dir) in &arrows {
         lines.iter_mut().for_each(|line| stop_at_base(line, *tip, *dir));
     }
-    let strokes = lines.iter().filter_map(|line| stroke(line));
-    let items = strokes.chain(arrows.iter().map(|(tip, dir)| arrowhead(*tip, *dir))).collect();
+    let mut items: Vec<Item> = lines.iter().filter_map(|line| stroke(line)).collect();
+    for (tip, dir) in &arrows {
+        items.extend(ARROW.place(*tip, *tip - *dir, LINE_MM).ok()?.0);
+    }
     Some(Group { object: dimension.id, kind: ObjectKind::Dimension, items })
 }
 
@@ -212,17 +215,6 @@ fn stroke(line: &[Vec2]) -> Option<Item> {
     let pieces = line.iter().zip(line.iter().skip(1)).filter(|(a, b)| a != b);
     let path: Vec<Seg2> = pieces.map(|(a, b)| Seg2::Line { a: *a, b: *b }).collect();
     (!path.is_empty()).then_some(Item::Stroke { path, closed: false, width_mm: LINE_MM })
-}
-
-/// A filled arrowhead with its tip at `tip`, pointing along the unit `dir`. D1a's
-/// `Terminator::place` takes this over when it lands.
-fn arrowhead(tip: Vec2, dir: Vec2) -> Item {
-    let base = tip - dir * SIZES.arrow;
-    let side = dir.perp() * ARROW_HALF_WIDTH_MM;
-    let (left, right) = (base + side, base - side);
-    let edge = |a: Vec2, b: Vec2| Seg2::Line { a, b };
-    let outer = Loop2 { segs: vec![edge(tip, left), edge(left, right), edge(right, tip)] };
-    Item::Fill { region: Region2 { outer, holes: Vec::new() } }
 }
 
 #[cfg(test)]
