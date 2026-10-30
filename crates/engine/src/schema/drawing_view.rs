@@ -15,6 +15,7 @@ use solidcraft_doc::drawing_view::{TangentEdges, ViewDirection, ViewSettings};
 use solidcraft_geom::Seg2;
 use solidcraft_geom::drawing_sheet::{Orientation, PaperSize, SheetSize};
 use solidcraft_geom::drawing_view::{NamedView, Scale};
+use solidcraft_geom::hlr::Source;
 use solidcraft_geom::paper::ObjectKind;
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_render::VisualStyle;
@@ -566,6 +567,15 @@ pub struct LineResult {
 pub enum LineSourceResult {
     Edge { edge: usize, tangent: bool },
     Silhouette { face: usize },
+}
+
+impl From<Source> for LineSourceResult {
+    fn from(source: Source) -> Self {
+        match source {
+            Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
+            Source::Silhouette { face } => LineSourceResult::Silhouette { face },
+        }
+    }
 }
 
 /// A run of a line at one visibility, on the sheet.

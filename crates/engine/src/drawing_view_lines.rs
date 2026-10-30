@@ -198,6 +198,11 @@ pub const REFERENCE_MM: f64 = 0.25;
 /// it ends where it starts, reference parts' [`REFERENCE_MM`] wide and under the model's,
 /// [`VISIBLE_MM`] wide. Hidden pieces are left out until the paper scene has dashed lines (V7b).
 pub fn paper_group(lines: &Lines, object: u64) -> Group {
+    paper_lines(lines, object).0
+}
+
+/// [`paper_group`], and for each of its strokes the index in `lines` of the line it draws.
+pub fn paper_lines(lines: &Lines, object: u64) -> (Group, Vec<usize>) {
     let stroke = |piece: &Piece, width_mm: f64| {
         let path: Vec<Seg2> = piece.path.iter().copied().filter_map(drawable).collect();
         let ends_meet = path.first().zip(path.last()).is_some_and(|(first, last)| last.end().dist(first.start()) <= EPS);
@@ -206,10 +211,12 @@ pub fn paper_group(lines: &Lines, object: u64) -> Group {
         (!path.is_empty()).then_some(Item::Stroke { path, closed, width_mm })
     };
     let strokes = |reference: bool, width_mm: f64| {
-        let pieces = lines.lines.iter().filter(move |l| l.reference == reference).flat_map(|l| &l.pieces);
-        pieces.filter(|p| p.visibility == Visibility::Visible).filter_map(move |p| stroke(p, width_mm))
+        let of_role = lines.lines.iter().enumerate().filter(move |(_, l)| l.reference == reference);
+        let pieces = of_role.flat_map(|(at, l)| l.pieces.iter().map(move |p| (at, p)));
+        pieces.filter(|(_, p)| p.visibility == Visibility::Visible).filter_map(move |(at, p)| Some((at, stroke(p, width_mm)?)))
     };
-    Group { object, kind: ObjectKind::View, items: strokes(true, REFERENCE_MM).chain(strokes(false, VISIBLE_MM)).collect() }
+    let (owners, items) = strokes(true, REFERENCE_MM).chain(strokes(false, VISIBLE_MM)).unzip();
+    (Group { object, kind: ObjectKind::View, items }, owners)
 }
 
 /// `seg`, or nothing where it has no length to draw: a line whose ends are one point. An arc too
@@ -439,6 +446,7 @@ mod tests {
             })
             .collect();
         assert_eq!(widths, [REFERENCE_MM, VISIBLE_MM, VISIBLE_MM]);
+        assert_eq!(paper_lines(&lines, 7).1, [1, 0, 2], "each stroke says which line it draws");
     }
 
     /// A view's group past the paper scene's 100,000 records is caught by the scene's own check.

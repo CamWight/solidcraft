@@ -5,6 +5,9 @@
 //! `drawing.scene.hit` (#4816 E7b) says what is under a point of a sheet, by the one rule the sheet
 //! page's hover uses ([`crate::drawing_scene::hit`]).
 //!
+//! `drawing.scene.line` (#4816 E7c) says which line of a view is under a point, by the one rule the
+//! sheet page's press uses ([`crate::drawing_scene::line_at`]).
+//!
 //! `drawing.status` (#4894 WE2) says where the drawing open stands: each view as the provider last
 //! drew it, and each dimension as the model has it now, in one read.
 
@@ -14,8 +17,8 @@ use solidcraft_doc::ids;
 use super::CommandSpec;
 use crate::drawing_scene::{CMD, DimensionState};
 use crate::schema::drawing_scene::{
-    DimensionStatusResult, DrawingStatusParams, DrawingStatusResult, HitResult, SheetHitParams, SheetHitResult, SheetPaperScene, SheetSceneDimension,
-    SheetSceneParams, SheetSceneResult, ViewStatusResult,
+    DimensionStatusResult, DrawingStatusParams, DrawingStatusResult, HitResult, LineHitResult, SheetHitParams, SheetHitResult, SheetLineParams,
+    SheetLineResult, SheetPaperScene, SheetSceneDimension, SheetSceneParams, SheetSceneResult, ViewStatusResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -23,6 +26,8 @@ use crate::{EngineError, Result, Session};
 const CONTRACT: TypedContract<SheetSceneParams> = TypedContract::new();
 const HIT: &str = "drawing.scene.hit";
 const HIT_CONTRACT: TypedContract<SheetHitParams> = TypedContract::new();
+const LINE: &str = "drawing.scene.line";
+const LINE_CONTRACT: TypedContract<SheetLineParams> = TypedContract::new();
 const STATUS: &str = "drawing.status";
 const STATUS_CONTRACT: TypedContract<DrawingStatusParams> = TypedContract::new();
 
@@ -42,7 +47,15 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
         .contract(&HIT_CONTRACT)
         .output(output_schema_for::<SheetHitResult>)
         .params("sheet: id or name; point_mm: [x, y] on paper; band_mm?: how near a box's edge counts as on it (default 0) → {hit: {object, kind: view|dimension, on_edge} or null}: the smallest box round a view or a dimension that holds the point within the band, then the topmost. Read-only; no model is evaluated."),
-    CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", scene))
+    CommandSpec::new(LINE, "Which Line Is Under a Point", crate::checked!("drawing.scene.line", LINE_CONTRACT, line))
+        .icon("inspect")
+        .in_drawing()
+        .noundo()
+        .doc_only()
+        .contract(&LINE_CONTRACT)
+        .output(output_schema_for::<SheetLineResult>)
+        .params("sheet: id or name; point_mm: [x, y] on paper; band_mm?: how near a line counts as under the point (default 1) → {line: {view, occurrence: [the occurrences that place its body], body, reference, source: {kind: edge, edge, tangent} or {kind: silhouette, face}, distance_mm} or null}: in the view under the point, smallest boundary first, the nearest of its drawn lines within the band, the one painted last when two are as near. Draws the sheet's views first if they aren't; evaluates nothing."),
+    CommandSpec::new(CMD, "Draw Sheet", crate::checked!("drawing.scene", CONTRACT, scene))
     .icon("export")
     .in_drawing()
     .noundo()
@@ -84,6 +97,32 @@ fn hit(s: &mut Session, p: &Value) -> Result<Value> {
     let found = crate::drawing_scene::hit(&built.objects, request.point_mm.0, request.band_mm);
     let hit = found.map(|h| HitResult { object: ids::encode(h.object), kind: h.kind, on_edge: h.on_edge });
     serde_json::to_value(SheetHitResult { hit, param_warnings: Vec::new() }).map_err(|e| EngineError::Other(e.to_string()))
+}
+
+fn line(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: SheetLineParams = crate::schema::read(LINE, p)?;
+    if !request.band_mm.is_finite() || request.band_mm < 0.0 {
+        return Err(crate::params::bad(LINE, "band_mm is a finite number, 0 or more"));
+    }
+    let d = s.drawing(LINE)?.clone();
+    let sheet = crate::drawing_scene::sheet_id(&d, &request.sheet, LINE)?;
+    // A script waits for what the sheet page shows as its views are drawn.
+    crate::drawing_scene::extract(s, sheet)?;
+    for _ in 0..=d.views.len().saturating_add(d.dimensions.len()) {
+        if !crate::drawing_scene::step(s) {
+            break;
+        }
+    }
+    let found = crate::drawing_scene::line_at(s, sheet, request.point_mm.0, request.band_mm)?;
+    let line = found.map(|l| LineHitResult {
+        view: ids::encode(l.view),
+        occurrence: l.occurrence,
+        body: l.body,
+        reference: l.reference,
+        source: l.source.into(),
+        distance_mm: l.distance_mm,
+    });
+    serde_json::to_value(SheetLineResult { line, param_warnings: Vec::new() }).map_err(|e| EngineError::Other(e.to_string()))
 }
 
 /// Each dimension of a scene in the words of a reply.
