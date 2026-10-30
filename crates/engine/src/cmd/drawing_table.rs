@@ -29,7 +29,7 @@ const DELETE: &str = "drawing.table.delete";
 const DELETE_CONTRACT: TypedContract<DeleteParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new(ADD, "Add Table", crate::checked!("drawing.table.add", ADD_CONTRACT, add))
+    CommandSpec::new(ADD, "Add Table", crate::checked!("drawing.table.add", add))
         .icon("new")
         .in_drawing()
         .doc_only()
@@ -41,7 +41,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              list saves the numbers its view shows, if it has none saved, so what is printed doesn't move. One undo step; no \
              model is evaluated.",
         ),
-    CommandSpec::new(EDIT, "Edit Table", crate::checked!("drawing.table.edit", EDIT_CONTRACT, edit))
+    CommandSpec::new(EDIT, "Edit Table", crate::checked!("drawing.table.edit", edit))
         .icon("edit")
         .in_drawing()
         .doc_only()
@@ -53,7 +53,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              {anchor: {corner, offset_mm?}} or {at: [x, y]}}, columns, filter and overrides as a drawing saves them → as \
              drawing.table.add. One undo step, none when nothing changes.",
         ),
-    CommandSpec::new(DELETE, "Delete Table", crate::checked!("drawing.table.delete", DELETE_CONTRACT, delete))
+    CommandSpec::new(DELETE, "Delete Table", crate::checked!("drawing.table.delete", delete))
         .icon("delete")
         .in_drawing()
         .doc_only()
