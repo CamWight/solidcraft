@@ -601,7 +601,7 @@ fn status_says_where_each_dimension_stands() {
     run(&mut s, "drawing.close", json!({}));
     assert!(s.execute("drawing.status", &json!({})).is_err(), "no drawing open");
     let block = s.doc.features[0].id;
-    run(&mut s, "timeline.delete", json!({"features": [block.to_string()]}));
+    run(&mut s, "timeline.delete", json!({"feature": block.to_string()}));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
     let reply = status_of(&mut s).0;
     let lost = &reply["dimensions"][0];
@@ -880,7 +880,7 @@ fn hit_says_what_is_under_a_point_of_a_sheet() {
 
     run(&mut s, "drawing.view.edit", json!({"view": ids::encode(top), "set": {"display_style": "shaded"}}));
     assert_eq!(ask(&mut s, [150.0, 220.0], 0.0)["hit"]["object"], json!(ids::encode(top)), "a view with no lines");
-    for band in [-1.0, 1e308 * 10.0] {
+    for band in [-1.0, f64::INFINITY] {
         let p = json!({"sheet": sheet_id, "point_mm": [150.0, 150.0], "band_mm": band});
         assert!(s.execute("drawing.scene.hit", &p).is_err() || band > 0.0, "{band}");
     }
