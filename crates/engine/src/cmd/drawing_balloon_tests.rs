@@ -386,6 +386,27 @@ fn the_provider_keeps_a_balloon_until_what_it_reads_changes() {
     assert_eq!(*moved.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene);
 }
 
+/// A balloon and the list it reads give one item, from one rule: a table's row and the balloon's number
+/// are the same text. The row carries what the model says of the part, listed once.
+#[test]
+fn a_balloon_and_its_lists_row_read_one_item() {
+    let (mut s, view, [_, occurrence]) = placed();
+    let balloon = add(&mut s, view, occurrence)["balloon"].as_str().unwrap().to_string();
+    list(&mut s, json!({}));
+    let d = s.drawing("test").unwrap().clone();
+    let Some(solidcraft_doc::drawing::table::Kind::PartsList(parts)) = d.tables.first().map(|t| t.kind.clone()) else { panic!("a parts list") };
+    let from = s.drawn(&d, parts.of.source).unwrap();
+    let state = from.model.state();
+    let mut tree = solidcraft_doc::bom::Tree::new(&from.doc, &state);
+    let listed = solidcraft_doc::bom::list(&mut tree, &parts.request()).unwrap();
+    let rows = parts.rows(&listed, from.doc.drawing_units(&d));
+    let bracket = rows.iter().find(|row| row.fields.get("name").is_some_and(|name| name == "Bracket")).unwrap();
+    assert_eq!(bracket.fields.get("quantity").map(String::as_str), Some("1"));
+    assert_eq!(bracket.kind, solidcraft_geom::table::RowKind::Part);
+    let number = read(&mut s, &balloon)["item"].clone();
+    assert_eq!(number, json!(bracket.fields["item"]), "{bracket:?}");
+}
+
 /// A balloon with no list says so, and reads the only one when there is one: the row its part is
 /// counted in. Two lists leave it to choose, with the choices listed, until it names one. A list's
 /// delete reports the balloon that named it and leaves the balloon. One undo step each.
