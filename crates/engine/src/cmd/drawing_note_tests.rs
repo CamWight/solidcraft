@@ -56,6 +56,86 @@ fn ends_at(reply: &Value, p: [f64; 3]) {
     assert!(point.iter().zip(p).all(|(a, b)| (a - b).abs() < 1e-9), "{reply}");
 }
 
+/// The note's group in a sheet's reply, and the reply's word on it.
+fn on_sheet(s: &mut Session, note: &str) -> (Value, Value) {
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    let reply = s.execute("drawing.scene", &json!({"sheet": sheet})).unwrap();
+    let schema = output_schema_for::<crate::schema::drawing_scene::SheetSceneResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    let wanted = ids::decode(note).unwrap();
+    let group = reply["scene"]["groups"].as_array().unwrap().iter().find(|g| g["object"] == json!(wanted)).cloned();
+    let word = reply["notes"].as_array().unwrap().iter().find(|n| n["note"] == json!(note)).cloned();
+    (group.unwrap_or(Value::Null), word.unwrap())
+}
+
+fn items_of<'a>(group: &'a Value, kind: &str) -> Vec<&'a Value> {
+    group["items"].as_array().unwrap().iter().filter(|item| item["kind"] == json!(kind)).collect()
+}
+
+/// A note on the sheet stands where it says on the paper and hangs on no view. One on an edge sits
+/// from its view's centre with a leader to the edge's middle, by hand: the view shows 0 to 180 along
+/// X and 0 to 30 up, so at (200, 150) the middle of the bottom edge is at (150, 135). Lost, it keeps
+/// its text with no leader; an export says where each stands.
+#[test]
+fn a_note_draws_on_its_sheet_or_its_view() {
+    let (mut s, _, view, [bracket, _]) = placed();
+    let free =
+        run(&mut s, ADD, json!({"anchor": {"sheet": "Sheet 1"}, "at": [20, 20], "content": "General note"}))["note"].as_str().unwrap().to_string();
+    let (group, word) = on_sheet(&mut s, &free);
+    assert_eq!((group["kind"].as_str(), word["status"].as_str(), word["drawn"].as_bool()), (Some("note"), Some("ok"), Some(true)), "{word}");
+    assert!(word.get("view").is_none(), "{word}");
+    let origin = &items_of(&group, "text")[0]["origin"];
+    assert!((origin[1].as_f64().unwrap() - 18.25).abs() < 1e-9, "centred on 20: {origin}");
+
+    let edge = on_edge(&mut s, view, bracket)["note"].as_str().unwrap().to_string();
+    let (group, word) = on_sheet(&mut s, &edge);
+    assert_eq!(word["view"], json!(ids::encode(view)), "{word}");
+    let tip = &items_of(&group, "fill")[0]["region"]["outer"]["segs"][0]["a"];
+    assert!((tip[0].as_f64().unwrap() - 150.0).abs() < 1e-9 && (tip[1].as_f64().unwrap() - 135.0).abs() < 1e-9, "{tip}");
+    let origin = &items_of(&group, "text")[0]["origin"];
+    assert!((origin[1].as_f64().unwrap() - 188.25).abs() < 1e-9, "centred on 150 + 40: {origin}");
+
+    let exported = s.execute("drawing.export", &json!({"sheet": "Sheet 1"})).unwrap();
+    assert_eq!(exported["notes"].as_array().map(Vec::len), Some(2), "{exported}");
+
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let at = d.notes.index_of(ids::decode(&edge).unwrap()).unwrap();
+    let Anchor::Edge { edge: lost, .. } = &mut Arc::make_mut(d.notes.get_mut(at).unwrap()).anchor else { panic!("on an edge") };
+    lost.name = "gone".into();
+    s.doc_mut().put_drawing(Arc::new(d));
+    let (group, word) = on_sheet(&mut s, &edge);
+    assert_eq!((word["status"].as_str(), word["drawn"].as_bool()), (Some("lost"), Some(true)), "{word}");
+    assert!(items_of(&group, "fill").is_empty() && items_of(&group, "stroke").is_empty(), "no leader: {group}");
+    assert_eq!(items_of(&group, "text").len(), 1, "{group}");
+}
+
+/// The provider draws notes as a build does: one on the sheet reads no model and needs no view, and
+/// reads again only when it changes.
+#[test]
+fn the_provider_reads_a_sheets_note_when_it_changes() {
+    let (mut s, sheet, _, _) = placed();
+    let settled = |s: &mut Session| {
+        crate::drawing_scene::extract(s, sheet).unwrap();
+        while crate::drawing_scene::step(s) {}
+        crate::drawing_scene::extract(s, sheet).unwrap()
+    };
+    let before = settled(&mut s);
+    let id = run(&mut s, ADD, json!({"anchor": {"sheet": "Sheet 1"}, "at": [20, 20], "content": "General"}))["note"].as_str().unwrap().to_string();
+    let waiting = crate::drawing_scene::extract(&mut s, sheet).unwrap();
+    assert_eq!(waiting.stale_annotations, [ids::decode(&id).unwrap()]);
+    let drawn = settled(&mut s);
+    assert!(drawn.stale_annotations.is_empty());
+    assert_ne!(drawn.generation, before.generation);
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!(*drawn.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene);
+    assert_eq!(settled(&mut s).generation, drawn.generation, "nothing read again");
+    run(&mut s, EDIT, json!({"note": id, "set": {"at": [30, 20]}}));
+    let moved = settled(&mut s);
+    assert_ne!(moved.generation, drawn.generation);
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!(*moved.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene);
+}
+
 /// Every anchor: a sheet by name, a view, an edge and a corner, each one undo step; a note that points
 /// at nothing reads no model, and one on an edge has its leader end on the edge's middle.
 #[test]

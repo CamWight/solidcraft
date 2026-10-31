@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::drawing::dimension::{self, Dimension};
+use solidcraft_doc::drawing::note::{Anchor, Note};
 use solidcraft_doc::drawing::table::PartsList;
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet};
@@ -212,7 +213,7 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
     let mut assembly = assemble(record, drawn)?;
     // After the views, as they need the views' frames: one read for the sheet's annotations.
     let frames: BTreeMap<u64, ViewFrame> = assembly.placed.iter().map(|(view, (frame, _))| (*view, *frame)).collect();
-    let wanted = annotations_on(drawing, on.iter().map(|(id, ..)| *id), &Worlds::now(s, drawing));
+    let wanted = annotations_on(drawing, on.iter().map(|(id, ..)| *id), Some(sheet), &Worlds::now(s, drawing));
     let annotations = draw_annotations(s, drawing, &wanted, |view| frames.get(&view).copied());
     assembly.add_annotations(annotations.iter());
     let (scene, views, objects, annotations) = assembly.finish()?;
@@ -249,6 +250,7 @@ enum Annotation {
     Dimension(Arc<Dimension>),
     /// With the parts list its number is read from, and the model that list was read from.
     Balloon(Arc<Balloon>, Option<(u64, PartsList, Arc<ModelState>)>),
+    Note(Arc<Note>),
 }
 
 impl Annotation {
@@ -256,6 +258,7 @@ impl Annotation {
         match self {
             Annotation::Dimension(record) => record.id,
             Annotation::Balloon(record, _) => record.id,
+            Annotation::Note(record) => record.id,
         }
     }
 
@@ -263,6 +266,7 @@ impl Annotation {
         match self {
             Annotation::Dimension(_) => ObjectKind::Dimension,
             Annotation::Balloon(..) => ObjectKind::Balloon,
+            Annotation::Note(_) => ObjectKind::Note,
         }
     }
 
@@ -271,6 +275,7 @@ impl Annotation {
         match self {
             Annotation::Dimension(record) => Some(record.view),
             Annotation::Balloon(record, _) => Some(record.view),
+            Annotation::Note(record) => record.anchor.view(),
         }
     }
 
@@ -288,6 +293,7 @@ impl Annotation {
                 };
                 Arc::ptr_eq(a, b) && same_list
             }
+            (Annotation::Note(a), Annotation::Note(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -380,7 +386,9 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
     let measured = crate::drawing_sources::resolve_dimensions(s, d, &dimensions);
     let located = crate::drawing_sources::resolve_balloons(s, d, &balloon_ids);
     let mut rows = crate::drawing_sources::balloon_rows(s, d, &balloons).into_iter();
-    let (mut next_dimension, mut next_balloon) = (0, 0);
+    let notes: Vec<u64> = wanted.iter().filter(|one| matches!(one, Annotation::Note(_))).map(Annotation::id).collect();
+    let noted = crate::drawing_sources::resolve_notes(s, d, &notes);
+    let (mut next_dimension, mut next_balloon, mut next_note) = (0, 0, 0);
     let unread = |annotation: &Annotation| {
         annotation.drawn(dimension::Status::Unmeasurable(format!("{} can't be read", ids::encode(annotation.id()))), None, None)
     };
@@ -400,6 +408,14 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
                 next_balloon += 1;
                 match read {
                     Some(place) => draw_balloon(annotation, record, place, rows.next().unwrap_or_default(), frame(record.view)),
+                    None => unread(annotation),
+                }
+            }
+            Annotation::Note(record) => {
+                let read = noted.as_ref().ok().and_then(|all| all.get(next_note));
+                next_note += 1;
+                match read {
+                    Some(place) => draw_note(annotation, record, place, record.anchor.view().and_then(&frame)),
                     None => unread(annotation),
                 }
             }
@@ -430,15 +446,31 @@ fn draw_balloon(annotation: &Annotation, record: &Balloon, place: &dimension::Lo
     annotation.drawn(place.status.clone(), Some(paper), None)
 }
 
-/// The annotations of `views` of `d`, by view and id, each with what it reads now.
-fn annotations_on(d: &Drawing, views: impl Iterator<Item = u64>, worlds: &Worlds) -> Vec<Annotation> {
+/// A note stays where it is whatever becomes of what it points at: lost, it keeps its text with no
+/// leader. One on a sheet is in paper already and needs no frame.
+fn draw_note(annotation: &Annotation, record: &Note, place: &dimension::Located, frame: Option<ViewFrame>) -> DrawnAnnotation {
+    if record.anchor.view().is_some() && frame.is_none() {
+        return annotation.drawn(place.status.clone(), None, None);
+    }
+    let tip = place.point.zip(frame).map(|(point, frame)| frame.to_paper(point));
+    annotation.drawn(place.status.clone(), Some(crate::drawing_annotation_paper::note_group(record, tip)), None)
+}
+
+/// The annotations of `views` of `d` and those hung on `sheet`, by view and id, each with what it
+/// reads now.
+fn annotations_on(d: &Drawing, views: impl Iterator<Item = u64>, sheet: Option<u64>, worlds: &Worlds) -> Vec<Annotation> {
     let views: BTreeSet<u64> = views.collect();
     let dimensions = d.dimensions.iter().filter(|record| views.contains(&record.view)).cloned().map(Annotation::Dimension);
     let balloons = d.balloons.iter().filter(|record| views.contains(&record.view)).map(|record| {
         let list = d.parts_list_for(record).ok().map(|(id, list)| (id, list, worlds.of(list.of.source)));
         Annotation::Balloon(record.clone(), list)
     });
-    let mut on: Vec<Annotation> = dimensions.chain(balloons).collect();
+    let hung = |note: &&Arc<Note>| match &note.anchor {
+        Anchor::Sheet(on) => Some(*on) == sheet,
+        anchor => anchor.view().is_some_and(|view| views.contains(&view)),
+    };
+    let notes = d.notes.iter().filter(hung).cloned().map(Annotation::Note);
+    let mut on: Vec<Annotation> = dimensions.chain(balloons).chain(notes).collect();
     on.sort_by_key(|annotation| (annotation.view(), annotation.id()));
     on
 }
@@ -699,8 +731,12 @@ impl Cache {
                 e.record.same(record) && same_state && e.view_serial == serial && e.units == units
             })
         };
-        let mut stale = annotations_on(d, serials.keys().copied(), worlds);
-        stale.retain(|record| record.view().is_some_and(|view| serials.get(&view).is_some_and(|serial| !current(record, view, *serial))));
+        let mut stale = annotations_on(d, serials.keys().copied(), self.sheet, worlds);
+        stale.retain(|record| match record.view() {
+            Some(view) => serials.get(&view).is_some_and(|serial| !current(record, view, *serial)),
+            // On a sheet it reads no model.
+            None => !self.annotations.get(&record.id()).is_some_and(|e| e.record.same(record)),
+        });
         stale
     }
 }
@@ -769,7 +805,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &worlds, view)).map(|(id, ..)| *id).collect();
     let stale_annotations = cache.stale_annotations(&d, &on, &worlds, &units).iter().map(Annotation::id).collect();
     let serial = |id: &u64| cache.views.get(id).map_or(0, |e| e.serial);
-    let read = annotations_on(&d, on.iter().map(|(id, ..)| *id), &worlds);
+    let read = annotations_on(&d, on.iter().map(|(id, ..)| *id), Some(sheet), &worlds);
     let read: Vec<u64> = read.iter().map(Annotation::id).filter(|id| cache.annotations.contains_key(id)).collect();
     let inputs = Inputs {
         sheet: record.clone(),
@@ -827,7 +863,7 @@ fn draw_now(s: &mut Session, d: &Drawing, id: u64, view: ResolvedView, state: &A
         Err(why) => (not_open(&view, s.drawing_scenes.views.get(&id).map(|e| &e.drawn), &why), None),
     };
     let frame = drawn.frame;
-    let these = annotations_on(d, std::iter::once(id), &Worlds::now(s, d));
+    let these = annotations_on(d, std::iter::once(id), None, &Worlds::now(s, d));
     let lines = draw_annotations(s, d, &these, |_| frame);
     let cache = &mut s.drawing_scenes;
     if let Some(shown) = shown {
