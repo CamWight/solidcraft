@@ -385,9 +385,11 @@ fn row_json(row: &Row, item: &[u32], mass: bool, numbered: bool, nested: bool) -
     v
 }
 
-/// A CSV field, always quoted.
+/// A CSV field, always quoted. Text a spreadsheet would run as a formula starts with an apostrophe,
+/// which keeps it text.
 fn quote(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
+    let guard = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) { "'" } else { "" };
+    format!("\"{guard}{}\"", s.replace('"', "\"\""))
 }
 
 /// The bill of materials as CSV: fixed columns, every field quoted, each row followed by the rows

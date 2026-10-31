@@ -178,6 +178,29 @@ fn inserted_design_carries_its_part_properties_into_the_bom() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A spreadsheet runs a field that starts as a formula does. Each such start stays text; one
+/// further in, and a plain value, are left as they are.
+#[test]
+fn a_csv_field_a_spreadsheet_would_run_stays_text() {
+    let dir = scratch("formula");
+    for (written, field) in [
+        ("=1+1", "\"'=1+1\""),
+        ("+1+1", "\"'+1+1\""),
+        ("-1+1", "\"'-1+1\""),
+        ("@SUM(A1)", "\"'@SUM(A1)\""),
+        ("\"=1", "\"\"\"=1\""),
+        ("a=1", "\"a=1\""),
+        ("3 mm", "\"3 mm\""),
+    ] {
+        let mut s = assembly();
+        run(&mut s, "component.metadata.set", json!({"component": "Pin", "description": written}));
+        let csv = dir.join("bom.csv");
+        run(&mut s, "assembly.bom", json!({"path": csv}));
+        let text = std::fs::read_to_string(&csv).unwrap();
+        assert!(text.contains(&format!(",{field},")), "{written}: {text}");
+    }
+}
+
 #[test]
 fn csv_quotes_every_field_and_json_writes_the_rows() {
     let dir = scratch("export");
