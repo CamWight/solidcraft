@@ -257,8 +257,14 @@ fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
     assert!(matches!(status(big), crate::drawing_scene::Status::Lost(why) if why.contains("not found")));
     assert!(after.scene.groups.iter().any(|g| g.object == big), "its last lines stay");
     assert_eq!(after.scene.groups.len(), groups - 1, "and its lost dimension, centred on what it lost, isn't drawn");
-    assert!(after.annotations.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::reference::Status::Lost(_))));
-    // A note says so as a dimension does, and one on the sheet reads no design.
+    use solidcraft_doc::drawing::reference::Status as Read;
+    use solidcraft_geom::paper::ObjectKind;
+    let of_kind = |kind| after.annotations.iter().filter(move |one| one.kind == kind);
+    assert!(of_kind(ObjectKind::Dimension).all(|one| matches!(&one.status, Read::Lost(_))));
+    // A note says so as a dimension does and keeps its text, and one on the sheet reads no design.
+    let notes: Vec<_> = of_kind(ObjectKind::Note).map(|one| (matches!(&one.status, Read::Lost(_)), one.drawn)).collect();
+    assert_eq!(notes.len(), 2);
+    assert!(notes.contains(&(true, true)) && notes.contains(&(false, true)), "{notes:?}");
     let lost = run(&mut s, "drawing.note.inspect", json!({"note": far["note"]}));
     assert!(lost["status"] == "lost" && lost["why"].as_str().is_some_and(|why| why.contains("not found")), "{lost}");
     assert_eq!(run(&mut s, "drawing.note.inspect", json!({"note": on_sheet["note"]}))["status"], "ok");

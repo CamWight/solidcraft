@@ -7,8 +7,6 @@ use solidcraft_geom::paper::text::TextRun;
 use solidcraft_geom::{Aabb2, Vec3};
 use solidcraft_sketch::{TextMetrics, TextStyle, font_data};
 
-use crate::drawing_annotation_paper::TEXT_MM;
-
 use super::*;
 
 /// The front view at `scale`: X to the right on paper and Z up, centred on the origin of paper

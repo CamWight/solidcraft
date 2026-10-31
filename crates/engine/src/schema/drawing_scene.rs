@@ -33,7 +33,11 @@ impl JsonSchema for SheetPaperScene {
         "SheetPaperScene".into()
     }
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        paper_scene_schema(generator, &[ObjectKind::DrawingBorder, ObjectKind::View, ObjectKind::Dimension, ObjectKind::Balloon], true)
+        paper_scene_schema(
+            generator,
+            &[ObjectKind::DrawingBorder, ObjectKind::View, ObjectKind::Dimension, ObjectKind::Balloon, ObjectKind::Note],
+            true,
+        )
     }
 }
 
@@ -80,6 +84,20 @@ pub struct SheetSceneDimension {
 pub struct SheetSceneBalloon {
     pub balloon: String,
     pub view: String,
+    pub status: &'static str,
+    pub drawn: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// One note on the sheet or on a view of it: where what it points at stands with the model, whether
+/// it is drawn, and why not all of it is.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetSceneNote {
+    pub note: String,
+    /// The view it moves with; none on the sheet.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
     pub status: &'static str,
     pub drawn: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -246,6 +264,8 @@ pub struct SheetSceneResult {
     pub dimensions: Vec<SheetSceneDimension>,
     /// Each balloon of a view on the sheet, by view and id.
     pub balloons: Vec<SheetSceneBalloon>,
+    /// Each note on the sheet or on a view of it, by view and id.
+    pub notes: Vec<SheetSceneNote>,
     /// The views and annotations a deferred drawing shows as they last were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub out_of_date: Vec<String>,
