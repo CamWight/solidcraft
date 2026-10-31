@@ -336,7 +336,7 @@ fn hostile_points_and_offsets_never_panic() {
         ];
         for kind in kinds {
             let resolved = read(&kind, &points, "1");
-            let d = dimension(kind, offset, text.clone());
+            let d = dimension(kind, offset, text);
             if let Some(group) = paper_group(&d, &resolved, &view_at("1:5")) {
                 let _ = (Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![group] }).validate();
             }

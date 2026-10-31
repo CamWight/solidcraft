@@ -110,7 +110,10 @@ pub(super) fn write(writer: &mut PackageWriter, doc: &Document, caches: &SheetCa
     if keep.is_empty() {
         return Ok(());
     }
-    let Some(mut old) = caches.keep_from.as_deref().and_then(|path| open_regular_file(path).ok()).and_then(|source| PackageReader::new(source).ok()) else { return Ok(()) };
+    let Some(mut old) = caches.keep_from.as_deref().and_then(|path| open_regular_file(path).ok()).and_then(|source| PackageReader::new(source).ok())
+    else {
+        return Ok(());
+    };
     keep.into_iter().try_for_each(|drawing| keep_drawing(writer, &mut old, drawing, budget))
 }
 

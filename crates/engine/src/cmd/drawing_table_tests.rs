@@ -125,7 +125,7 @@ fn placing_a_list_keeps_the_numbers_its_view_shows() {
     assert_eq!(s.doc.assembly.item_numbers.len(), 3, "an edit to another view numbers that one");
 
     let numbers = s.doc.assembly.item_numbers.clone();
-    while s.drawing("test").unwrap().tables.len() > 0 {
+    while !s.drawing("test").unwrap().tables.is_empty() {
         s.execute("edit.undo", &json!({})).unwrap();
     }
     assert_eq!(s.doc.assembly.item_numbers, numbers, "the design's, not the drawing's");
