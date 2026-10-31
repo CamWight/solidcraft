@@ -20,8 +20,8 @@ use super::CommandSpec;
 use crate::drawing_scene::{AnnotationState, CMD};
 use crate::schema::drawing_scene::{
     DimensionStatusResult, DrawingStatusParams, DrawingStatusResult, DrawingUpdateParams, DrawingUpdateResult, HitResult, LineHitResult,
-    SheetHitParams, SheetHitResult, SheetLineParams, SheetLineResult, SheetPaperScene, SheetSceneBalloon, SheetSceneDimension, SheetSceneParams,
-    SheetSceneResult, ViewStatusResult,
+    SheetHitParams, SheetHitResult, SheetLineParams, SheetLineResult, SheetPaperScene, SheetSceneBalloon, SheetSceneDimension, SheetSceneNote,
+    SheetSceneParams, SheetSceneResult, ViewStatusResult,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -76,7 +76,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(STATUS, "Drawing Status
     .doc_only()
     .contract(&CONTRACT)
     .output(output_schema_for::<SheetSceneResult>)
-    .params("sheet: id or name → {sheet, scene: {size_mm, groups: [{object, kind: drawing_border|view|dimension|balloon, items: [{kind: stroke, path, closed, width_mm}, {kind: fill, region} or {kind: text, font, scale, origin, angle, slant, glyphs, text, clusters, rtl}]}], fonts?: [the fonts its text names, by id, with their glyphs and never their bytes]} in paint order: the sheet's drawing border (object: the sheet), then each view on it by id (object: the view; its visible lines only for now), then the dimensions of those views by view and id (object: the dimension; lines, arrowheads and text, in paper millimetres at any scale), and balloons (object: the balloon; a circle, a leader and its number), views: [{view, status: drawn|placeholder|failed, reason?, stats?}], objects: [{object, kind, bounds_mm: {min, max}, boundary_mm?}], where the border, each view and each dimension sit on paper, dimensions: [{dimension, view, status: ok|overridden|ambiguous|suppressed|lost|unmeasurable, drawn, why?}], balloons: [{balloon, view, status, drawn, why?}]}. A view with nothing to measure, or one that can't be drawn yet, is left out and says why, and so is a dimension that isn't found again or whose view isn't drawn; one whose text the drawing font can't set keeps its lines and says why. Read-only; no model is evaluated. A deferred drawing draws only what drawing.update allows; out_of_date lists the views and annotations it shows as they last were.")];
+    .params("sheet: id or name → {sheet, scene: {size_mm, groups: [{object, kind: drawing_border|view|dimension|balloon|note, items: [{kind: stroke, path, closed, width_mm}, {kind: fill, region} or {kind: text, font, scale, origin, angle, slant, glyphs, text, clusters, rtl}]}], fonts?: [the fonts its text names, by id, with their glyphs and never their bytes]} in paint order: the sheet's drawing border (object: the sheet), then each view on it by id (object: the view; its visible lines only for now), then the dimensions of those views by view and id (object: the dimension; lines, arrowheads and text, in paper millimetres at any scale), balloons (object: the balloon; a circle, a leader and its number), and notes on them or on the sheet (object: the note; its text and leader), views: [{view, status: drawn|placeholder|failed, reason?, stats?}], objects: [{object, kind, bounds_mm: {min, max}, boundary_mm?}], where the border, each view and each dimension sit on paper, dimensions: [{dimension, view, status: ok|overridden|ambiguous|suppressed|lost|unmeasurable, drawn, why?}], balloons: [{balloon, view, status, drawn, why?}], notes: [{note, view?, status, drawn, why?}]}. A view with nothing to measure, or one that can't be drawn yet, is left out and says why, and so is a dimension that isn't found again or whose view isn't drawn; one whose text the drawing font can't set keeps its lines and says why. Read-only; no model is evaluated. A deferred drawing draws only what drawing.update allows; out_of_date lists the views and annotations it shows as they last were.")];
 
 fn status(s: &mut Session, p: &Value) -> Result<Value> {
     let _: DrawingStatusParams = crate::schema::read(STATUS, p)?;
@@ -155,6 +155,21 @@ pub(super) fn balloon_results(states: &[AnnotationState]) -> Vec<SheetSceneBallo
     of_kind.filter_map(words).map(|(balloon, view, status, drawn, why)| SheetSceneBalloon { balloon, view, status, drawn, why }).collect()
 }
 
+/// Each note of a scene in the words of a reply.
+pub(super) fn note_results(states: &[AnnotationState]) -> Vec<SheetSceneNote> {
+    let one = |state: &AnnotationState| {
+        let (status, why, _) = super::drawing_dimension::status_words(state.status.clone());
+        SheetSceneNote {
+            note: ids::encode(state.object),
+            view: state.view.map(ids::encode),
+            status,
+            drawn: state.drawn,
+            why: why.or_else(|| state.why.clone()),
+        }
+    };
+    states.iter().filter(|state| state.kind == ObjectKind::Note).map(one).collect()
+}
+
 /// What a reply says of an annotation on a view: its id, its view, where it stands, whether it is
 /// drawn, and why not all of it is.
 fn words(state: &AnnotationState) -> Option<(String, String, &'static str, bool, Option<String>)> {
@@ -170,7 +185,8 @@ fn scene(s: &mut Session, p: &Value) -> Result<Value> {
     let out_of_date = built.out_of_date.iter().map(|id| ids::encode(*id)).collect();
     let views = built.views.into_iter().map(Into::into).collect();
     let objects = built.objects.into_iter().map(Into::into).collect();
-    let (dimensions, balloons) = (dimension_results(&built.annotations), balloon_results(&built.annotations));
+    let (dimensions, balloons, notes) =
+        (dimension_results(&built.annotations), balloon_results(&built.annotations), note_results(&built.annotations));
     let reply = SheetSceneResult {
         sheet: ids::encode(sheet),
         scene: SheetPaperScene(built.scene),
@@ -178,6 +194,7 @@ fn scene(s: &mut Session, p: &Value) -> Result<Value> {
         objects,
         dimensions,
         balloons,
+        notes,
         out_of_date,
         param_warnings: Vec::new(),
     };

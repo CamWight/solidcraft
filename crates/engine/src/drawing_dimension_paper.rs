@@ -14,7 +14,7 @@ use solidcraft_geom::paper::{Group, Item, ObjectKind};
 use solidcraft_geom::{Seg2, Vec2, Vec3};
 use solidcraft_sketch::{DimFrame, DimSizes, dim_layout_sized};
 
-use crate::drawing_annotation_paper::{ARROW, ARROW_MM, GAP_MM, LINE_MM, OnPaper, Text, placed};
+use crate::drawing_annotation_paper::{ARROW, ARROW_MM, GAP_MM, LINE_MM, OnPaper, TEXT_MM, Text, placed};
 
 /// A dimension's sizes on paper, with its text above an unbroken line (ISO 129-1).
 const SIZES: DimSizes = DimSizes { arrow: ARROW_MM, gap: GAP_MM, overshoot: 2.0, offset: 10.0, above: true };
@@ -38,7 +38,7 @@ pub fn paper_group(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame
     let (mut texts, mut fonts, mut why) = (Vec::new(), Vec::new(), None);
     for piece in pieces(dimension, resolved, frame)? {
         let layout = dim_layout_sized(&piece.frame, Some(piece.at), &SIZES, piece.text.half, [None, None]);
-        texts.extend(placed(piece.text.runs, piece.text.half, layout.text, layout.text_dir));
+        texts.extend(placed(piece.text.runs, piece.text.half, TEXT_MM, layout.text, layout.text_dir));
         fonts.extend(piece.text.fonts);
         why = why.or(piece.text.why);
         // A chain's neighbours share an extension line.
@@ -63,7 +63,7 @@ pub fn paper_group(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame
 /// What `dimension` lays out, from what it measures, on paper through `frame`.
 fn pieces(dimension: &Dimension, resolved: &Resolved, frame: &ViewFrame) -> Option<Vec<Piece>> {
     let (offset, place) = (dimension.offset_mm, &dimension.text);
-    let text = || Text::set(resolved.text.as_deref());
+    let text = || Text::set(resolved.text.as_deref(), TEXT_MM);
     let paper = |p: Vec3| frame.to_paper(p);
     let ends = |[p, q]: [Vec3; 2]| [paper(p), paper(q)];
     match resolved.geometry.as_ref()? {
@@ -113,7 +113,7 @@ fn chain(points: &[Vec2], direction: LinearDirection, offset: f64, resolved: &Re
     let line = ((first + last) * 0.5).dot(n) + offset;
     let member = |(i, (a, b)): (usize, (&Vec2, &Vec2))| {
         let text = resolved.members.get(i).map(|m| m.text.as_str());
-        linear(*a, *b, dir, line - ((*a + *b) * 0.5).dot(n), &TextPlace::Centred, Text::set(text))
+        linear(*a, *b, dir, line - ((*a + *b) * 0.5).dot(n), &TextPlace::Centred, Text::set(text, TEXT_MM))
     };
     Some(points.iter().zip(points.iter().skip(1)).enumerate().map(member).collect())
 }

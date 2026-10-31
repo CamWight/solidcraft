@@ -1,3 +1,4 @@
+use solidcraft_doc::drawing::note::Anchor;
 use solidcraft_doc::drawing::reference::ModelEdge;
 use solidcraft_geom::paper::Scene;
 
@@ -87,6 +88,73 @@ fn what_it_cant_draw_leaves_the_rest_and_says_why() {
     assert!(unset.why.as_deref().is_some_and(|why| why.contains("no glyph")) && parts(&unset.group).2.is_some());
 }
 
+fn note(at: [f64; 2], text: &str, cap_mm: Option<f64>) -> Note {
+    Note { id: 9, anchor: Anchor::Sheet(1), at, content: Content(vec![Part::Text(text.into())]), cap_mm }
+}
+
+/// A note is level and centred on its place, at its own height or the default.
+#[test]
+fn a_note_is_its_text_centred_on_its_place() {
+    let on = note_group(&note([100.0, 50.0], "Debur", None), None);
+    assert_eq!((on.group.object, on.group.kind, on.why.as_deref()), (9, ObjectKind::Note, None));
+    valid(&on);
+    let run = parts(&on.group).3.unwrap();
+    let start = Vec2::new(100.0 - run.reach() * 0.5, 50.0 - TEXT_MM * 0.5);
+    assert!(close(run.origin, start) && run.angle == 0.0, "{:?}", run.origin);
+    let tall = note_group(&note([100.0, 50.0], "Debur", Some(7.0)), None);
+    let run = parts(&tall.group).3.unwrap();
+    assert!(close(run.origin, Vec2::new(100.0 - run.reach() * 0.5, 46.5)), "{:?}", run.origin);
+}
+
+/// The landing runs to the side of the text the leader comes from, a gap clear of it, on the text's
+/// middle: from the left, from the right, and straight to the nearer side from under the text. Each
+/// by hand from the text's measured width.
+#[test]
+fn a_notes_landing_is_on_the_side_its_leader_comes_from() {
+    let at = Vec2::new(100.0, 50.0);
+    let width = parts(&note_group(&note([100.0, 50.0], "Debur", None), None).group).3.unwrap().reach();
+    let (left, right) = (100.0 - width * 0.5 - GAP_MM, 100.0 + width * 0.5 + GAP_MM);
+    let line = |tip: Vec2| {
+        let on = note_group(&note([100.0, 50.0], "Debur", None), Some(tip));
+        assert_eq!(on.why, None);
+        valid(&on);
+        assert!(close(parts(&on.group).2.unwrap(), tip), "the arrow's tip");
+        parts(&on.group).1
+    };
+    let from_left = line(Vec2::new(20.0, 10.0));
+    assert!(close(*from_left.last().unwrap(), Vec2::new(left, 50.0)), "{from_left:?}");
+    assert!(from_left.contains(&Vec2::new(left - 5.0, 50.0)), "a landing 5 long: {from_left:?}");
+    let from_right = line(Vec2::new(180.0, 90.0));
+    assert!(close(*from_right.last().unwrap(), Vec2::new(right, 50.0)), "{from_right:?}");
+    assert!(from_right.contains(&Vec2::new(right + 5.0, 50.0)), "{from_right:?}");
+    let under = line(Vec2::new(99.0, 20.0));
+    assert!(close(*under.last().unwrap(), Vec2::new(left, 50.0)), "no landing: {under:?}");
+    assert!(!under.contains(&Vec2::new(left - 5.0, 50.0)), "{under:?}");
+    assert!(close(*line(Vec2::new(101.0, 20.0)).last().unwrap(), Vec2::new(right, 50.0)));
+    assert!(close(at, Vec2::new(100.0, 50.0)));
+    // Nearer the text than an arrowhead: the text stays and says why.
+    let near = note_group(&note([100.0, 50.0], "Debur", None), Some(Vec2::new(left, 50.0)));
+    assert!(parts(&near.group).2.is_none() && near.why.as_deref().is_some_and(|why| why.contains("too near")), "{:?}", near.why);
+    assert!(parts(&near.group).3.is_some());
+}
+
+/// A field shows by its name, never blank, beside the text around it; lines stand a gap clear below.
+#[test]
+fn a_notes_fields_and_lines_read() {
+    let field = Part::Field { source: Source::Sheet, key: "number".into(), format: Default::default() };
+    let on = note_group(&Note { content: Content(vec![Part::Text("Sheet ".into()), field]), ..note([0.0, 0.0], "", None) }, None);
+    assert_eq!(parts(&on.group).3.unwrap().text, "Sheet <sheet.number>");
+    let lines: String = (1..=20).map(|n| format!("Line {n}\n")).collect();
+    let on = note_group(&note([0.0, 0.0], lines.trim_end(), None), None);
+    let runs: Vec<&TextRun> = on.group.items.iter().filter_map(|item| if let Item::Text(run) = item { Some(run) } else { None }).collect();
+    assert_eq!(runs.len(), 20);
+    assert!(runs.windows(2).all(|pair| pair[0].origin.y > pair[1].origin.y), "down the page");
+    let (top, bottom) = (runs[0].origin.y + TEXT_MM, runs[19].origin.y);
+    assert!((top + bottom).abs() < 1e-9, "centred: {top} {bottom}");
+    let unset = note_group(&note([0.0, 0.0], "\u{4e2d}", None), Some(Vec2::new(50.0, 0.0)));
+    assert!(unset.why.as_deref().is_some_and(|why| why.contains("no glyph")), "{:?}", unset.why);
+}
+
 /// Any place and any arrow, at the values that break a layout, draws or says why, without a panic.
 #[test]
 fn hostile_places_and_arrows_never_panic() {
@@ -94,10 +162,11 @@ fn hostile_places_and_arrows_never_panic() {
     for x in values {
         for y in values {
             for tip in [Vec2::ZERO, Vec2::new(x, y), Vec2::new(y, 1.0)] {
-                let on = balloon_group(&balloon([x, y]), Some("1"), Some(tip), None);
-                let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![on.group]);
-                scene.add_fonts(on.fonts);
-                let _ = scene.validate();
+                for on in [balloon_group(&balloon([x, y]), Some("1"), Some(tip), None), note_group(&note([x, y], "A", None), Some(tip))] {
+                    let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![on.group]);
+                    scene.add_fonts(on.fonts);
+                    let _ = scene.validate();
+                }
             }
         }
     }

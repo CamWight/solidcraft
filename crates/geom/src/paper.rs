@@ -166,6 +166,8 @@ pub enum ObjectKind {
     Dimension,
     /// A balloon's circle, leader and number.
     Balloon,
+    /// A note's text and leader.
+    Note,
 }
 
 impl ObjectKind {
@@ -181,6 +183,7 @@ impl ObjectKind {
             ObjectKind::View => "VIEW",
             ObjectKind::Dimension => "DIMENSION",
             ObjectKind::Balloon => "BALLOON",
+            ObjectKind::Note => "NOTE",
         }
     }
 }

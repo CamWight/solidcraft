@@ -448,6 +448,12 @@ fn a_deferred_update_reaches_each_sheet_until_the_model_moves() {
     let waiting = extract(&mut s, sheet).unwrap().stale;
     assert!(waiting.contains(&front), "{waiting:?}");
     assert!(!step(&mut s), "held until it is updated");
+
+    // What waits on the sheet itself is listed with the views.
+    let note = run(&mut s, "drawing.note.add", json!({"anchor": {"sheet": "Sheet 1"}, "at": [20, 20], "content": "Held"}));
+    let scene = run(&mut s, "drawing.scene", json!({"sheet": ids::encode(sheet)}));
+    let listed = scene["out_of_date"].as_array().unwrap();
+    assert!(listed.contains(&note["record"]["id"]) && listed.contains(&json!(ids::encode(front))), "{listed:?} {note}");
 }
 
 /// A view is drawn again only when what it shows changes: a parameter or its undo, a part's move, a
@@ -692,6 +698,7 @@ fn a_replys_text_and_fonts_keep_to_its_schema() {
         objects: Vec::new(),
         dimensions: Vec::new(),
         balloons: Vec::new(),
+        notes: Vec::new(),
         out_of_date: Vec::new(),
         param_warnings: Vec::new(),
     };
