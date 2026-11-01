@@ -243,6 +243,25 @@ fn a_balloon_reads_the_list_it_names_else_the_only_one() {
     assert_eq!(read(&d).unwrap_err(), vec![1 << 42, 1 << 43]);
 }
 
+/// A list that shows only what is ballooned counts the balloons that read it, not another list's.
+#[test]
+fn a_list_counts_only_the_balloons_that_read_it() {
+    let (mut d, [one, two]) = ballooned();
+    let sheet = d.sheets[0].id;
+    let lists = [1 << 41, 1 << 42];
+    for (balloon, list) in [one, two].into_iter().zip(lists) {
+        add_list(&mut d, sheet, list);
+        let at = d.balloons.index_of(balloon).unwrap();
+        Arc::make_mut(&mut d.balloons[at]).parts_list = Some(list);
+    }
+    let shown = |list: u64| -> Vec<u64> {
+        let mut table = d.tables.by_id(list).unwrap().clone();
+        table.table.filter.ballooned = Some(solidcraft_geom::table::Ballooned::Sheet);
+        d.balloons_shown_by(&table).iter().map(|b| b.id).collect()
+    };
+    assert_eq!(lists.map(shown), [vec![one], vec![two]]);
+}
+
 /// A link names one of the drawing's parts lists.
 #[test]
 fn a_balloons_link_is_to_a_parts_list() {

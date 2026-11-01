@@ -347,6 +347,12 @@ impl Bom {
         self.row_of(tree, below).map(|(item, _)| item_text(&item))
     }
 
+    /// The key of the row [`Bom::item_of`] reads, as a table's row has it ([`RowKey::text`]).
+    pub fn key_of(&self, tree: &Tree, path: &[u64]) -> std::result::Result<String, Unlisted> {
+        let below = tree.below(self.source, path).ok_or(Unlisted::NotFound)?;
+        self.row_of(tree, below).map(|(_, row)| row.key.text())
+    }
+
     /// Where each member's row is, for `row_of`.
     fn index_members(&mut self) {
         let mut index = HashMap::new();

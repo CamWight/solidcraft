@@ -302,14 +302,17 @@ enum Annotation {
 /// What a table's rows are read from, held so its address can't be reused while it is compared.
 #[derive(Clone, Debug)]
 enum TableReads {
-    List(ListReads),
+    /// What its list reads, and the balloons that say which rows it shows.
+    List(ListReads, Vec<Arc<Balloon>>),
     Revisions(Arc<RevisionRecord>),
 }
 
 impl TableReads {
     fn same(&self, other: &TableReads) -> bool {
         match (self, other) {
-            (TableReads::List(a), TableReads::List(b)) => a.same(b),
+            (TableReads::List(a, shown), TableReads::List(b, other)) => {
+                a.same(b) && shown.len() == other.len() && shown.iter().zip(other).all(|(x, y)| Arc::ptr_eq(x, y))
+            }
             (TableReads::Revisions(a), TableReads::Revisions(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
@@ -559,7 +562,7 @@ fn annotations_on(d: &Drawing, views: impl Iterator<Item = u64>, sheet: Option<u
     let space = sheet.and_then(|sheet| d.sheets.iter().find(|one| one.id == sheet)).map(|one| crate::drawing_table_paper::drawing_space(one));
     let tables = d.tables.iter().filter(|table| Some(table.sheet) == sheet).filter_map(|table| {
         let reads = match &table.kind {
-            Kind::PartsList(list) => TableReads::List(worlds.list_of(list.of.source)),
+            Kind::PartsList(list) => TableReads::List(worlds.list_of(list.of.source), d.balloons_shown_by(table).into_iter().cloned().collect()),
             Kind::Revision => TableReads::Revisions(d.revisions.clone()),
         };
         Some(Annotation::Table(table.clone(), reads, space?))
