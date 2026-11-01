@@ -457,5 +457,5 @@ fn a_table_at_its_limits_is_a_valid_paper_group() {
 
 /// An A3 landscape sheet with these groups.
 fn sheet(groups: Vec<Group>) -> crate::paper::Scene {
-    crate::paper::Scene { size_mm: Vec2::new(420.0, 297.0), groups }
+    crate::paper::Scene { size_mm: Vec2::new(420.0, 297.0), groups, fonts: Vec::new() }
 }

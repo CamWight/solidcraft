@@ -917,6 +917,6 @@ fn item_of_reads_a_balloons_row() {
     assert_eq!(all.item_of(&tree, &path(&["Fixture", "Pin"])), Err(Unlisted::Reference));
     assert_eq!(all.item_of(&tree, &[999]), Err(Unlisted::NotFound));
     assert_eq!(all.item_of(&tree, &vec![at["Bolt"]; 65]), Err(Unlisted::NotFound));
-    assert_eq!(of_sub.item_of(&tree, &vec![at["Sub"]; 65]).is_ok(), false);
+    assert!(of_sub.item_of(&tree, &vec![at["Sub"]; 65]).is_err());
     assert_eq!(all.item_of(&tree, &[]), Err(Unlisted::NoRow));
 }

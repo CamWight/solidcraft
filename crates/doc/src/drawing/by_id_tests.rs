@@ -44,7 +44,7 @@ fn the_rules_name_the_kind_and_the_record() {
     assert!(out_of_order.check(2, "thing", fine).is_err_and(|e| e.to_string().contains("lists its things by id")));
     out_of_order.put_in_order();
     out_of_order.check(2, "thing", fine).unwrap();
-    let odd = |t: &Thing| require(t.0 % 2 == 0, || "it is odd".into());
+    let odd = |t: &Thing| require(t.0.is_multiple_of(2), || "it is odd".into());
     let e = things(&[2, 3]).check(2, "thing", odd).unwrap_err().to_string();
     assert!(e.contains(&format!("thing {}: it is odd", ids::encode(3))), "{e}");
 }
