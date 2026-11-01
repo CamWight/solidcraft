@@ -96,14 +96,27 @@ pub enum Heading {
     Bottom,
 }
 
-/// Which rows are shown: those of the kind `only` names, whose cells contain every text filter.
+/// Which rows are shown: those of the kind `only` names, ballooned where `ballooned` says, whose cells
+/// contain every text filter.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Filter {
     #[serde(default)]
     pub only: Option<Only>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ballooned: Option<Ballooned>,
     #[serde(default)]
     pub text: Vec<TextFilter>,
+}
+
+/// Where a row's balloon is looked for: a list of one sheet of a set shows what that sheet numbers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Ballooned {
+    /// On the table's sheet.
+    Sheet,
+    /// Anywhere in the drawing.
+    Drawing,
 }
 
 /// One kind of row.
@@ -140,6 +153,8 @@ pub struct Row {
     pub key: String,
     pub kind: RowKind,
     pub purchased: bool,
+    /// A balloon in the scope of the table's [`Filter::ballooned`] reads it.
+    pub ballooned: bool,
     pub fields: BTreeMap<String, String>,
 }
 
@@ -403,7 +418,7 @@ impl Table {
             Some(Only::Purchased) => row.purchased,
         };
         let mut shown = Vec::new();
-        for row in rows.iter().filter(|row| kind(row)) {
+        for row in rows.iter().filter(|row| kind(row) && (self.filter.ballooned.is_none() || row.ballooned)) {
             let mut cells = Vec::with_capacity(self.columns.len());
             for column in &self.columns {
                 let parts = || {
