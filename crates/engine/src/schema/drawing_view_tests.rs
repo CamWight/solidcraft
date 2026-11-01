@@ -14,7 +14,7 @@ fn schemas_and_the_key_check_agree() {
         "max_error_mm",
         "position_mm",
         "reference_hides_model",
-        "reference_margin_mm",
+        "reference_shown_percent",
         "reference_style",
         "scale",
         "scene",
@@ -43,7 +43,7 @@ fn the_edit_contract_lists_a_saved_views_settings() {
     };
     let own = serde_json::to_value(all).unwrap_or_default();
     let mut theirs: Vec<String> = own.as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
-    theirs.extend(["linked", "place", "reference_margin_mm", "view"].map(String::from));
+    theirs.extend(["linked", "place", "reference_shown_percent", "view"].map(String::from));
     theirs.sort();
     let schema = input_schema_for::<ViewSet>();
     let mut ours: Vec<String> = schema.as_value()["properties"].as_object().map(|o| o.keys().cloned().collect()).unwrap_or_default();
