@@ -1,5 +1,5 @@
-use solidcraft_doc::drawing::dimension::ModelEdge;
 use solidcraft_doc::drawing::note::Anchor;
+use solidcraft_doc::drawing::reference::ModelEdge;
 use solidcraft_geom::paper::Scene;
 
 use super::*;
@@ -42,6 +42,7 @@ fn parts(group: &Group) -> (Vec<&Item>, Vec<Vec2>, Option<Vec2>, Option<&TextRun
             Item::Stroke { path, .. } => line = path.iter().flat_map(|seg| [seg.start(), seg.end()]).collect(),
             Item::Fill { region } => tip = Some(region.outer.segs[0].start()),
             Item::Text(text) => run = Some(text),
+            Item::Picture(_) => {}
         }
     }
     (circles, line, tip, run)

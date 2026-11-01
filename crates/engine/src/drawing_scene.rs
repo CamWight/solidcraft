@@ -38,7 +38,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use solidcraft_doc::drawing::balloon::{Balloon, BalloonPlace};
-use solidcraft_doc::drawing::dimension::Dimension;
+use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::note::{Anchor, Note};
 use solidcraft_doc::drawing::reference;
 use solidcraft_doc::drawing::table::{Kind, PartsList, SheetTable};

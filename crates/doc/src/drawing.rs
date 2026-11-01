@@ -422,8 +422,6 @@ impl Drawing {
             Some(Selectable::Balloon)
         } else if self.notes.by_id(id).is_some() {
             Some(Selectable::Note)
-        } else if self.sheet_images.by_id(id).is_some() {
-            Some(Selectable::Image)
         } else {
             self.tables.by_id(id).map(|_| Selectable::Table)
         }

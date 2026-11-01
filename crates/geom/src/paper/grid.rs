@@ -118,7 +118,7 @@ pub enum GridItem {
 }
 
 /// How a writer paints an item on the grid ([`GridItem::paint`]).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Paint<'a> {
     /// A line `width` steps wide along `path`.
     Stroke { width: i64, path: &'a GridPath },
@@ -200,7 +200,6 @@ impl Prepared<'_> {
                         }
                         items.push(GridItem::Fill { loops });
                     }
-                    Item::Text(_) => return Err(Invalid("not supported yet: text in an SVG or a sheet PNG (#4890 B2)")),
                     Item::Picture(picture) => items.push(GridItem::Picture(*picture)),
                     Item::Text(run) => {
                         // `validate` holds every run's font in the scene.

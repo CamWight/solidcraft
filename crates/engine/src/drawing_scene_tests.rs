@@ -651,7 +651,18 @@ fn a_replys_text_and_fonts_keep_to_its_schema() {
     let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![Group { object: 1, kind: ObjectKind::View, items }]);
     scene.add_fonts(fonts);
     scene.validate().unwrap();
-    let reply = SheetSceneResult { sheet: "s".into(), scene: SheetPaperScene(scene), views: Vec::new(), param_warnings: Vec::new() };
+    let reply = SheetSceneResult {
+        sheet: "s".into(),
+        scene: SheetPaperScene(scene),
+        views: Vec::new(),
+        objects: Vec::new(),
+        dimensions: Vec::new(),
+        balloons: Vec::new(),
+        notes: Vec::new(),
+        tables: Vec::new(),
+        out_of_date: Vec::new(),
+        param_warnings: Vec::new(),
+    };
     let reply = serde_json::to_value(reply).unwrap();
     let schema = output_schema_for::<SheetSceneResult>();
     assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
@@ -1121,7 +1132,7 @@ fn dimensions_share_one_font_table_and_one_left_out_adds_nothing() {
             object: id,
             kind: ObjectKind::Dimension,
             view: Some(front),
-            status: solidcraft_doc::drawing::dimension::Status::Ok,
+            status: solidcraft_doc::drawing::reference::Status::Ok,
             group: Some(Group { object: id, kind: ObjectKind::Dimension, items }),
             fonts,
             why: None,
