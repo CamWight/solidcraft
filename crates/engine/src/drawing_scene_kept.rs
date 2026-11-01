@@ -1,5 +1,6 @@
-//! What a save keeps of a drawing's sheet scene: each view's last lines, apart from the provider's
-//! cache, which goes when its drawing closes.
+//! What a session keeps of a drawing's sheet scene: each view's last lines, apart from the provider's
+//! cache, which goes when its drawing closes. A save writes them, and the drawing opened again starts
+//! from them.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -12,6 +13,7 @@ use solidcraft_geom::paper::Group;
 use solidcraft_geom::{Aabb2, Vec2};
 
 use crate::Session;
+use crate::drawing_scene::{Drawn, SourceKey};
 
 /// Each drawing's last lines, by drawing and view: what a save can keep. A closed drawing's stay here
 /// too, as plain data: a weak reference to the world state they came from says whether they are
@@ -24,6 +26,11 @@ impl KeptLines {
     pub(crate) fn keep(&mut self, drawing: u64, view: u64, lines: KeptView) {
         self.0.entry(drawing).or_default().insert(view, lines);
     }
+
+    /// Drawing `drawing`'s, by view.
+    pub(crate) fn of(&self, drawing: u64) -> impl Iterator<Item = (u64, &KeptView)> {
+        self.0.get(&drawing).into_iter().flatten().map(|(view, lines)| (*view, lines))
+    }
 }
 
 #[derive(Clone)]
@@ -33,13 +40,29 @@ pub(crate) struct KeptView {
     group: Arc<Group>,
     boundary: Aabb2,
     origin_mm: Vec2,
+    /// As the provider had them, and what they show.
+    pub(crate) drawn: Drawn,
+    pub(crate) shows: Option<Arc<SourceKey>>,
 }
 
 impl KeptView {
     /// A view's lines as a save keeps them.
-    pub(crate) fn new(view: &ResolvedView, state: &Arc<ModelState>, group: Arc<Group>, boundary: Aabb2, frame: &ViewFrame) -> KeptView {
+    pub(crate) fn new(
+        view: &ResolvedView,
+        state: &Arc<ModelState>,
+        group: Arc<Group>,
+        boundary: Aabb2,
+        frame: &ViewFrame,
+        drawn: Drawn,
+        shows: Option<Arc<SourceKey>>,
+    ) -> KeptView {
         let origin_mm = frame.paper_map().apply(Vec2::ZERO);
-        KeptView { key: lines_key(view), state: Arc::downgrade(state), group, boundary, origin_mm }
+        KeptView { key: lines_key(view), state: Arc::downgrade(state), group, boundary, origin_mm, drawn, shows }
+    }
+
+    /// They were drawn as `view` draws now.
+    pub(crate) fn drawn_as(&self, view: &ResolvedView) -> bool {
+        self.key == lines_key(view)
     }
 }
 
