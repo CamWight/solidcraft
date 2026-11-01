@@ -224,14 +224,20 @@ struct Snapshot {
     path: Option<String>,
 }
 
+/// A copy of `doc` that must open again (an autosave, here or in the browser), as a design file: without
+/// the drawings a read would refuse, with a line naming each one left out ([`drawing::openable`]).
+pub fn openable_copy(doc: &Document) -> Result<(Vec<u8>, Vec<String>)> {
+    let (doc, left_out) = drawing::openable(doc);
+    Ok((solidcraft_io::write_design_container(&doc)?, left_out))
+}
+
 impl Snapshot {
     /// Write the design and its entry (the slow part: serialising and compressing the design).
     /// Returns a line for each drawing left out, as one breaking a rule would keep the copy from
     /// opening ([`drawing::openable`]).
     fn write(&self) -> Result<Vec<String>> {
         let io = |e: std::io::Error| EngineError::Other(format!("autosave: {e}"));
-        let (doc, left_out) = drawing::openable(&self.doc);
-        let bytes = solidcraft_io::write_design_container(&crate::as_saved(&doc, &self.visibility, &self.dimension_values))?;
+        let (bytes, left_out) = openable_copy(&crate::as_saved(&self.doc, &self.visibility, &self.dimension_values))?;
         solidcraft_io::write_atomic(&file(&self.dir, &self.id, solidcraft_io::DESIGN_EXT), &bytes, false).map_err(io)?;
         let entry = Entry {
             id: self.id.clone(),
@@ -536,6 +542,22 @@ mod tests {
         assert_eq!(doc.drawings.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Kept"]);
         remove(&d, &entry.id).unwrap();
         let _ = fs::remove_dir_all(&d);
+    }
+
+    /// The browser's autosave writes this copy, and its recovery reads it with `read_design`.
+    #[test]
+    fn an_openable_copy_reads_again_without_the_drawing_a_read_refuses() {
+        let mut s = Session::default();
+        s.execute("drawing.create", &json!({"name": "Kept"})).unwrap();
+        s.execute("drawing.create", &json!({"name": "Broken"})).unwrap();
+        let mut doc = (*s.doc).clone();
+        let broken = doc.drawings.iter_mut().find(|d| d.name == "Broken").unwrap();
+        Arc::make_mut(broken).language = "?".into();
+        assert!(solidcraft_io::read_design(&solidcraft_io::write_design_container(&doc).unwrap()).is_err(), "the whole copy would be lost");
+        let (bytes, left_out) = openable_copy(&doc).unwrap();
+        assert!(matches!(left_out.as_slice(), [line] if line.starts_with(r#"drawing "Broken" ("#)), "{left_out:?}");
+        let read = solidcraft_io::read_design(&bytes).unwrap();
+        assert_eq!(read.drawings.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), ["Kept"]);
     }
 
     /// What is shown and hidden is not part of the design's undo history but is restored with it:
