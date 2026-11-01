@@ -25,7 +25,7 @@ use serde::Serialize;
 use serde_json::Value;
 use solidcraft_doc::display_units::unit_scale;
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::drawing::balloon::Balloon;
+use solidcraft_doc::drawing::balloon::{Balloon, BalloonPlace, Stacked};
 use solidcraft_doc::drawing::dimension::{Dimension, LabelKind, MAX_DECIMALS, reading_label};
 use solidcraft_doc::drawing::note::Note;
 use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace};
@@ -702,7 +702,14 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             .zip(&balloon_copies)
             .filter_map(|(old, new)| {
                 let original = d.balloons.by_id(*old)?;
-                Some(Arc::new(Balloon { id: *new, view: copy_of(original.view)?, ..original.clone() }))
+                let at = match original.at {
+                    BalloonPlace::On(stacked) => {
+                        let on = ballooned.iter().position(|one| *one == stacked.on).and_then(|at| balloon_copies.get(at))?;
+                        BalloonPlace::On(Stacked { on: *on, ..stacked })
+                    }
+                    own => own,
+                };
+                Some(Arc::new(Balloon { id: *new, view: copy_of(original.view)?, at, ..original.clone() }))
             })
             .collect();
         d.balloons.add(copied);
