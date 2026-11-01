@@ -9,7 +9,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::drawing::dimension::{Candidate, Dimension, DimensionKind, Geometry, Located, Silhouette, Status, TextPlace, check_chain_length};
+use solidcraft_doc::drawing::dimension::{Dimension, DimensionKind, Geometry, Silhouette, TextPlace, check_chain_length};
+use solidcraft_doc::drawing::reference::{Candidate, Located, Status};
 use solidcraft_doc::ids;
 use solidcraft_geom::drawing_measure::{LinearDirection, Reading};
 

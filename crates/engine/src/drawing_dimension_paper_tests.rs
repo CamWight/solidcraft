@@ -1,4 +1,5 @@
-use solidcraft_doc::drawing::dimension::{DimensionKind, Member, ModelEdge, ModelFace, Silhouette, Status};
+use solidcraft_doc::drawing::dimension::{DimensionKind, Member, Silhouette};
+use solidcraft_doc::drawing::reference::{ModelEdge, ModelFace, Status};
 use solidcraft_geom::drawing_measure::{Measured, Reading, SilhouetteSide};
 use solidcraft_geom::drawing_view::{NamedView, Scale};
 use solidcraft_geom::paper::Scene;

@@ -19,14 +19,14 @@
 //! most [`MAX_BALLOONS`] balloons, listed by id.
 //!
 //! [`Document::resolve_balloons`] finds each balloon's edge again as a dimension's is found
-//! ([`super::dimension::Status`]): by name, strictly, and what it can't decide it says.
+//! ([`super::reference::Status`]): by name, strictly, and what it can't decide it says.
 
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 
 use super::by_id::Record;
-use super::dimension::{Located, Lookup, ModelEdge, check_edge};
+use super::reference::{Located, Lookup, ModelEdge, check_edge};
 use super::table::{Kind, PartsList, SheetTable};
 use super::{Drawing, require};
 use crate::{DocError, Document, Model, Result, ids};
