@@ -215,7 +215,7 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
 
 /// A view's lines for a sheet scene, centred on the view, or why it has none.
 #[derive(Clone, Debug)]
-struct Drawn {
+pub(crate) struct Drawn {
     group: Option<Arc<Group>>,
     status: Status,
     stats: Option<Stats>,
@@ -552,10 +552,26 @@ impl Worlds {
     }
 }
 
+/// What a view's lines show: each body by the occurrences that place it, its definition's name, whether
+/// it is a reference and its geometry where it stands. A world state with the same draws the same, so a
+/// change of appearance, or an edit undone, draws nothing. Only in memory, never saved.
+#[derive(Debug, PartialEq)]
+pub(crate) struct SourceKey(Vec<(Vec<u64>, String, bool, u64)>);
+
+impl SourceKey {
+    /// None when one of the bodies has no key of its geometry, or nothing can be shown.
+    fn of(shown: &std::result::Result<ShownSet, Unmeasured>) -> Option<Arc<SourceKey>> {
+        let set = shown.as_ref().ok()?;
+        let body = |one: &Shown| Some((one.path.clone(), one.body.clone(), one.reference, set.body(one)?.geometry_key()?));
+        set.bodies.iter().map(body).collect::<Option<Vec<_>>>().map(|bodies| Arc::new(SourceKey(bodies)))
+    }
+}
+
 /// A view's last drawing, and what it was drawn from: the world state (held, so its address can't
-/// be reused while it is compared) and the view as it drew.
+/// be reused while it is compared), what that showed, and the view as it drew.
 struct Entry {
     state: Arc<ModelState>,
+    shows: Option<Arc<SourceKey>>,
     view: ResolvedView,
     drawn: Drawn,
     serial: u64,
@@ -670,6 +686,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     let worlds = Worlds::now(s, &d);
     let units = s.doc.drawing_units(&d).to_string();
     if s.drawing_scenes.drawing != Some(d.id) {
+        take_kept_lines(s, &d);
         take_last_lines(s, &d, &s.world_state());
     }
     let cache = &mut s.drawing_scenes;
@@ -686,6 +703,8 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     let on = views_on(&d, sheet)?;
     cache.drawing = Some(d.id);
     cache.sheet = Some(sheet);
+    keep_what_shows_the_same(s, &d, &on, &worlds);
+    let cache = &mut s.drawing_scenes;
     let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &worlds, view)).map(|(id, ..)| *id).collect();
     let stale_annotations = cache.stale_annotations(&d, &on, &worlds, &units).iter().map(Annotation::id).collect();
     let serial = |id: &u64| cache.views.get(id).map_or(0, |e| e.serial);
@@ -726,11 +745,35 @@ pub fn step(s: &mut Session) -> bool {
     let Ok(on) = views_on(&d, sheet) else { return false };
     let worlds = Worlds::now(s, &d);
     let units = s.doc.drawing_units(&d).to_string();
+    keep_what_shows_the_same(s, &d, &on, &worlds);
     let waiting: Vec<(u64, ResolvedView)> =
         on.iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &worlds, view)).map(|(id, view, _)| (*id, *view)).collect();
     let Some(&(id, view)) = waiting.first() else { return step_annotations(s, &d, &on, &worlds, units) };
     draw_now(s, &d, id, view, &worlds.of(view.source), &units);
     waiting.len() > 1 || !s.drawing_scenes.stale_annotations(&d, &on, &worlds, &units).is_empty()
+}
+
+/// Each view of `on` drawn as it draws now, from another world state that shows what it drew, takes that
+/// state and draws nothing. The shown set is worked out once for a world state, only when a view's has changed.
+fn keep_what_shows_the_same(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], worlds: &Worlds) {
+    for (id, view, _) in on {
+        let state = worlds.of(view.source);
+        let Some(entry) = s.drawing_scenes.views.get(id).filter(|e| !Arc::ptr_eq(&e.state, &state) && e.view == *view) else { continue };
+        let Some(shows) = entry.shows.clone() else { continue };
+        let shown = match s.drawing_scenes.shown.remove(&view.source) {
+            Some((was, shown)) if Arc::ptr_eq(&was, &state) => shown,
+            _ => {
+                let Ok(from) = s.drawn(d, view.source) else { continue };
+                crate::drawing_view::shown(from)
+            }
+        };
+        let same = SourceKey::of(&shown).is_some_and(|now| now == shows);
+        let cache = &mut s.drawing_scenes;
+        cache.shown.insert(view.source, (state.clone(), shown));
+        if let Some(entry) = cache.views.get_mut(id).filter(|_| same) {
+            entry.state = state;
+        }
+    }
 }
 
 /// Draws view `id`, drawing as `view` does, with its annotations in the same swap, and keeps them.
@@ -746,6 +789,7 @@ fn draw_now(s: &mut Session, d: &Drawing, id: u64, view: ResolvedView, state: &A
         }
         Err(why) => (not_open(&view, s.drawing_scenes.views.get(&id).map(|e| &e.drawn), &why), None),
     };
+    let shows = shown.as_ref().and_then(SourceKey::of);
     let frame = drawn.frame;
     let these = annotations_on(d, std::iter::once(id));
     let lines = draw_annotations(s, d, &these, |_| frame);
@@ -759,19 +803,31 @@ fn draw_now(s: &mut Session, d: &Drawing, id: u64, view: ResolvedView, state: &A
     {
         cache.projections += 1;
     }
-    keep_view(s, d.id, id, view, drawn, state.clone(), true);
+    keep_view(s, d.id, id, view, drawn, state.clone(), shows, true);
     s.drawing_scenes.keep_annotations(these, lines, state, serial, units);
 }
 
 /// Keeps view `id`, as `drawn` drew it from `state`, in the provider under its serial now. With
 /// `for_saving`, its lines are what a save keeps too.
-fn keep_view(s: &mut Session, drawing: u64, id: u64, view: ResolvedView, drawn: Drawn, state: Arc<ModelState>, for_saving: bool) {
+#[allow(clippy::too_many_arguments)]
+fn keep_view(
+    s: &mut Session,
+    drawing: u64,
+    id: u64,
+    view: ResolvedView,
+    drawn: Drawn,
+    state: Arc<ModelState>,
+    shows: Option<Arc<SourceKey>>,
+    for_saving: bool,
+) {
     let kept = match (&drawn.group, drawn.boundary, &drawn.frame) {
-        (Some(group), Some(boundary), Some(frame)) if for_saving => Some(KeptView::new(&view, &state, group.clone(), boundary, frame)),
+        (Some(group), Some(boundary), Some(frame)) if for_saving => {
+            Some(KeptView::new(&view, &state, group.clone(), boundary, frame, drawn.clone(), shows.clone()))
+        }
         _ => None,
     };
     let serial = s.drawing_scenes.serial;
-    s.drawing_scenes.views.insert(id, Entry { state, view, drawn, serial });
+    s.drawing_scenes.views.insert(id, Entry { state, shows, view, drawn, serial });
     if let Some(kept) = kept {
         Arc::make_mut(&mut s.kept_lines).keep(drawing, id, kept);
     }
@@ -793,9 +849,28 @@ fn step_annotations(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2
     !others.is_empty()
 }
 
+/// Drawing `d`'s lines from this session, opened again: last drawn from a world state that has gone, so
+/// each is out of date until [`keep_what_shows_the_same`] finds it shows the same. One that no longer
+/// draws as its view does shows as it was until it is drawn.
+fn take_kept_lines(s: &mut Session, d: &Drawing) {
+    let kept: Vec<_> = s.kept_lines.of(d.id).map(|(id, lines)| (id, lines.clone())).collect();
+    let out_of_date: Arc<ModelState> = Arc::default();
+    for (id, lines) in kept {
+        let Ok(view) = d.resolve_view(id) else { continue };
+        let shows = lines.shows.clone().filter(|_| lines.drawn_as(&view));
+        let cache = &mut s.drawing_scenes;
+        cache.serial += 1;
+        let serial = cache.serial;
+        cache.views.insert(id, Entry { state: out_of_date.clone(), shows, view, drawn: lines.drawn, serial });
+    }
+}
+
 /// Fills the provider of the drawing `d`, just opened, with the lines its file keeps. Any failure is
 /// a miss: each view is then drawn as usual.
 fn take_last_lines(s: &mut Session, d: &Drawing, state: &Arc<ModelState>) {
+    if d.views.iter().all(|view| s.drawing_scenes.views.contains_key(&view.id)) {
+        return;
+    }
     let Some((path, digest)) = &s.file else { return };
     let Some(read) = solidcraft_io::read_sheet_lines(path, d.id, digest) else { return };
     // They were written for the file's model: an edit since, with the drawing closed, is another.
@@ -804,6 +879,9 @@ fn take_last_lines(s: &mut Session, d: &Drawing, state: &Arc<ModelState>) {
     let out_of_date: Arc<ModelState> = Arc::default();
     for saved in read.views {
         let Ok(view) = d.resolve_view(saved.view) else { continue };
+        if s.drawing_scenes.views.contains_key(&saved.view) {
+            continue;
+        }
         // Lines of another design aren't this file's to vouch for.
         if d.sources.iter().any(|source| source.id == view.source && source.path.is_some()) {
             continue;
@@ -815,7 +893,7 @@ fn take_last_lines(s: &mut Session, d: &Drawing, state: &Arc<ModelState>) {
         s.drawing_scenes.serial += 1;
         let drawn =
             Drawn { group: Some(saved.group), status: Status::Drawn, stats: None, boundary: Some(saved.boundary), frame: Some(frame), owners: None };
-        keep_view(s, d.id, saved.view, view, drawn, if fresh { state.clone() } else { out_of_date.clone() }, fresh);
+        keep_view(s, d.id, saved.view, view, drawn, if fresh { state.clone() } else { out_of_date.clone() }, None, fresh);
     }
 }
 

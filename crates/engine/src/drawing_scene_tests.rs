@@ -348,10 +348,45 @@ fn after_a_model_change_the_last_scene_shows_until_its_views_are_drawn_again() {
     assert_eq!((last.stale.len(), s.drawing_scenes.projections, bytes(&last.scene)), (0, projections + 2, bytes(&now)));
 }
 
-/// Closing the drawing drops its scenes and the world states they hold; opened again, every view
-/// is out of date.
+/// A view is drawn again only when what it shows changes: a parameter or its undo, a part's move, a
+/// suppressed feature; not a body's appearance or eye, and an edit undone draws nothing.
 #[test]
-fn closing_the_drawing_drops_its_scenes() {
+fn a_view_draws_again_only_when_what_it_shows_changes() {
+    let (mut s, sheet, _) = front_and_top();
+    settled(&mut s, sheet);
+    let exec = |s: &mut Session, command: &str, params: Value| {
+        s.execute("drawing.source.execute", &json!({"command": command, "params": params})).unwrap();
+    };
+    let drew = |s: &mut Session, what: &str, expected: usize| {
+        let before = s.drawing_scenes.projections;
+        let last = settled(s, sheet);
+        assert_eq!(s.drawing_scenes.projections - before, expected, "{what}");
+        assert!(last.stale.is_empty(), "{what}");
+        assert_eq!(bytes(&last.scene), bytes(&built(s, sheet).scene), "{what}");
+    };
+    exec(&mut s, "appearance.assign", json!({"bodies": ["Block"], "color": "#123456"}));
+    drew(&mut s, "an appearance", 0);
+    exec(&mut s, "browser.visibility", json!({"items": ["Block"], "visible": false}));
+    drew(&mut s, "the eye", 0);
+    exec(&mut s, "browser.visibility", json!({"items": ["Block"], "visible": true}));
+    drew(&mut s, "the eye back", 0);
+
+    let block = s.doc.features.first().unwrap().id;
+    let suppressed = |suppressed: bool| json!({"feature": block, "suppressed": suppressed});
+    exec(&mut s, "timeline.suppress", suppressed(true));
+    exec(&mut s, "timeline.suppress", suppressed(false));
+    drew(&mut s, "an edit taken back before it was drawn", 0);
+    exec(&mut s, "timeline.suppress", suppressed(true));
+    drew(&mut s, "a feature suppressed", 2);
+    exec(&mut s, "timeline.suppress", suppressed(false));
+    drew(&mut s, "and back, after it was drawn", 2);
+}
+
+/// Closing the drawing drops its scenes and the world states they hold. Opened again with nothing
+/// changed, it shows its last lines and draws nothing; with the model changed, those lines show, out of
+/// date, until its views are drawn.
+#[test]
+fn a_drawing_opened_again_draws_only_what_changed() {
     let (mut s, sheet, _) = front_and_top();
     let drawing = ids::encode(s.open_drawing.unwrap());
     let before = settled(&mut s, sheet);
@@ -361,9 +396,22 @@ fn closing_the_drawing_drops_its_scenes() {
     assert!(cache.views.is_empty() && cache.last.is_none() && cache.shown.is_empty() && cache.drawing.is_none());
     assert!(!step(&mut s));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let projections = s.drawing_scenes.projections;
     let reopened = extract(&mut s, sheet).unwrap();
     // A new scene, so a new number: the page can't take it for the one it showed before.
-    assert!(reopened.stale.len() == 2 && reopened.generation > before.generation);
+    assert!(reopened.stale.is_empty() && reopened.generation > before.generation);
+    assert_eq!(bytes(&reopened.scene), bytes(&before.scene));
+    let settled_again = settled(&mut s, sheet);
+    assert_eq!(s.drawing_scenes.projections, projections);
+    assert_eq!(bytes(&settled_again.scene), bytes(&built(&s, sheet).scene));
+
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 40, "corner": [40, 60, 0], "body_name": "Tower", "operation": "new"}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let changed = extract(&mut s, sheet).unwrap();
+    assert_eq!(changed.stale.len(), 2);
+    assert_eq!(bytes(&changed.scene), bytes(&before.scene), "its last lines, out of date");
+    assert_eq!(bytes(&settled(&mut s, sheet).scene), bytes(&built(&s, sheet).scene));
 }
 
 /// A view whose lines would take the sheet past a paper scene's records fails and is left out;
@@ -1099,9 +1147,10 @@ fn a_views_dimensions_swap_with_its_lines() {
     run(&mut s, "timeline.edit", json!({"feature": block.to_string(), "set": {"height": 40}}));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
 
-    // Closing the drawing dropped its scene, and an unsaved design has no lines to come back to.
+    // Its last lines come back out of date, and its dimension waits for its new lines.
     let waiting = extract(&mut s, sheet).unwrap();
-    assert!(waiting.scene.groups.iter().all(|g| g.object != id && g.object != front), "{:?}", waiting.stale);
+    assert!(waiting.scene.groups.iter().all(|g| g.object != id) && waiting.scene.groups.iter().any(|g| g.object == front), "{:?}", waiting.stale);
+    assert_eq!(waiting.stale, vec![front, top]);
 
     // One step: the front view (the lower id) and its dimension together; the top view still waits.
     assert!(step(&mut s));
