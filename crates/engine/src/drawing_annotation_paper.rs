@@ -61,6 +61,12 @@ impl Text {
     }
 }
 
+/// How wide `text`, one line, sets with capitals `cap_mm` high. A text the fonts can't set measures
+/// nothing: what draws it says why.
+pub(crate) fn text_width(text: &str, cap_mm: f64) -> f64 {
+    Text::set(Some(text), cap_mm).half.x * 2.0
+}
+
 /// `runs` of a text `half` in size with capitals `cap_mm` high, centred on `centre` and running along
 /// `dir`.
 pub(crate) fn placed(runs: Vec<TextRun>, half: Vec2, cap_mm: f64, centre: Vec2, dir: Vec2) -> impl Iterator<Item = Item> {

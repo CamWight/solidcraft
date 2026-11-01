@@ -249,10 +249,11 @@ pub enum Selectable {
     Dimension,
     Balloon,
     Note,
+    Table,
 }
 
 /// [`Selectable`] in words, for what a command says when an id is none of them.
-pub const SELECTABLE: &str = "view, dimension, balloon or note";
+pub const SELECTABLE: &str = "view, dimension, balloon, note or table";
 
 /// What is on one of a drawing's sheets ([`Drawing::on_sheet`]), each kind by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -288,6 +289,7 @@ impl OnSheet {
             Selectable::Dimension => &mut self.dimensions,
             Selectable::Balloon => &mut self.balloons,
             Selectable::Note => &mut self.notes,
+            Selectable::Table => &mut self.tables,
         };
         list.push(id);
     }
@@ -418,8 +420,10 @@ impl Drawing {
             Some(Selectable::Dimension)
         } else if self.balloons.by_id(id).is_some() {
             Some(Selectable::Balloon)
+        } else if self.notes.by_id(id).is_some() {
+            Some(Selectable::Note)
         } else {
-            self.notes.by_id(id).map(|_| Selectable::Note)
+            self.tables.by_id(id).map(|_| Selectable::Table)
         }
     }
 

@@ -35,7 +35,15 @@ impl JsonSchema for SheetPaperScene {
     fn json_schema(generator: &mut SchemaGenerator) -> Schema {
         paper_scene_schema(
             generator,
-            &[ObjectKind::DrawingBorder, ObjectKind::View, ObjectKind::Dimension, ObjectKind::Balloon, ObjectKind::Note],
+            &[
+                ObjectKind::DrawingBorder,
+                ObjectKind::View,
+                ObjectKind::Dimension,
+                ObjectKind::Balloon,
+                ObjectKind::Note,
+                ObjectKind::PartsList,
+                ObjectKind::RevisionTable,
+            ],
             true,
         )
     }
@@ -98,6 +106,16 @@ pub struct SheetSceneNote {
     /// The view it moves with; none on the sheet.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<String>,
+    pub status: &'static str,
+    pub drawn: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+}
+
+/// One table on the sheet: `ok`, or `failed` with why (the rest of the sheet still draws).
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SheetSceneTable {
+    pub table: String,
     pub status: &'static str,
     pub drawn: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -266,6 +284,8 @@ pub struct SheetSceneResult {
     pub balloons: Vec<SheetSceneBalloon>,
     /// Each note on the sheet or on a view of it, by view and id.
     pub notes: Vec<SheetSceneNote>,
+    /// Each table on the sheet, by id.
+    pub tables: Vec<SheetSceneTable>,
     /// The views and annotations a deferred drawing shows as they last were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub out_of_date: Vec<String>,
