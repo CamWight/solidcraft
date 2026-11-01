@@ -47,7 +47,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
     }
     let d = s.drawing(CMD)?.clone();
     let sheet = sheet_id(&d, &request.sheet, CMD)?;
-    let built = crate::drawing_scene::build(s, &d, sheet)?;
+    let built = crate::drawing_scene::as_shown(s, &d, sheet)?;
     let failed: Vec<String> = built
         .views
         .iter()
@@ -81,6 +81,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         report: ExportReport { widths_snapped: written.widths_snapped, pieces_merged: written.pieces_merged },
         views: built.views.into_iter().map(Into::into).collect(),
         dimensions: super::drawing_scene::dimension_results(built.annotations),
+        out_of_date: built.out_of_date.iter().map(|id| ids::encode(*id)).collect(),
         param_warnings: Vec::new(),
     };
     crate::schema::reply(reply)

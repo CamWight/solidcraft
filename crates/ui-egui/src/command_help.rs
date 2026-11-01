@@ -11,6 +11,7 @@ pub const DOCUMENTED: &[&str] = &[
     "appearance.assign",
     "component.finish_edit",
     "drawing.table.edit",
+    "drawing.update",
     "face.delete",
     "material.assign",
     "occurrence.move",

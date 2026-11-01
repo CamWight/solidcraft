@@ -954,7 +954,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(candidates.len(), 21);
+        assert_eq!(candidates.len(), 20);
     }
 
     #[test]
