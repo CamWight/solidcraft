@@ -7,9 +7,8 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use solidcraft_doc::ModelBody;
 use solidcraft_doc::appearance::face_index_at;
-use solidcraft_doc::drawing::dimension::{
-    Candidate, Dimension, DimensionKind, Geometry, ModelEdge, ModelFace, ModelPoint, Resolved, Silhouette, Status, TextPlace,
-};
+use solidcraft_doc::drawing::dimension::{Dimension, DimensionKind, Geometry, Resolved, Silhouette, TextPlace};
+use solidcraft_doc::drawing::reference::{Candidate, ModelEdge, ModelFace, ModelPoint, Status};
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing::{Drawing, Source, Units};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
@@ -761,7 +760,13 @@ fn a_balloon_and_a_cylinder_follow_a_renamed_body() {
     let round = f.round([40.0, 0.0, 15.0], 6.0);
     let radial = f.add(front, DimensionKind::Radial { edge: round.clone(), diameter: true }, None);
     let id = f.d.allocate_id(&mut f.ids).unwrap();
-    f.d.balloons.add([Arc::new(solidcraft_doc::drawing::balloon::Balloon { id, view: front, edge: round, at: [60.0, 60.0].into(), parts_list: None })]);
+    f.d.balloons.add([Arc::new(solidcraft_doc::drawing::balloon::Balloon {
+        id,
+        view: front,
+        edge: round,
+        at: [60.0, 60.0].into(),
+        parts_list: None,
+    })]);
     run(&mut f.s, "body.rename", json!({"body": "Box", "name": "Lid"}));
     assert_reads(&f.resolve(across), 12.0, false);
     assert_reads(&f.resolve(radial), 12.0, false);

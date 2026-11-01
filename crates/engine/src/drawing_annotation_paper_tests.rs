@@ -1,5 +1,5 @@
-use solidcraft_doc::drawing::dimension::ModelEdge;
 use solidcraft_doc::drawing::note::Anchor;
+use solidcraft_doc::drawing::reference::ModelEdge;
 use solidcraft_geom::paper::Scene;
 
 use super::*;

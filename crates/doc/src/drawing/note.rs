@@ -25,7 +25,7 @@ use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 
 use super::by_id::Record;
-use super::dimension::{Located, Lookup, ModelEdge, ModelPoint, Status, check_edge, check_point};
+use super::reference::{Located, Lookup, ModelEdge, ModelPoint, Status, check_edge, check_point};
 use super::{Drawing, require};
 use crate::{DocError, Document, Model, Result, ids};
 

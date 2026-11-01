@@ -22,7 +22,7 @@
 //! [`MAX_STACK_BALLOONS`] balloons, and none stands on itself, however far round.
 //!
 //! [`Document::resolve_balloons`] finds each balloon's edge again as a dimension's is found
-//! ([`super::dimension::Status`]): by name, strictly, and what it can't decide it says.
+//! ([`super::reference::Status`]): by name, strictly, and what it can't decide it says.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -33,7 +33,7 @@ use solidcraft_geom::paper::MAX_SIDE_MM;
 use solidcraft_geom::table::Ballooned;
 
 use super::by_id::Record;
-use super::dimension::{Located, Lookup, ModelEdge, check_edge};
+use super::reference::{Located, Lookup, ModelEdge, check_edge};
 use super::table::{Kind, PartsList, SheetTable};
 use super::{Drawing, require};
 use crate::{DocError, Document, Model, Result, ids};

@@ -807,7 +807,7 @@ fn a_dimension_is_drawn_after_the_views_on_the_sheet() {
             object: id,
             kind: ObjectKind::Dimension,
             view: Some(front),
-            status: solidcraft_doc::drawing::dimension::Status::Ok,
+            status: solidcraft_doc::drawing::reference::Status::Ok,
             drawn: true,
             why: None
         }]
@@ -899,7 +899,7 @@ fn a_lost_dimension_leaves_the_sheet_drawn_and_is_listed() {
     delete_hole(&mut s, &drawing);
     let lost = settled(&mut s, sheet);
     let state = lost.annotations.iter().find(|d| d.object == id).unwrap();
-    assert!(!state.drawn && matches!(state.status, solidcraft_doc::drawing::dimension::Status::Lost(_)), "{state:?}");
+    assert!(!state.drawn && matches!(state.status, solidcraft_doc::drawing::reference::Status::Lost(_)), "{state:?}");
     assert!(lost.scene.groups.iter().all(|g| g.object != id));
     assert!(lost.scene.groups.iter().any(|g| g.object == front), "the sheet is still drawn");
     assert_eq!(bytes(&lost.scene), bytes(&built(&s, sheet).scene));
@@ -933,7 +933,7 @@ fn a_dimension_past_the_scenes_limits_is_left_out_and_says_why() {
         object: id,
         kind: ObjectKind::Dimension,
         view: Some(front),
-        status: solidcraft_doc::drawing::dimension::Status::Ok,
+        status: solidcraft_doc::drawing::reference::Status::Ok,
         group: Some(Group { object: id, kind: ObjectKind::Dimension, items }),
         fonts: Vec::new(),
         why: None,
@@ -976,7 +976,7 @@ fn dimensions_share_one_font_table_and_one_left_out_adds_nothing() {
             object: id,
             kind: ObjectKind::Dimension,
             view: Some(front),
-            status: solidcraft_doc::drawing::dimension::Status::Ok,
+            status: solidcraft_doc::drawing::reference::Status::Ok,
             group: Some(Group { object: id, kind: ObjectKind::Dimension, items }),
             fonts,
             why: None,

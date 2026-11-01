@@ -40,6 +40,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use solidcraft_doc::drawing::balloon::{Balloon, BalloonPlace};
 use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::note::{Anchor, Note};
+use solidcraft_doc::drawing::reference;
 use solidcraft_doc::drawing::table::{Kind, PartsList, SheetTable};
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet, Updates};
@@ -116,7 +117,7 @@ pub struct AnnotationState {
     /// The view it hangs on; `None`: the sheet.
     pub view: Option<u64>,
     /// Where it stands with the model.
-    pub status: dimension::Status,
+    pub status: reference::Status,
     /// Whether its lines are in the scene. One that isn't found again has none, and neither has one
     /// whose view isn't drawn.
     pub drawn: bool,
@@ -380,7 +381,7 @@ impl Annotation {
     }
 
     /// The drawn answer of this record, read as `status`.
-    fn drawn(&self, status: dimension::Status, paper: Option<OnPaper>, why: Option<String>) -> DrawnAnnotation {
+    fn drawn(&self, status: reference::Status, paper: Option<OnPaper>, why: Option<String>) -> DrawnAnnotation {
         let (group, fonts, why) = match paper {
             Some(paper) => (Some(paper.group), paper.fonts, paper.why.or(why)),
             None => (None, Vec::new(), why),
@@ -395,7 +396,7 @@ struct DrawnAnnotation {
     object: u64,
     kind: ObjectKind,
     view: Option<u64>,
-    status: dimension::Status,
+    status: reference::Status,
     group: Option<Group>,
     /// The fonts its group's text uses.
     fonts: Vec<Font>,
@@ -479,7 +480,7 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
     let noted = crate::drawing_sources::resolve_notes(s, d, &notes);
     let (mut next_dimension, mut next_balloon, mut next_note) = (0, 0, 0);
     let unread = |annotation: &Annotation| {
-        annotation.drawn(dimension::Status::Unmeasurable(format!("{} can't be read", ids::encode(annotation.id()))), None, None)
+        annotation.drawn(reference::Status::Unmeasurable(format!("{} can't be read", ids::encode(annotation.id()))), None, None)
     };
     let mut out = Vec::with_capacity(wanted.len());
     for annotation in wanted {
@@ -528,7 +529,7 @@ fn draw_balloon(
     annotation: &Annotation,
     record: &Balloon,
     centre: Vec2,
-    place: &dimension::Located,
+    place: &reference::Located,
     row: &RowRead,
     frame: Option<ViewFrame>,
 ) -> DrawnAnnotation {
@@ -548,7 +549,7 @@ fn draw_balloon(
 
 /// A note stays where it is whatever becomes of what it points at: lost, it keeps its text with no
 /// leader. One on a sheet is in paper already and needs no frame.
-fn draw_note(annotation: &Annotation, record: &Note, place: &dimension::Located, frame: Option<ViewFrame>) -> DrawnAnnotation {
+fn draw_note(annotation: &Annotation, record: &Note, place: &reference::Located, frame: Option<ViewFrame>) -> DrawnAnnotation {
     if record.anchor.view().is_some() && frame.is_none() {
         return annotation.drawn(place.status.clone(), None, None);
     }
@@ -561,9 +562,9 @@ fn draw_table(annotation: &Annotation, s: &Session, d: &Drawing, record: &SheetT
     match crate::drawing_table_paper::place(s, d, record, space) {
         Ok(placed) => {
             let paper = crate::drawing_table_paper::on_paper(&placed.layout, record.table.cap_mm, record.id, annotation.kind());
-            annotation.drawn(dimension::Status::Ok, Some(paper), None)
+            annotation.drawn(reference::Status::Ok, Some(paper), None)
         }
-        Err(why) => annotation.drawn(dimension::Status::Failed(why), None, None),
+        Err(why) => annotation.drawn(reference::Status::Failed(why), None, None),
     }
 }
 

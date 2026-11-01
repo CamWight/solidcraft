@@ -257,7 +257,7 @@ fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
     assert!(matches!(status(big), crate::drawing_scene::Status::Lost(why) if why.contains("not found")));
     assert!(after.scene.groups.iter().any(|g| g.object == big), "its last lines stay");
     assert_eq!(after.scene.groups.len(), groups - 1, "and its lost dimension, centred on what it lost, isn't drawn");
-    use solidcraft_doc::drawing::dimension::Status as Read;
+    use solidcraft_doc::drawing::reference::Status as Read;
     use solidcraft_geom::paper::ObjectKind;
     let of_kind = |kind| after.annotations.iter().filter(move |one| one.kind == kind);
     assert!(of_kind(ObjectKind::Dimension).all(|one| matches!(&one.status, Read::Lost(_))));

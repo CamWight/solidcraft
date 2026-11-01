@@ -7,7 +7,8 @@ use solidcraft_render::VisualStyle;
 
 use crate::drawing_view::{TangentEdges, ViewDirection, ViewOverrides};
 use balloon::Balloon;
-use dimension::{DimensionKind, ModelEdge, ModelPoint, TextPlace};
+use dimension::{DimensionKind, TextPlace};
+use reference::{ModelEdge, ModelPoint};
 use view::{ViewKind, ViewPlace};
 
 use super::*;
