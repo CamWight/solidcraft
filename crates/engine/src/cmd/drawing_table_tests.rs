@@ -164,6 +164,27 @@ fn a_tables_space_is_inside_the_drawing_border() {
     assert_eq!((bare.min.x, bare.min.y, bare.max.x, bare.max.y), (0.0, 0.0, paper.x, paper.y));
 }
 
+/// A word the font can't set says why, and the rest of the table still draws.
+#[test]
+fn a_word_that_cant_be_set_says_why() {
+    use solidcraft_geom::paper::ObjectKind;
+
+    let mut s = assembly();
+    let sheet = sheet_of(&s);
+    let table = id_of(&run(&mut s, ADD, json!({"sheet": sheet, "kind": "parts_list"})));
+    let d = s.drawing("test").unwrap().clone();
+    let space = crate::drawing_table_paper::drawing_space(&d.sheets[0]);
+    let mut layout = crate::drawing_table_paper::place(&s, &d, &d.tables[0], space).unwrap().layout;
+    let cap_mm = d.tables[0].table.cap_mm;
+    let plain = crate::drawing_table_paper::on_paper(&layout, cap_mm, table, ObjectKind::PartsList);
+    assert!(plain.why.is_none(), "{:?}", plain.why);
+    let cell = layout.rows.iter_mut().flat_map(|row| &mut row.cells).find(|cell| !cell.lines.is_empty()).unwrap();
+    cell.lines[0].text = "\u{e000}".into();
+    let unset = crate::drawing_table_paper::on_paper(&layout, cap_mm, table, ObjectKind::PartsList);
+    assert!(unset.why.as_deref().is_some_and(|why| why.contains("no glyph")), "{:?}", unset.why);
+    assert_eq!(unset.group.items.len() + 1, plain.group.items.len(), "only that word goes");
+}
+
 /// One that can't be laid out says why and draws nothing; the rest of the sheet still draws. Here the
 /// text it would hold is past a table's 1 MiB: 300 revision rows, each with a 4096 byte column.
 #[test]
@@ -189,6 +210,48 @@ fn a_table_that_cant_be_laid_out_says_why_and_the_sheet_still_draws() {
     assert_eq!(reply["status"], "failed");
     assert!(reply["why"].as_str().is_some_and(|why| why.contains("1 MiB")), "{reply}");
     assert!(reply.get("outline_mm").is_none());
+}
+
+/// A table's words stand in its cells: each line on its baseline, its left, middle or right at the anchor
+/// the layout gives as its column aligns. The sheet carries their fonts, and each word is in the export.
+#[test]
+fn a_tables_words_stand_where_their_cells_say() {
+    use solidcraft_geom::cell::HAlign;
+    use solidcraft_geom::paper::Item;
+
+    let mut s = assembly();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    let table = id_of(&run(&mut s, ADD, json!({"sheet": ids::encode(sheet), "kind": "parts_list"})));
+    let mut words = 0;
+    for (align, along) in [(HAlign::Left, 0.0), (HAlign::Centre, 0.5), (HAlign::Right, 1.0)] {
+        let mut d = (**s.drawing("test").unwrap()).clone();
+        let at = d.tables.index_of(table).unwrap();
+        Arc::make_mut(d.tables.get_mut(at).unwrap()).table.columns.iter_mut().for_each(|column| column.align = align);
+        s.doc_mut().put_drawing(Arc::new(d));
+        let d = s.drawing("test").unwrap().clone();
+        let scene = crate::drawing_scene::build(&s, &d, sheet).unwrap().scene;
+        let space = crate::drawing_table_paper::drawing_space(&d.sheets[0]);
+        let placed = crate::drawing_table_paper::place(&s, &d, &d.tables[0], space).unwrap();
+        let group = scene.groups.iter().find(|g| g.object == table).unwrap();
+        let mut runs: Vec<_> = group.items.iter().filter_map(|item| if let Item::Text(run) = item { Some(run) } else { None }).collect();
+        let lines: Vec<_> =
+            std::iter::once(&placed.layout.heading).chain(&placed.layout.rows).flat_map(|row| &row.cells).flat_map(|c| &c.lines).collect();
+        assert!(lines.iter().any(|line| line.text == "Bolt"), "{lines:?}");
+        assert_eq!(lines.len(), runs.len(), "{align:?}");
+        words = lines.len();
+        for line in lines {
+            let at = runs.iter().position(|run| run.text == line.text && (run.origin.y - line.at.y).abs() < 1e-9).unwrap();
+            let run = runs.swap_remove(at);
+            assert!((run.origin.x + run.reach() * along - line.at.x).abs() < 1e-9, "{align:?} {line:?} {:?}", run.origin);
+            assert_eq!(run.angle, 0.0);
+        }
+        assert!(!scene.fonts.is_empty());
+        assert_eq!(scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene, "the same bytes on a redraw");
+    }
+    let exported = s.execute("drawing.export", &json!({"sheet": ids::encode(sheet)})).unwrap();
+    let svg = exported["svg"].as_str().unwrap();
+    let group = svg.split(&format!("data-object=\"{table}\"")).nth(1).unwrap().split("</g>").next().unwrap();
+    assert!(group.matches("<path fill=\"#000\" stroke=\"none\"").count() >= words, "its words are in the file: {group}");
 }
 
 /// The provider draws a table as a build does, keeps it until what it reads changes, and draws it again
