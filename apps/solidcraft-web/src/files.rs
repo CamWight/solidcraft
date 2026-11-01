@@ -409,8 +409,13 @@ pub fn autosave(files: &Rc<Files>, doc: Option<(&solidcraft_engine::doc::Documen
     let files = files.clone();
     match doc {
         Some((d, path)) => {
-            let bytes = match solidcraft_engine::io::write_design_container(d) {
-                Ok(bytes) => bytes,
+            let bytes = match solidcraft_engine::recovery::openable_copy(d) {
+                Ok((bytes, left_out)) => {
+                    if !left_out.is_empty() {
+                        files.say(format!("autosave: {}", left_out.join("; ")), true);
+                    }
+                    bytes
+                }
                 Err(e) => {
                     files.say(format!("autosave: {e}"), true);
                     return;
