@@ -390,6 +390,75 @@ fn after_a_model_change_the_last_scene_shows_until_its_views_are_drawn_again() {
     assert_eq!((last.stale.len(), s.drawing_scenes.projections, bytes(&last.scene)), (0, projections + 2, bytes(&now)));
 }
 
+/// The faces a title block's text is set in are part of what its scene is assembled from: the same
+/// face keeps the scene and its generation, and another face under the same family name, as when a
+/// family is found after it wasn't, is another scene. The text is set once for each drawing and
+/// model, not for each view drawn.
+#[test]
+fn a_scene_is_for_the_faces_its_title_blocks_text_is_set_in() {
+    let (mut s, sheet, _) = front_and_top();
+    let block = solidcraft_geom::title_block::default_block();
+    run(&mut s, "drawing.sheet.set", json!({"sheet": ids::encode(sheet), "title_block": serde_json::to_value(&block).unwrap()}));
+    let again = |s: &mut Session| {
+        let d = (**s.drawing("test").unwrap()).clone();
+        s.doc_mut().put_drawing(Arc::new(d));
+        extract(s, sheet).unwrap()
+    };
+    let set = |s: &Session| s.drawing_scenes.texts.as_ref().unwrap().4.clone();
+    extract(&mut s, sheet).unwrap();
+    let laid = set(&s);
+    let first = settled(&mut s, sheet);
+    assert!(Arc::ptr_eq(&laid, &set(&s)), "the views drawn set no text");
+    let faces: Vec<[u8; 32]> = first.scene.fonts.iter().map(|font| font.id).collect();
+    assert!(!faces.is_empty());
+    assert_eq!(s.drawing_scenes.last.as_ref().unwrap().inputs.faces, faces);
+    assert_eq!(again(&mut s).generation, first.generation, "the same face");
+    assert!(!Arc::ptr_eq(&laid, &set(&s)), "set again for the new drawing");
+
+    s.drawing_scenes.last.as_mut().unwrap().inputs.faces = vec![[9; 32]];
+    let other = again(&mut s);
+    assert!(other.generation > first.generation, "another face");
+    assert_eq!(bytes(&other.scene), bytes(&built(&s, sheet).scene));
+
+    // A family with no face is set in the built-in font, so it is the same scene, until it's found.
+    run(&mut s, "drawing.set", json!({"font": "No Such Family"}));
+    let missing = extract(&mut s, sheet).unwrap();
+    assert_eq!(missing.generation, other.generation);
+    assert_eq!(missing.scene.fonts, other.scene.fonts);
+}
+
+/// A title block's text is set for the sheet asked for and the model as it is, whichever was last.
+#[test]
+fn a_title_blocks_text_follows_its_sheet_and_the_model() {
+    use solidcraft_geom::cell::{Content, Format, Part, Source};
+    use solidcraft_geom::title_block::CellKind;
+    let (mut s, first, _) = front_and_top();
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    let source = s.drawing("test").unwrap().sources[0].id;
+    let second = run(&mut s, "drawing.sheet.add", json!({}))["sheet"].as_str().and_then(ids::decode).unwrap();
+    let mut block = solidcraft_geom::title_block::default_block();
+    let mass = block.cells.iter_mut().find_map(|c| if let CellKind::Text(text) = &mut c.kind { Some(text) } else { None }).unwrap();
+    mass.content = Content(vec![Part::Field { source: Source::Component, key: "mass".into(), format: Format::default() }]);
+    let block = serde_json::to_value(&block).unwrap();
+    let documents = json!({"source": ids::encode(source), "component": 0});
+    run(&mut s, "drawing.sheet.set", json!({"sheet": ids::encode(first), "title_block": block, "documents": documents}));
+    run(&mut s, "drawing.sheet.set", json!({"sheet": ids::encode(second), "title_block": block, "title_block_overrides": {"title": "Second"}}));
+    let checkpoint = run(&mut s, "edit.checkpoint", json!({}))["checkpoint"].clone();
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 40, "corner": [40, 60, 0], "body_name": "Tower", "operation": "new_body"}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+
+    // Back and forth between the sheets, each is its own.
+    for sheet in [first, second, first] {
+        assert_eq!(bytes(&settled(&mut s, sheet).scene), bytes(&built(&s, sheet).scene), "{sheet}");
+    }
+    let shown = |s: &Session| s.drawing_scenes.texts.as_ref().unwrap().3.clone();
+    let with_tower = shown(&s);
+    run(&mut s, "edit.restore_checkpoint", json!({"checkpoint": checkpoint}));
+    assert_eq!(bytes(&settled(&mut s, first).scene), bytes(&built(&s, first).scene));
+    assert_ne!(shown(&s), with_tower, "the mass read from the model as it is");
+}
+
 /// Closing the drawing drops its scenes and the world states they hold; opened again, every view
 /// is out of date.
 #[test]
@@ -423,7 +492,8 @@ fn a_view_past_the_sheets_records_leaves_out_only_itself() {
     };
     for title_block in [None, Some(solidcraft_geom::title_block::default_block())] {
         let record = Sheet { title_block, ..(**d.sheets.iter().find(|x| x.id == sheet).unwrap()).clone() };
-        let (empty, _) = assemble(&record, Projection::Third, "", &[], std::iter::empty::<(u64, Vec2, Drawn)>()).unwrap();
+        let text = block_text(&record, &d, &[]).unwrap();
+        let (empty, _) = assemble(&record, Projection::Third, &text, std::iter::empty::<(u64, Vec2, Drawn)>()).unwrap();
         assert_eq!(empty.groups.len(), if record.title_block.is_some() { 4 } else { 3 });
         // The block's text and its fonts count too.
         let fonts = |scene: &Scene| Scene::new(scene.size_mm, Vec::new()).font_records_beyond(&scene.fonts);
@@ -431,7 +501,7 @@ fn a_view_past_the_sheets_records_leaves_out_only_itself() {
         // The first leaves 20 records; the second needs 32; the third takes the last 20.
         let views = [lines(left - 22), lines(30), lines(18)];
         let centre = Vec2::new(100.0, 100.0);
-        let (scene, states) = assemble(&record, Projection::Third, "", &[], views.iter().enumerate().map(|(i, v)| (i as u64, centre, v))).unwrap();
+        let (scene, states) = assemble(&record, Projection::Third, &text, views.iter().enumerate().map(|(i, v)| (i as u64, centre, v))).unwrap();
         let statuses: Vec<&'static str> = states.iter().map(|v| v.status.name()).collect();
         assert_eq!(statuses, ["drawn", "failed", "drawn"]);
         let records = scene.groups.iter().map(Group::records).sum::<usize>() + fonts(&scene);

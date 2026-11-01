@@ -118,6 +118,15 @@ fn value_lines(text: &TextCell, value_box: Aabb2, family: &str, value: &str, not
     Ok((lines, at))
 }
 
+impl Set {
+    /// The faces it is set in, each once and in order: the same family name can mean another face,
+    /// when a font is installed or removed, and that is another id.
+    pub fn faces(&self) -> Vec<[u8; 32]> {
+        let ids: std::collections::BTreeSet<[u8; 32]> = self.fonts.iter().map(|font| font.id).collect();
+        ids.into_iter().collect()
+    }
+}
+
 impl Laid {
     /// The measured text set on paper, upright. Measuring admitted the font and found every glyph,
     /// so what was measured is set.
