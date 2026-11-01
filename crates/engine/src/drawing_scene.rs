@@ -491,7 +491,7 @@ fn draw_note(annotation: &Annotation, record: &Note, place: &dimension::Located,
 fn draw_table(annotation: &Annotation, s: &Session, d: &Drawing, record: &SheetTable, space: Aabb2) -> DrawnAnnotation {
     match crate::drawing_table_paper::place(s, d, record, space) {
         Ok(placed) => {
-            let paper = OnPaper { group: placed.layout.paper(record.id, annotation.kind()), fonts: Vec::new(), why: None };
+            let paper = crate::drawing_table_paper::on_paper(&placed.layout, record.table.cap_mm, record.id, annotation.kind());
             annotation.drawn(dimension::Status::Ok, Some(paper), None)
         }
         Err(why) => annotation.drawn(dimension::Status::Failed(why), None, None),
