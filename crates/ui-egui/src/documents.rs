@@ -1627,6 +1627,53 @@ mod tests {
         assert!(active_is_blank(&a) && a.home.open);
     }
 
+    /// Undo stays in its own tab with a drawing open: another tab's undo and redo leave this tab's
+    /// drawing as it is, and this tab's takes back its own change and leaves the other's redo there.
+    #[test]
+    fn undo_stays_in_the_tab_it_was_asked_in() {
+        let mut a = app();
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        a.run("drawing.create", json!({})).unwrap();
+        let id = a.session.open_drawing.unwrap();
+        a.run("drawing.sheet.add", json!({"name": "Notes"})).unwrap();
+        let sheets = |a: &SolveApp| a.session.doc.drawing(id).unwrap().sheets.len();
+        let added = sheets(&a);
+
+        new_design(&mut a);
+        a.run("solid.sphere", json!({"diameter": 8})).unwrap();
+        a.run("edit.undo", json!({})).unwrap();
+        assert!(a.session.doc.features.is_empty(), "undo is this design's");
+
+        switch(&mut a, 0);
+        assert_eq!((a.session.open_drawing, sheets(&a)), (Some(id), added), "the other tab's undo left this drawing");
+        a.run("edit.undo", json!({})).unwrap();
+        assert_eq!((a.session.open_drawing, sheets(&a)), (Some(id), added - 1), "this tab's undo took back the sheet");
+
+        switch(&mut a, 1);
+        a.run("edit.redo", json!({})).unwrap();
+        assert_eq!(a.session.doc.features.len(), 1, "this tab's redo is still there");
+        switch(&mut a, 0);
+        assert_eq!((a.session.open_drawing, sheets(&a)), (Some(id), added - 1), "and the other tab's redo left this one");
+    }
+
+    /// Opening a file a tab already has goes to that tab with its drawing still open, from another
+    /// tab or from its own.
+    #[test]
+    fn opening_a_file_a_tab_has_keeps_its_drawing_open() {
+        let mut a = app();
+        a.run("solid.box", json!({"length": 10, "width": 10, "height": 10})).unwrap();
+        a.run("drawing.create", json!({})).unwrap();
+        let id = a.session.open_drawing.unwrap();
+        a.session.path = Some("drawn.solidcraft".into());
+        new_design(&mut a);
+        assert_eq!(a.session.open_drawing, None);
+
+        assert!(reuse_path(&mut a, "drawn.solidcraft").unwrap());
+        assert_eq!((a.docs.active, a.session.open_drawing), (0, Some(id)));
+        assert!(reuse_path(&mut a, "drawn.solidcraft").unwrap());
+        assert_eq!((a.docs.active, a.session.open_drawing), (0, Some(id)));
+    }
+
     /// Direct tab creation remains available, including reuse of an untouched launch design.
     #[test]
     fn direct_new_tab_reuses_the_launch_design_then_opens_a_tab_every_time() {
