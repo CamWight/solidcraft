@@ -2,9 +2,10 @@
 //! scene ([`Scene`]), for the sheet page and every export, so the screen and the files draw the
 //! same thing. In paint order: the sheet's drawing border ([`SheetLayout::paper`]), then each view
 //! on the sheet by id, its visible lines as [`paper_group`] makes them, then the dimensions of those
-//! views, by view and id ([`crate::drawing_dimension_paper`]). An annotation is one more arm of
-//! [`Annotation`], and everything after that is the one path; the title block, tables, hidden lines
-//! and shaded views each join as one more kind of group.
+//! views, by view and id ([`crate::drawing_dimension_paper`]), then what hangs on the sheet: notes
+//! and tables ([`crate::drawing_table_paper`]). An annotation is one more arm of [`Annotation`], and
+//! everything after that is the one path; the title block, hidden lines and shaded views each join
+//! as one more kind of group.
 //!
 //! [`build`] draws a sheet at once, each view the one way: its lines worked out centred on the view,
 //! then moved to its centre, so the same lines on the same centre are the same bytes however they
@@ -35,7 +36,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::note::{Anchor, Note};
-use solidcraft_doc::drawing::table::PartsList;
+use solidcraft_doc::drawing::table::{Kind, PartsList, SheetTable};
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_doc::drawing_view::TangentEdges;
@@ -43,6 +44,7 @@ use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::hlr::Source;
 use solidcraft_geom::paper::text::Font;
+use solidcraft_geom::revision::RevisionRecord;
 
 use crate::drawing_annotation_paper::OnPaper;
 use crate::drawing_sources::RowRead;
@@ -248,9 +250,28 @@ struct Owners {
 #[derive(Clone)]
 enum Annotation {
     Dimension(Arc<Dimension>),
-    /// With the parts list its number is read from, and the model that list was read from.
-    Balloon(Arc<Balloon>, Option<(u64, PartsList, Arc<ModelState>)>),
+    /// With the parts list its number is read from, and what that list was read from.
+    Balloon(Arc<Balloon>, Option<(u64, PartsList, ListReads)>),
     Note(Arc<Note>),
+    /// With what its rows read and the space it is placed in.
+    Table(Arc<SheetTable>, TableReads, Aabb2),
+}
+
+/// What a table's rows are read from, held so its address can't be reused while it is compared.
+#[derive(Clone, Debug)]
+enum TableReads {
+    List(ListReads),
+    Revisions(Arc<RevisionRecord>),
+}
+
+impl TableReads {
+    fn same(&self, other: &TableReads) -> bool {
+        match (self, other) {
+            (TableReads::List(a), TableReads::List(b)) => a.same(b),
+            (TableReads::Revisions(a), TableReads::Revisions(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 impl Annotation {
@@ -259,6 +280,7 @@ impl Annotation {
             Annotation::Dimension(record) => record.id,
             Annotation::Balloon(record, _) => record.id,
             Annotation::Note(record) => record.id,
+            Annotation::Table(record, ..) => record.id,
         }
     }
 
@@ -267,6 +289,10 @@ impl Annotation {
             Annotation::Dimension(_) => ObjectKind::Dimension,
             Annotation::Balloon(..) => ObjectKind::Balloon,
             Annotation::Note(_) => ObjectKind::Note,
+            Annotation::Table(record, ..) => match record.kind {
+                Kind::PartsList(_) => ObjectKind::PartsList,
+                Kind::Revision => ObjectKind::RevisionTable,
+            },
         }
     }
 
@@ -276,6 +302,7 @@ impl Annotation {
             Annotation::Dimension(record) => Some(record.view),
             Annotation::Balloon(record, _) => Some(record.view),
             Annotation::Note(record) => record.anchor.view(),
+            Annotation::Table(..) => None,
         }
     }
 
@@ -285,8 +312,8 @@ impl Annotation {
             (Annotation::Dimension(a), Annotation::Dimension(b)) => Arc::ptr_eq(a, b),
             (Annotation::Balloon(a, list), Annotation::Balloon(b, other)) => {
                 let same_list = match (list, other) {
-                    (Some((id, list, state)), Some((other_id, other_list, other_state))) => {
-                        id == other_id && list == other_list && Arc::ptr_eq(state, other_state)
+                    (Some((id, list, reads)), Some((other_id, other_list, other_reads))) => {
+                        id == other_id && list == other_list && reads.same(other_reads)
                     }
                     (None, None) => true,
                     _ => false,
@@ -294,6 +321,9 @@ impl Annotation {
                 Arc::ptr_eq(a, b) && same_list
             }
             (Annotation::Note(a), Annotation::Note(b)) => Arc::ptr_eq(a, b),
+            (Annotation::Table(a, reads, space), Annotation::Table(b, other, other_space)) => {
+                Arc::ptr_eq(a, b) && reads.same(other) && space == other_space
+            }
             _ => false,
         }
     }
@@ -419,6 +449,7 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
                     None => unread(annotation),
                 }
             }
+            Annotation::Table(record, _, space) => draw_table(annotation, s, d, record, *space),
         });
     }
     out
@@ -456,13 +487,24 @@ fn draw_note(annotation: &Annotation, record: &Note, place: &dimension::Located,
     annotation.drawn(place.status.clone(), Some(crate::drawing_annotation_paper::note_group(record, tip)), None)
 }
 
+/// A table that can't be read or laid out says why, and the rest of the sheet still draws.
+fn draw_table(annotation: &Annotation, s: &Session, d: &Drawing, record: &SheetTable, space: Aabb2) -> DrawnAnnotation {
+    match crate::drawing_table_paper::place(s, d, record, space) {
+        Ok(placed) => {
+            let paper = OnPaper { group: placed.layout.paper(record.id, annotation.kind()), fonts: Vec::new(), why: None };
+            annotation.drawn(dimension::Status::Ok, Some(paper), None)
+        }
+        Err(why) => annotation.drawn(dimension::Status::Failed(why), None, None),
+    }
+}
+
 /// The annotations of `views` of `d` and those hung on `sheet`, by view and id, each with what it
 /// reads now.
 fn annotations_on(d: &Drawing, views: impl Iterator<Item = u64>, sheet: Option<u64>, worlds: &Worlds) -> Vec<Annotation> {
     let views: BTreeSet<u64> = views.collect();
     let dimensions = d.dimensions.iter().filter(|record| views.contains(&record.view)).cloned().map(Annotation::Dimension);
     let balloons = d.balloons.iter().filter(|record| views.contains(&record.view)).map(|record| {
-        let list = d.parts_list_for(record).ok().map(|(id, list)| (id, list, worlds.of(list.of.source)));
+        let list = d.parts_list_for(record).ok().map(|(id, list)| (id, list, worlds.list_of(list.of.source)));
         Annotation::Balloon(record.clone(), list)
     });
     let hung = |note: &&Arc<Note>| match &note.anchor {
@@ -470,7 +512,15 @@ fn annotations_on(d: &Drawing, views: impl Iterator<Item = u64>, sheet: Option<u
         anchor => anchor.view().is_some_and(|view| views.contains(&view)),
     };
     let notes = d.notes.iter().filter(hung).cloned().map(Annotation::Note);
-    let mut on: Vec<Annotation> = dimensions.chain(balloons).chain(notes).collect();
+    let space = sheet.and_then(|sheet| d.sheets.iter().find(|one| one.id == sheet)).map(|one| crate::drawing_table_paper::drawing_space(one));
+    let tables = d.tables.iter().filter(|table| Some(table.sheet) == sheet).filter_map(|table| {
+        let reads = match &table.kind {
+            Kind::PartsList(list) => TableReads::List(worlds.list_of(list.of.source)),
+            Kind::Revision => TableReads::Revisions(d.revisions.clone()),
+        };
+        Some(Annotation::Table(table.clone(), reads, space?))
+    });
+    let mut on: Vec<Annotation> = dimensions.chain(balloons).chain(notes).chain(tables).collect();
     on.sort_by_key(|annotation| (annotation.view(), annotation.id()));
     on
 }
@@ -600,7 +650,7 @@ fn assemble<D: Borrow<Drawn>>(record: &Sheet, views: impl Iterator<Item = (u64, 
 }
 
 /// Sheet `sheet` of `d`.
-fn sheet_of(d: &Drawing, sheet: u64) -> Result<&Sheet> {
+pub(crate) fn sheet_of(d: &Drawing, sheet: u64) -> Result<&Sheet> {
     d.sheets.iter().map(|s| &**s).find(|s| s.id == sheet).ok_or_else(|| bad(CMD, format!("the drawing has no sheet {}", ids::encode(sheet))))
 }
 
@@ -646,21 +696,42 @@ pub struct Cache {
     projections: usize,
 }
 
-/// The world state of each of a drawing's sources now: what makes a view of it current.
-struct Worlds(Vec<(u64, Arc<ModelState>)>);
+/// What a list of a source is read from: its world state, and what else it reads of the design (a
+/// part's number names nothing the model holds). Nothing of a design that isn't open.
+#[derive(Clone, Debug)]
+struct ListReads(Arc<ModelState>, Option<Arc<solidcraft_doc::bom::Reads>>);
+
+impl ListReads {
+    fn same(&self, other: &ListReads) -> bool {
+        let design = match (&self.1, &other.1) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            (None, None) => true,
+            _ => false,
+        };
+        Arc::ptr_eq(&self.0, &other.0) && design
+    }
+}
+
+/// What each of a drawing's sources is now: its world state is what makes a view of it current.
+struct Worlds(Vec<(u64, ListReads)>);
 
 impl Worlds {
     fn now(s: &Session, d: &Drawing) -> Worlds {
-        Worlds(d.sources.iter().map(|source| (source.id, s.drawn_state(d, source.id))).collect())
+        let reads = |source: u64| s.drawn(d, source).ok().map(|from| from.list_reads());
+        Worlds(d.sources.iter().map(|source| (source.id, ListReads(s.drawn_state(d, source.id), reads(source.id)))).collect())
     }
 
     /// `source`'s, or a state nothing was drawn from for one the drawing doesn't have.
     fn of(&self, source: u64) -> Arc<ModelState> {
-        self.0.iter().find(|(id, _)| *id == source).map_or_else(Arc::default, |(_, state)| state.clone())
+        self.list_of(source).0
+    }
+
+    fn list_of(&self, source: u64) -> ListReads {
+        self.0.iter().find(|(id, _)| *id == source).map_or_else(|| ListReads(Arc::default(), None), |(_, reads)| reads.clone())
     }
 
     fn same(&self, other: &Worlds) -> bool {
-        self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1))
+        self.0.len() == other.0.len() && self.0.iter().zip(&other.0).all(|(a, b)| a.0 == b.0 && a.1.same(&b.1))
     }
 }
 
@@ -734,8 +805,8 @@ impl Cache {
         let mut stale = annotations_on(d, serials.keys().copied(), self.sheet, worlds);
         stale.retain(|record| match record.view() {
             Some(view) => serials.get(&view).is_some_and(|serial| !current(record, view, *serial)),
-            // On a sheet it reads no model.
-            None => !self.annotations.get(&record.id()).is_some_and(|e| e.record.same(record)),
+            // On a sheet: what it reads, if anything, is in its record's comparison.
+            None => !self.annotations.get(&record.id()).is_some_and(|e| e.record.same(record) && e.units == units),
         });
         stale
     }

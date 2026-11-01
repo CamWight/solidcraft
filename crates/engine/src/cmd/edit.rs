@@ -96,7 +96,7 @@ pub static COMMANDS: &[CommandSpec] = &[
     ),
     CommandSpec::new("select.set", "Select", select_set).any_part().icon("select")
         .noundo()
-        .params("items: [{type: body|edge|face|feature|sketch_curve|sketch_point|profile, …} or {type: drawing, drawing, object: ids of the drawing open and of a view, dimension, balloon, note or image of it}], add?: bool"),
+        .params("items: [{type: body|edge|face|feature|sketch_curve|sketch_point|profile, …} or {type: drawing, drawing, object: ids of the drawing open and of a view, dimension, balloon, note, image or table of it}], add?: bool"),
     CommandSpec::new("select.filter", "Selection filter", select_filter).icon("select").noundo().doc_only()
         .params("mode: body|face|component → validated UI pick granularity; headless echo only, no document edits or undo"),
     CommandSpec::new("select.clear", "Clear Selection", select_clear).any_part().icon("select").noundo(),

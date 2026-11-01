@@ -371,9 +371,9 @@ fn the_provider_keeps_a_balloon_until_what_it_reads_changes() {
     let again = settled(&mut s);
     assert_eq!(again.generation, first.generation, "nothing read again");
 
-    list(&mut s, json!({}));
+    let table = list(&mut s, json!({}));
     let numbered = crate::drawing_scene::extract(&mut s, sheet).unwrap();
-    assert_eq!(numbered.stale_annotations, [ids::decode(&balloon).unwrap()], "a list to read");
+    assert_eq!(numbered.stale_annotations, [ids::decode(&table).unwrap(), ids::decode(&balloon).unwrap()], "the list, and what it numbers");
     let numbered = settled(&mut s);
     let d = s.drawing("test").unwrap().clone();
     assert_eq!(*numbered.scene, crate::drawing_scene::build(&s, &d, sheet).unwrap().scene);
@@ -405,6 +405,41 @@ fn a_balloon_and_its_lists_row_read_one_item() {
     assert_eq!(bracket.kind, solidcraft_geom::table::RowKind::Part);
     let number = read(&mut s, &balloon)["item"].clone();
     assert_eq!(number, json!(bracket.fields["item"]), "{bracket:?}");
+}
+
+/// A table's inspect names the balloons on each row, for what cross-highlights them.
+#[test]
+fn a_tables_inspect_names_its_rows_balloons() {
+    let (mut s, view, [_, occurrence]) = placed();
+    let balloon = add(&mut s, view, occurrence)["balloon"].as_str().unwrap().to_string();
+    let table = list(&mut s, json!({}));
+    let reply = s.execute("drawing.table.inspect", &json!({"table": table})).unwrap();
+    let rows = reply["rows"].as_array().unwrap();
+    let on: Vec<&Value> = rows.iter().filter(|row| row.get("balloons").is_some()).collect();
+    assert_eq!(on.len(), 1, "{reply}");
+    assert_eq!(on[0]["balloons"], json!([balloon]));
+}
+
+/// A balloon's number comes from its list, which reads more of the design than the model: a part's
+/// properties send the balloon to be read again, and a change of the drawing alone doesn't.
+#[test]
+fn a_balloon_is_read_again_when_its_lists_design_changes() {
+    let (mut s, view, [_, occurrence]) = placed();
+    let balloon = ids::decode(add(&mut s, view, occurrence)["balloon"].as_str().unwrap()).unwrap();
+    let table = list(&mut s, json!({}));
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    crate::drawing_scene::extract(&mut s, sheet).unwrap();
+    while crate::drawing_scene::step(&mut s) {}
+    assert!(crate::drawing_scene::extract(&mut s, sheet).unwrap().stale_annotations.is_empty());
+
+    run(&mut s, "drawing.table.edit", json!({"table": table, "set": {"cap_mm": 2.5}}));
+    let stale = crate::drawing_scene::extract(&mut s, sheet).unwrap().stale_annotations;
+    assert!(!stale.contains(&balloon), "the list's look reads nothing new");
+    while crate::drawing_scene::step(&mut s) {}
+
+    let set = json!({"command": "component.metadata.set", "params": {"component": "Bracket", "part_number": "B-1"}});
+    run(&mut s, "drawing.source.execute", set);
+    assert!(crate::drawing_scene::extract(&mut s, sheet).unwrap().stale_annotations.contains(&balloon));
 }
 
 /// A balloon with no list says so, and reads the only one when there is one: the row its part is

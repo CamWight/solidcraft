@@ -80,6 +80,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         dimensions: super::drawing_scene::dimension_results(&built.annotations),
         balloons: super::drawing_scene::balloon_results(&built.annotations),
         notes: super::drawing_scene::note_results(&built.annotations),
+        tables: super::drawing_scene::table_results(&built.annotations),
         param_warnings: Vec::new(),
     };
     crate::schema::reply(reply)

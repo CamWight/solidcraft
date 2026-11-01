@@ -400,6 +400,33 @@ struct Placed {
 /// `None` when a body in it can't be measured, or measures inside out.
 type Weighed = Option<(f64, usize)>;
 
+/// What a list reads of its design besides the evaluated model: all a [`Tree`] looks up, so two of
+/// these that are equal, with the same model, list the same.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Reads {
+    occurrences: Vec<crate::Occurrence>,
+    components: Vec<Component>,
+    params: Vec<crate::Param>,
+    materials: BTreeMap<String, String>,
+    user_materials: Vec<crate::UserMaterial>,
+    body_offsets: BTreeMap<String, crate::Mat>,
+    body_components: BTreeMap<String, u64>,
+}
+
+impl Reads {
+    pub fn of(doc: &Document) -> Reads {
+        Reads {
+            occurrences: doc.occurrences.clone(),
+            components: doc.components.clone(),
+            params: doc.params.clone(),
+            materials: doc.materials.clone(),
+            user_materials: doc.user_materials.clone(),
+            body_offsets: doc.body_offsets.clone(),
+            body_components: doc.body_components.clone(),
+        }
+    }
+}
+
 impl<'a> Tree<'a> {
     /// The structure of `doc` with the bodies of `state`, its evaluated model.
     pub fn new(doc: &'a Document, state: &'a ModelState) -> Tree<'a> {

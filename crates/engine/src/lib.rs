@@ -22,6 +22,7 @@ pub mod drawing_scene;
 mod drawing_scene_hit;
 mod drawing_scene_kept;
 pub mod drawing_sources;
+pub(crate) mod drawing_table_paper;
 pub mod drawing_view;
 pub mod easyprint;
 pub mod frames;
@@ -132,7 +133,7 @@ pub enum Sel {
     Feature {
         id: u64,
     },
-    /// A view, dimension, balloon, note or image of the drawing open.
+    /// A view, dimension, balloon, note, image or table of the drawing open.
     Drawing {
         #[serde(with = "solidcraft_doc::ids")]
         drawing: u64,
@@ -476,6 +477,8 @@ pub struct Session {
     /// Occurrence moves not captured yet (Capture Position keeps them, a recompute drops them).
     pub pending_moves: std::collections::BTreeMap<u64, solidcraft_doc::Mat>,
     world_cache: std::sync::Mutex<Option<WorldCache>>,
+    /// What a list reads of this design, and the revision it was looked at ([`Session::list_reads`]).
+    list_reads: std::sync::Mutex<Option<(u64, Arc<solidcraft_doc::bom::Reads>)>>,
     /// The design the joints were last solved for, as the solve left it, and the model it read
     /// (see [`Session::solve_joints`]).
     joints_settled: Option<(Arc<Document>, std::sync::Weak<solidcraft_doc::ModelState>)>,
@@ -697,6 +700,7 @@ impl Session {
             active_occurrence_path: None,
             pending_moves: Default::default(),
             world_cache: Default::default(),
+            list_reads: Default::default(),
             joints_settled: None,
             occurrence_visibility_cache: Default::default(),
             removed_later_cache: Default::default(),
@@ -932,6 +936,22 @@ impl Session {
     /// unsaved design, and until version control gives versions (#2869), which fills this in.
     pub(crate) fn design_version(&self) -> Option<solidcraft_geom::revision::ModelVersion> {
         None
+    }
+
+    /// What a list of this design reads of it: the same record until that changes, so a drawing compares
+    /// it by address as it does the world state. Looked at again only after a change of the document.
+    pub(crate) fn list_reads(&self) -> Arc<solidcraft_doc::bom::Reads> {
+        let now = || solidcraft_doc::bom::Reads::of(&self.doc);
+        let Ok(mut cached) = self.list_reads.lock() else { return Arc::new(now()) };
+        if let Some((revision, reads)) = cached.as_ref()
+            && *revision == self.revision
+        {
+            return reads.clone();
+        }
+        let reads = now();
+        let reads = cached.take().map(|(_, was)| was).filter(|was| **was == reads).unwrap_or_else(|| Arc::new(reads));
+        *cached = Some((self.revision, reads.clone()));
+        reads
     }
 
     /// Prepared placements only: optional save caches must not compute a cold world.
@@ -1637,6 +1657,7 @@ impl Session {
             active_occurrence_path: self.active_occurrence_path.clone(),
             pending_moves: self.pending_moves.clone(),
             world_cache: std::sync::Mutex::new(self.world_cache.lock().ok().and_then(|cache| cache.clone())),
+            list_reads: std::sync::Mutex::new(self.list_reads.lock().ok().and_then(|cache| cache.clone())),
             joints_settled: self.joints_settled.clone(),
             occurrence_visibility_cache: Default::default(),
             removed_later_cache: Default::default(),
