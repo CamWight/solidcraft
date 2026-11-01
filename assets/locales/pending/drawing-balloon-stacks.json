@@ -1,0 +1,26 @@
+{
+  "en": {
+    "cmd.drawing_balloon_stack_add": "Stack Balloon"
+  },
+  "ar": {
+    "cmd.drawing_balloon_stack_add": "تكديس بالون"
+  },
+  "de": {
+    "cmd.drawing_balloon_stack_add": "Positionsnummer stapeln"
+  },
+  "he": {
+    "cmd.drawing_balloon_stack_add": "ערימת בלונים"
+  },
+  "ja": {
+    "cmd.drawing_balloon_stack_add": "バルーンを積み重ね"
+  },
+  "ko": {
+    "cmd.drawing_balloon_stack_add": "풍선 쌓기"
+  },
+  "vi": {
+    "cmd.drawing_balloon_stack_add": "Xếp chồng bóng chú thích"
+  },
+  "zh": {
+    "cmd.drawing_balloon_stack_add": "堆叠零件序号"
+  }
+}

@@ -4,8 +4,29 @@ use solidcraft_geom::paper::Scene;
 
 use super::*;
 
-fn balloon(at: [f64; 2]) -> Balloon {
-    Balloon { id: 7, view: 8, edge: ModelEdge { body: "B".into(), origin_feature: 1, name: "e".into(), path: vec![1] }, at, parts_list: None }
+/// A balloon of a stack's, on `under`.
+fn stacked(id: u64, at: BalloonPlace) -> Balloon {
+    Balloon { id, view: 8, edge: ModelEdge { body: "B".into(), origin_feature: 1, name: "e".into(), path: vec![1] }, at, parts_list: None }
+}
+
+/// Each in a stack touches the one under it, however wide its number makes it.
+#[test]
+fn a_stack_stands_touching() {
+    use std::f64::consts::FRAC_PI_2;
+    let first = stacked(1, [60.0, 40.0].into());
+    let right = stacked(2, BalloonPlace::On(Stacked { on: 1, angle: 0.0 }));
+    let up = stacked(3, BalloonPlace::On(Stacked { on: 2, angle: FRAC_PI_2 }));
+    assert!(close(balloon_centre(std::iter::once((&first, Some("1")))), Vec2::new(60.0, 40.0)));
+    assert!(close(balloon_centre([(&first, Some("1")), (&right, Some("2"))].into_iter()), Vec2::new(70.0, 40.0)));
+    assert!(close(balloon_centre([(&first, Some("1")), (&right, Some("2")), (&up, Some("3"))].into_iter()), Vec2::new(70.0, 50.0)));
+    // A number too wide for 5 mm: its own group's circle says how far its centre stands.
+    let wide = "12.34.56";
+    let at = balloon_centre([(&first, Some("1")), (&right, Some(wide))].into_iter());
+    let group = balloon_group(2, at, Some(wide), None, None).group;
+    let Some(Item::Stroke { path, .. }) = group.items.first() else { panic!("its circle") };
+    let Some(solidcraft_geom::Seg2::Arc { radius, .. }) = path.first() else { panic!("an arc") };
+    assert!(*radius > 5.0, "{radius}");
+    assert!(close(at, Vec2::new(60.0 + 5.0 + radius, 40.0)), "{at:?} {radius}");
 }
 
 fn close(a: Vec2, b: Vec2) -> bool {
@@ -36,7 +57,7 @@ fn valid(on: &OnPaper) {
 /// to the rim, along the line to the centre: by hand, (-40, 0) to (60, 40) leaves the rim 5 short.
 #[test]
 fn a_balloon_is_a_circle_round_its_number_with_a_leader_to_its_arrow() {
-    let on = balloon_group(&balloon([60.0, 40.0]), Some("12"), Some(Vec2::new(-40.0, 0.0)), None);
+    let on = balloon_group(7, Vec2::new(60.0, 40.0), Some("12"), Some(Vec2::new(-40.0, 0.0)), None);
     assert_eq!((on.group.object, on.group.kind, on.why.as_deref()), (7, ObjectKind::Balloon, None));
     valid(&on);
     let (circles, line, tip, run) = parts(&on.group);
@@ -56,7 +77,7 @@ fn a_balloon_is_a_circle_round_its_number_with_a_leader_to_its_arrow() {
 /// A number too wide for the least circle gets a larger one, a gap clear of its corners.
 #[test]
 fn a_wide_number_gets_a_wider_circle() {
-    let on = balloon_group(&balloon([0.0, 0.0]), Some("12.34.56"), None, None);
+    let on = balloon_group(7, Vec2::new(0.0, 0.0), Some("12.34.56"), None, None);
     let run = parts(&on.group).3.unwrap().reach();
     let radius = Vec2::new(run, TEXT_MM).len() * 0.5 + GAP_MM;
     assert!(radius > BALLOON_MM, "{radius}");
@@ -70,20 +91,20 @@ fn a_wide_number_gets_a_wider_circle() {
 /// can't set keeps the rest.
 #[test]
 fn what_it_cant_draw_leaves_the_rest_and_says_why() {
-    let lost = balloon_group(&balloon([0.0, 0.0]), Some("3"), None, None);
+    let lost = balloon_group(7, Vec2::new(0.0, 0.0), Some("3"), None, None);
     assert!(parts(&lost.group).1.is_empty() && parts(&lost.group).3.is_some() && lost.why.is_none());
-    let empty = balloon_group(&balloon([0.0, 0.0]), None, Some(Vec2::new(30.0, 0.0)), Some("no list".into()));
+    let empty = balloon_group(7, Vec2::new(0.0, 0.0), None, Some(Vec2::new(30.0, 0.0)), Some("no list".into()));
     assert!(parts(&empty.group).3.is_none() && parts(&empty.group).2.is_some());
     assert_eq!(empty.why.as_deref(), Some("no list"));
     valid(&empty);
     // 0.1 mm from the centre is under the circle, further from its rim than an arrowhead.
     for tip in [Vec2::ZERO, Vec2::new(0.1, 0.0), Vec2::new(2.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(5.0 + ARROW_MM, 0.0)] {
-        let near = balloon_group(&balloon([0.0, 0.0]), Some("3"), Some(tip), None);
+        let near = balloon_group(7, Vec2::new(0.0, 0.0), Some("3"), Some(tip), None);
         assert!(parts(&near.group).2.is_none() && near.why.as_deref().is_some_and(|why| why.contains("too near")), "{tip:?}: {:?}", near.why);
         assert_eq!(parts(&near.group).0.len(), 1);
     }
-    assert!(parts(&balloon_group(&balloon([0.0, 0.0]), Some("3"), Some(Vec2::new(5.0 + ARROW_MM + 0.01, 0.0)), None).group).2.is_some());
-    let unset = balloon_group(&balloon([0.0, 0.0]), Some("\u{4e2d}"), Some(Vec2::new(30.0, 0.0)), None);
+    assert!(parts(&balloon_group(7, Vec2::new(0.0, 0.0), Some("3"), Some(Vec2::new(5.0 + ARROW_MM + 0.01, 0.0)), None).group).2.is_some());
+    let unset = balloon_group(7, Vec2::new(0.0, 0.0), Some("\u{4e2d}"), Some(Vec2::new(30.0, 0.0)), None);
     assert!(unset.why.as_deref().is_some_and(|why| why.contains("no glyph")) && parts(&unset.group).2.is_some());
 }
 
@@ -161,7 +182,7 @@ fn hostile_places_and_arrows_never_panic() {
     for x in values {
         for y in values {
             for tip in [Vec2::ZERO, Vec2::new(x, y), Vec2::new(y, 1.0)] {
-                for on in [balloon_group(&balloon([x, y]), Some("1"), Some(tip), None), note_group(&note([x, y], "A", None), Some(tip))] {
+                for on in [balloon_group(7, Vec2::new(x, y), Some("1"), Some(tip), None), note_group(&note([x, y], "A", None), Some(tip))] {
                     let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![on.group]);
                     scene.add_fonts(on.fonts);
                     let _ = scene.validate();

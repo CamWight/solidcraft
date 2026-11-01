@@ -467,6 +467,7 @@ impl Drawing {
     /// Takes `objects` out, each list by id: the one rule a sheet's delete and a selection's delete
     /// remove by. As in [`Drawing::remove_sheet`], what is left must still keep the record's rules.
     pub fn remove_objects(&mut self, objects: &OnSheet) {
+        self.hand_on_stacks(&objects.balloons);
         self.views.retain(|v| objects.views.binary_search(&v.id).is_err());
         self.dimensions.retain(|d| objects.dimensions.binary_search(&d.id).is_err());
         self.balloons.retain(|b| objects.balloons.binary_search(&b.id).is_err());
