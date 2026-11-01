@@ -37,7 +37,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use solidcraft_doc::drawing::balloon::Balloon;
+use solidcraft_doc::drawing::balloon::{Balloon, BalloonPlace};
 use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::note::{Anchor, Note};
 use solidcraft_doc::drawing::reference;
@@ -292,11 +292,22 @@ struct Owners {
 #[derive(Clone)]
 enum Annotation {
     Dimension(Arc<Dimension>),
-    /// With the parts list its number is read from, and what that list was read from.
-    Balloon(Arc<Balloon>, Option<(u64, PartsList, ListReads)>),
+    /// With the parts list its number is read from and what that list was read from, and the same of
+    /// each balloon it stands on: their numbers say how far along it stands.
+    Balloon(Arc<Balloon>, BalloonList, Vec<(Arc<Balloon>, BalloonList)>),
     Note(Arc<Note>),
     /// With what its rows read and the space it is placed in.
     Table(Arc<SheetTable>, TableReads, Aabb2),
+}
+
+type BalloonList = Option<(u64, PartsList, ListReads)>;
+
+fn same_list(a: &BalloonList, b: &BalloonList) -> bool {
+    match (a, b) {
+        (Some((id, list, reads)), Some((other_id, other_list, other_reads))) => id == other_id && list == other_list && reads.same(other_reads),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 /// What a table's rows are read from, held so its address can't be reused while it is compared.
@@ -323,7 +334,7 @@ impl Annotation {
     fn id(&self) -> u64 {
         match self {
             Annotation::Dimension(record) => record.id,
-            Annotation::Balloon(record, _) => record.id,
+            Annotation::Balloon(record, ..) => record.id,
             Annotation::Note(record) => record.id,
             Annotation::Table(record, ..) => record.id,
         }
@@ -345,7 +356,7 @@ impl Annotation {
     fn view(&self) -> Option<u64> {
         match self {
             Annotation::Dimension(record) => Some(record.view),
-            Annotation::Balloon(record, _) => Some(record.view),
+            Annotation::Balloon(record, ..) => Some(record.view),
             Annotation::Note(record) => record.anchor.view(),
             Annotation::Table(..) => None,
         }
@@ -355,15 +366,11 @@ impl Annotation {
     fn same(&self, other: &Annotation) -> bool {
         match (self, other) {
             (Annotation::Dimension(a), Annotation::Dimension(b)) => Arc::ptr_eq(a, b),
-            (Annotation::Balloon(a, list), Annotation::Balloon(b, other)) => {
-                let same_list = match (list, other) {
-                    (Some((id, list, reads)), Some((other_id, other_list, other_reads))) => {
-                        id == other_id && list == other_list && reads.same(other_reads)
-                    }
-                    (None, None) => true,
-                    _ => false,
+            (Annotation::Balloon(a, list, under), Annotation::Balloon(b, other, other_under)) => {
+                let same_under = |((a, list), (b, other)): (&(Arc<Balloon>, BalloonList), &(Arc<Balloon>, BalloonList))| {
+                    Arc::ptr_eq(a, b) && same_list(list, other)
                 };
-                Arc::ptr_eq(a, b) && same_list
+                Arc::ptr_eq(a, b) && same_list(list, other) && under.len() == other_under.len() && under.iter().zip(other_under).all(same_under)
             }
             (Annotation::Note(a), Annotation::Note(b)) => Arc::ptr_eq(a, b),
             (Annotation::Table(a, reads, space), Annotation::Table(b, other, other_space)) => {
@@ -458,11 +465,19 @@ fn not_open(view: &ResolvedView, last: Option<&Drawn>, why: &Unopened) -> Drawn 
 fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl Fn(u64) -> Option<ViewFrame>) -> Vec<DrawnAnnotation> {
     let dimensions: Vec<u64> = wanted.iter().filter(|one| matches!(one, Annotation::Dimension(_))).map(Annotation::id).collect();
     let balloons: Vec<&Balloon> =
-        wanted.iter().filter_map(|one| if let Annotation::Balloon(record, _) = one { Some(&**record) } else { None }).collect();
+        wanted.iter().filter_map(|one| if let Annotation::Balloon(record, ..) = one { Some(&**record) } else { None }).collect();
     let balloon_ids: Vec<u64> = balloons.iter().map(|record| record.id).collect();
     let measured = crate::drawing_sources::resolve_dimensions(s, d, &dimensions);
     let located = crate::drawing_sources::resolve_balloons(s, d, &balloon_ids);
-    let mut rows = crate::drawing_sources::balloon_rows(s, d, &balloons).into_iter();
+    let mut read: Vec<&Balloon> = wanted
+        .iter()
+        .filter_map(|one| if let Annotation::Balloon(record, _, under) = one { Some((record, under)) } else { None })
+        .flat_map(|(record, under)| under.iter().map(|(one, _)| &**one).chain(std::iter::once(&**record)))
+        .collect();
+    read.sort_by_key(|one| one.id);
+    read.dedup_by_key(|one| one.id);
+    let rows: BTreeMap<u64, RowRead> = read.iter().map(|one| one.id).zip(crate::drawing_sources::balloon_rows(s, d, &read)).collect();
+    let item = |one: &Balloon| rows.get(&one.id).and_then(|row| row.item.as_deref());
     let notes: Vec<u64> = wanted.iter().filter(|one| matches!(one, Annotation::Note(_))).map(Annotation::id).collect();
     let noted = crate::drawing_sources::resolve_notes(s, d, &notes);
     let (mut next_dimension, mut next_balloon, mut next_note) = (0, 0, 0);
@@ -480,12 +495,14 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
                     None => unread(annotation),
                 }
             }
-            Annotation::Balloon(record, _) => {
+            Annotation::Balloon(record, _, under) => {
                 let read = located.as_ref().ok().and_then(|all| all.get(next_balloon));
                 next_balloon += 1;
-                match read {
-                    Some(place) => draw_balloon(annotation, record, place, rows.next().unwrap_or_default(), frame(record.view)),
-                    None => unread(annotation),
+                let stack = under.iter().map(|(one, _)| &**one).chain(std::iter::once(&**record));
+                let centre = crate::drawing_annotation_paper::balloon_centre(stack.map(|one| (one, item(one))));
+                match (read, rows.get(&record.id)) {
+                    (Some(place), Some(row)) => draw_balloon(annotation, record, centre, place, row, frame(record.view)),
+                    _ => unread(annotation),
                 }
             }
             Annotation::Note(record) => {
@@ -510,7 +527,14 @@ fn draw_dimension(annotation: &Annotation, record: &Dimension, resolved: &dimens
 
 /// A balloon stays on its sheet whatever becomes of what it points at: lost, it keeps its circle and
 /// its number, with no leader.
-fn draw_balloon(annotation: &Annotation, record: &Balloon, place: &reference::Located, row: RowRead, frame: Option<ViewFrame>) -> DrawnAnnotation {
+fn draw_balloon(
+    annotation: &Annotation,
+    record: &Balloon,
+    centre: Vec2,
+    place: &reference::Located,
+    row: &RowRead,
+    frame: Option<ViewFrame>,
+) -> DrawnAnnotation {
     let Some(frame) = frame else { return annotation.drawn(place.status.clone(), None, None) };
     let why = match row.status {
         "ok" => None,
@@ -519,8 +543,9 @@ fn draw_balloon(annotation: &Annotation, record: &Balloon, place: &reference::Lo
         "no_row" => Some("its part has no row in the parts list it reads".to_string()),
         _ => Some("its part isn't in the parts list it reads".to_string()),
     };
-    let tip = place.point.map(|point| frame.to_paper(point));
-    let paper = crate::drawing_annotation_paper::balloon_group(record, row.item.as_deref(), tip, why);
+    // A stack's first carries its arrow.
+    let tip = place.point.filter(|_| matches!(record.at, BalloonPlace::At(_))).map(|point| frame.to_paper(point));
+    let paper = crate::drawing_annotation_paper::balloon_group(record.id, centre, row.item.as_deref(), tip, why);
     annotation.drawn(place.status.clone(), Some(paper), None)
 }
 
@@ -550,9 +575,10 @@ fn draw_table(annotation: &Annotation, s: &Session, d: &Drawing, record: &SheetT
 fn annotations_on(d: &Drawing, views: impl Iterator<Item = u64>, sheet: Option<u64>, worlds: &Worlds) -> Vec<Annotation> {
     let views: BTreeSet<u64> = views.collect();
     let dimensions = d.dimensions.iter().filter(|record| views.contains(&record.view)).cloned().map(Annotation::Dimension);
+    let list_of = |record: &Balloon| d.parts_list_for(record).ok().map(|(id, list)| (id, list, worlds.list_of(list.of.source)));
     let balloons = d.balloons.iter().filter(|record| views.contains(&record.view)).map(|record| {
-        let list = d.parts_list_for(record).ok().map(|(id, list)| (id, list, worlds.list_of(list.of.source)));
-        Annotation::Balloon(record.clone(), list)
+        let under = d.stacked_under(record).into_iter().map(|one| (one.clone(), list_of(one))).collect();
+        Annotation::Balloon(record.clone(), list_of(record), under)
     });
     let hung = |note: &&Arc<Note>| match &note.anchor {
         Anchor::Sheet(on) => Some(*on) == sheet,

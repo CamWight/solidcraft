@@ -12,7 +12,7 @@
 
 use std::f64::consts::PI;
 
-use solidcraft_doc::drawing::balloon::Balloon;
+use solidcraft_doc::drawing::balloon::{Balloon, BalloonPlace, Stacked};
 use solidcraft_doc::drawing::note::Note;
 use solidcraft_geom::cell::{Content, Part, Source};
 use solidcraft_geom::paper::annotate::{ArrowShape, LANDING_PER_LINE_WIDTH, Leader, Terminator};
@@ -84,13 +84,31 @@ pub struct OnPaper {
     pub why: Option<String>,
 }
 
-/// `balloon` showing `item`, its arrow ending at `tip` when that was found, centred on its view as a
-/// view's lines are. `why` is what its reader has to say of its number.
-pub fn balloon_group(balloon: &Balloon, item: Option<&str>, tip: Option<Vec2>, why: Option<String>) -> OnPaper {
-    let centre = Vec2::new(balloon.at[0], balloon.at[1]);
+/// Round a number's corners, a gap clear of them.
+fn balloon_radius(text: &Text) -> f64 {
+    BALLOON_MM.max(text.half.len() + GAP_MM)
+}
+
+/// Where the last of `stack` stands, in millimetres from its view's centre: from its stack's first, each
+/// touching the one under it. Each comes with the number it shows.
+pub fn balloon_centre<'a>(stack: impl Iterator<Item = (&'a Balloon, Option<&'a str>)>) -> Vec2 {
+    let (mut centre, mut under) = (Vec2::ZERO, 0.0);
+    for (balloon, item) in stack {
+        let radius = balloon_radius(&Text::set(item, TEXT_MM));
+        centre = match balloon.at {
+            BalloonPlace::At([x, y]) => Vec2::new(x, y),
+            BalloonPlace::On(Stacked { angle, .. }) => centre + Vec2::new(angle.cos(), angle.sin()) * (under + radius),
+        };
+        under = radius;
+    }
+    centre
+}
+
+/// Balloon `object` at `centre`, showing `item`, its arrow ending at `tip` when that was found. `why` is
+/// what its reader has to say of its number.
+pub fn balloon_group(object: u64, centre: Vec2, item: Option<&str>, tip: Option<Vec2>, why: Option<String>) -> OnPaper {
     let text = Text::set(item, TEXT_MM);
-    // Round the number's corners, a gap clear of them.
-    let radius = BALLOON_MM.max(text.half.len() + GAP_MM);
+    let radius = balloon_radius(&text);
     let mut items = vec![Item::Stroke { path: Loop2::circle(centre, radius).segs, closed: true, width_mm: LINE_MM }];
     let mut why = why.or(text.why);
     if let Some(tip) = tip {
@@ -100,7 +118,7 @@ pub fn balloon_group(balloon: &Balloon, item: Option<&str>, tip: Option<Vec2>, w
         }
     }
     items.extend(placed(text.runs, text.half, TEXT_MM, centre, Vec2::X));
-    OnPaper { group: Group { object: balloon.id, kind: ObjectKind::Balloon, items }, fonts: text.fonts, why }
+    OnPaper { group: Group { object, kind: ObjectKind::Balloon, items }, fonts: text.fonts, why }
 }
 
 /// The leader from `tip` to the rim of the circle round `centre`, or none when `tip` is under the

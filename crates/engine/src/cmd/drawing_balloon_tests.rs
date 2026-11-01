@@ -278,6 +278,19 @@ fn read(s: &mut Session, balloon: &str) -> Value {
     run(s, INSPECT, json!({"balloon": balloon}))
 }
 
+/// A balloon stacked on another reads the list that one names.
+#[test]
+fn a_stacked_balloon_reads_the_list_of_the_one_under_it() {
+    let (mut s, view, [_, bracket]) = placed();
+    let chosen = list(&mut s, json!({}));
+    list(&mut s, json!({}));
+    let edge = json!({"point": [40, 0, 0], "path": [bracket]});
+    let first = run(&mut s, ADD, json!({"view": ids::encode(view), "edge": edge, "at": [60, 40], "parts_list": chosen}));
+    let first = first["balloon"].as_str().unwrap().to_string();
+    let second = run(&mut s, STACK_ADD, json!({"on": first, "edge": edge}));
+    assert_eq!(read(&mut s, second["balloon"].as_str().unwrap())["record"]["parts_list"], json!(chosen));
+}
+
 /// The balloon's group in a sheet's reply, and the reply's word on it.
 fn on_sheet(s: &mut Session, balloon: &str) -> (Value, Value) {
     let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
@@ -537,6 +550,117 @@ fn a_revision_table_cant_show_only_what_is_ballooned() {
     let table = s.execute("drawing.table.add", &json!({"sheet": sheet, "kind": "revision"})).unwrap()["table"].clone();
     let e = refused(&mut s, "drawing.table.edit", json!({"table": table, "set": {"filter": {"ballooned": "sheet"}}}));
     assert!(e.contains("parts list"), "{e}");
+}
+
+/// A bolt with two washers: three balloons on one arrow, touching. Each numbers its own part, the positions
+/// are worked out by hand, and delete hands on the first's place and arrow, in one undo step.
+#[test]
+fn a_stack_touches_and_hands_on_what_goes() {
+    let (mut s, view, [_, bracket]) = placed();
+    let drawing = ids::encode(s.drawing("test").unwrap().id);
+    run(&mut s, "drawing.close", json!({}));
+    let made = |s: &mut Session, name: &str, x: f64| {
+        let occurrence = run(s, "component.create", json!({"name": name}))["occurrence"].as_u64().unwrap();
+        run(s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [x, 0, 0], "body_name": name}));
+        run(s, "component.activate", json!({"component": "root"}));
+        occurrence
+    };
+    let (washer, spring) = (made(&mut s, "Washer", 300.0), made(&mut s, "Spring", 400.0));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    list(&mut s, json!({}));
+    let first = add(&mut s, view, bracket)["balloon"].as_str().unwrap().to_string();
+    let stack = |s: &mut Session, on: &str, occurrence: u64, x: f64, angle: f64| {
+        let edge = json!({"point": [x, 0, 0], "path": [occurrence]});
+        run(s, STACK_ADD, json!({"on": on, "edge": edge, "angle": angle}))["balloon"].as_str().unwrap().to_string()
+    };
+    let second = stack(&mut s, &first, washer, 305.0, 0.0);
+    let third = stack(&mut s, &second, spring, 405.0, std::f64::consts::FRAC_PI_2);
+    assert_eq!(read(&mut s, &third)["stack"].as_array().unwrap().len(), 3);
+    assert!(read(&mut s, &third).get("point").is_some(), "it keeps its own edge");
+
+    // Radius 5 mm with a one-figure number, so 10 mm apart; on paper they are centred on the view.
+    let circle_of = |s: &mut Session, balloon: &str| {
+        let (group, _) = on_sheet(s, balloon);
+        let (circle, arrows) = (items_of(&group, "stroke")[0].clone(), items_of(&group, "fill").len());
+        let center = &circle["path"][0]["center"];
+        ([center[0].as_f64().unwrap(), center[1].as_f64().unwrap()], arrows)
+    };
+    let close = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6;
+    let (at_first, arrows) = circle_of(&mut s, &first);
+    assert_eq!(arrows, 1, "the first has the arrow");
+    let (at_second, arrows) = circle_of(&mut s, &second);
+    assert_eq!(arrows, 0);
+    assert!(close(at_second, [at_first[0] + 10.0, at_first[1]]), "{at_first:?} {at_second:?}");
+    let (at_third, arrows) = circle_of(&mut s, &third);
+    assert_eq!(arrows, 0);
+    assert!(close(at_third, [at_second[0], at_second[1] + 10.0]), "{at_second:?} {at_third:?}");
+
+    let d = s.drawing("test").unwrap().clone();
+    let item = |balloon: &str| json!({"type": "drawing", "drawing": ids::encode(d.id), "object": balloon});
+    // The middle: the third takes its place on the first.
+    s.execute("selection.delete", &json!({"items": [item(&second)]})).unwrap();
+    let (at, arrows) = circle_of(&mut s, &third);
+    assert!(close(at, at_second) && arrows == 0, "{at:?} {arrows}");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(**s.drawing("test").unwrap(), *d, "an undo brings the stack back");
+    // The first: the second takes its place and its arrow.
+    s.execute("selection.delete", &json!({"items": [item(&first)]})).unwrap();
+    let (at, arrows) = circle_of(&mut s, &second);
+    assert!(close(at, at_first) && arrows == 1, "{at:?} {arrows}");
+    assert_eq!(read(&mut s, &second)["record"]["at"], json!([60.0, 40.0]));
+    s.execute("edit.undo", &json!({})).unwrap();
+    // The first and the second: the last takes the place.
+    s.execute("selection.delete", &json!({"items": [item(&first), item(&second)]})).unwrap();
+    assert_eq!(read(&mut s, &third)["record"]["at"], json!([60.0, 40.0]));
+    s.execute("edit.undo", &json!({})).unwrap();
+    // The last: nothing else moves.
+    s.execute("selection.delete", &json!({"items": [item(&third)]})).unwrap();
+    assert!(close(circle_of(&mut s, &second).0, at_second));
+    s.execute("edit.undo", &json!({})).unwrap();
+
+    run(&mut s, EDIT, json!({"balloon": third, "set": {"angle": 0.0}}));
+    assert!(close(circle_of(&mut s, &third).0, [at_second[0] + 10.0, at_second[1]]));
+    let e = refused(&mut s, EDIT, json!({"balloon": first, "set": {"angle": 0.0}}));
+    assert!(e.contains("own place"), "{e}");
+    run(&mut s, EDIT, json!({"balloon": third, "set": {"at": [0, 0]}}));
+    assert_eq!(read(&mut s, &first)["stack"].as_array().unwrap().len(), 2, "out of the stack");
+    s.drawing("test").unwrap().to_json().unwrap();
+}
+
+/// A balloon's angle is a number on paper; what it stands on must be there.
+#[test]
+fn a_stack_refuses_what_it_cant_stand_on() {
+    let (mut s, view, [_, bracket]) = placed();
+    let first = add(&mut s, view, bracket)["balloon"].as_str().unwrap().to_string();
+    let edge = json!({"point": [40, 0, 0], "path": [bracket]});
+    assert!(refused(&mut s, STACK_ADD, json!({"on": ids::encode(77), "edge": edge})).contains("no balloon"));
+    for angle in [1e9, -7.0] {
+        let e = refused(&mut s, STACK_ADD, json!({"on": first, "edge": edge, "angle": angle}));
+        assert!(e.contains("full turn"), "{e}");
+    }
+    let mut last = first;
+    for _ in 0..63 {
+        last = run(&mut s, STACK_ADD, json!({"on": last, "edge": edge}))["balloon"].as_str().unwrap().to_string();
+    }
+    let e = refused(&mut s, STACK_ADD, json!({"on": last, "edge": edge}));
+    assert!(e.contains("64"), "{e}");
+}
+
+/// A stacked balloon is copied with its view, on the copy of what it stood on.
+#[test]
+fn a_views_copy_takes_its_stacks() {
+    let (mut s, view, [_, bracket]) = placed();
+    let first = add(&mut s, view, bracket)["balloon"].as_str().unwrap().to_string();
+    let edge = json!({"point": [40, 0, 0], "path": [bracket]});
+    run(&mut s, STACK_ADD, json!({"on": first, "edge": edge}));
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    s.execute("drawing.view.copy_to_sheet", &json!({"view": ids::encode(view), "sheet": sheet})).unwrap();
+    let d = s.drawing("test").unwrap();
+    assert_eq!(d.balloons.len(), 4);
+    d.validate().unwrap();
+    for b in d.balloons.iter() {
+        assert_eq!(d.stack_of(b).len(), 2);
+    }
 }
 
 /// A balloon with no list says so, and reads the only one when there is one: the row its part is

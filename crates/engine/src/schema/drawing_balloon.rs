@@ -53,6 +53,22 @@ pub struct AddParams {
     pub parts_list: Option<TableIdParam>,
 }
 
+/// What `drawing.balloon.stack.add` takes.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct StackAddParams {
+    /// The balloon it stands on and touches, on whose view it is and whose list it reads.
+    pub on: BalloonIdParam,
+    /// The edge of the part it numbers, as `drawing.balloon.add`'s. Only a stack's first draws its arrow.
+    pub edge: EdgeParam,
+    /// The way from that balloon's centre to this one's, in radians anticlockwise from the paper's +x.
+    /// Left out, 0.
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "f64")]
+    pub angle: Option<f64>,
+}
+
 /// What `drawing.balloon.inspect` takes.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -79,6 +95,10 @@ pub struct BalloonSet {
     #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "[f64; 2]")]
     pub at: Option<[f64; 2]>,
+    /// The way to it from the balloon it stands on, in radians. Only a balloon on another has one.
+    #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "f64")]
+    pub angle: Option<f64>,
     /// The parts list it reads, or `null` to read its sheet's only one, else the drawing's.
     #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Option<TableIdParam>")]
@@ -117,6 +137,9 @@ pub struct BalloonResult {
     pub item: Option<String>,
     /// `ok`, `no_list`, `reference`, `no_row` or `not_found`.
     pub row_status: String,
+    /// The balloons of its stack, by id, when it is in one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stack: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
