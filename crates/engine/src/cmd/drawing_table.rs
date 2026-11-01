@@ -7,6 +7,7 @@
 //! only the drawing, as every drawing step does, and the numbers stay, which are the ones the view
 //! showed anyway.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -17,7 +18,10 @@ use solidcraft_doc::ids;
 use super::CommandSpec;
 use crate::drawing_scene::sheet_id;
 use crate::params::bad;
-use crate::schema::drawing_table::{AddParams, DeleteParams, DeleteResult, EditParams, KindParam, ListSet, TableResult, TableSet};
+use crate::schema::drawing_table::{
+    AddParams, DeleteParams, DeleteResult, EditParams, InspectOverride, InspectParams, InspectResult, InspectRow, InspectWarning, KindParam, ListSet,
+    TableResult, TableSet,
+};
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
 
@@ -25,6 +29,8 @@ const ADD: &str = "drawing.table.add";
 const ADD_CONTRACT: TypedContract<AddParams> = TypedContract::new();
 const EDIT: &str = "drawing.table.edit";
 const EDIT_CONTRACT: TypedContract<EditParams> = TypedContract::new();
+const INSPECT: &str = "drawing.table.inspect";
+const INSPECT_CONTRACT: TypedContract<InspectParams> = TypedContract::new();
 const DELETE: &str = "drawing.table.delete";
 const DELETE_CONTRACT: TypedContract<DeleteParams> = TypedContract::new();
 
@@ -52,6 +58,18 @@ pub static COMMANDS: &[CommandSpec] = &[
              {unit: g|kg|lb, decimals}}, columns?, heading?: top|bottom, row_height_mm?, cap_mm?, filter?, overrides?, place?: \
              {anchor: {corner, offset_mm?}} or {at: [x, y]}}, columns, filter and overrides as a drawing saves them → as \
              drawing.table.add. One undo step, none when nothing changes.",
+        ),
+    CommandSpec::new(INSPECT, "Inspect Table", crate::checked!("drawing.table.inspect", inspect))
+        .icon("inspect")
+        .in_drawing()
+        .noundo()
+        .doc_only()
+        .contract(&INSPECT_CONTRACT)
+        .output(output_schema_for::<InspectResult>)
+        .params(
+            "table: its id → {table, sheet, status: ok|failed, why?, outline_mm?: [x0, y0, x1, y1] on the sheet, rows?: [{key, rect_mm, \
+             balloons?}] those it shows, listed: how many before its filter, overrides?: [{row, column, text, replaced}], warnings?: \
+             [{row?, column, warning: width|height|chars}]}. Read-only; no model is evaluated.",
         ),
     CommandSpec::new(DELETE, "Delete Table", crate::checked!("drawing.table.delete", delete))
         .icon("delete")
@@ -109,6 +127,80 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
         Ok(named)
     })?;
     crate::schema::reply(DeleteResult { table: ids::encode(id), balloons })
+}
+
+fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
+    let request: InspectParams = crate::schema::read(INSPECT, p)?;
+    let id = request.table.0;
+    let d = s.drawing(INSPECT)?.clone();
+    let table = d.tables.by_id(id).ok_or_else(|| bad(INSPECT, format!("the drawing has no table {}", ids::encode(id))))?;
+    let sheet = crate::drawing_scene::sheet_of(&d, table.sheet)?;
+    let (mut reply, placed) = (
+        InspectResult {
+            table: ids::encode(id),
+            sheet: ids::encode(table.sheet),
+            status: "ok",
+            why: None,
+            outline_mm: None,
+            rows: Vec::new(),
+            listed: 0,
+            overrides: Vec::new(),
+            warnings: Vec::new(),
+        },
+        crate::drawing_table_paper::place(s, &d, table, crate::drawing_table_paper::drawing_space(sheet)),
+    );
+    match placed {
+        Err(why) => (reply.status, reply.why) = ("failed", Some(why)),
+        Ok(placed) => {
+            let on_rows = balloons_by_row(s, &d, id);
+            let column = |at: usize| table.table.columns.get(at).map_or_else(String::new, |c| c.name.clone());
+            reply.outline_mm = Some(corners(placed.layout.outline));
+            reply.listed = placed.rows.len();
+            for row in std::iter::once(&placed.layout.heading).chain(&placed.layout.rows) {
+                for (at, cell) in row.cells.iter().enumerate() {
+                    if let Some(warning) = cell.warning {
+                        reply.warnings.push(InspectWarning { row: row.key.clone(), column: column(at), warning: warning_word(warning) });
+                    }
+                    if let (Some(replaced), Some(key)) = (&cell.replaced, &row.key) {
+                        let text = cell.lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>().join("\n");
+                        reply.overrides.push(InspectOverride { row: key.clone(), column: column(at), text, replaced: replaced.clone() });
+                    }
+                }
+                if let Some(key) = &row.key {
+                    let item = placed.rows.iter().find(|one| one.key == *key).and_then(|one| one.fields.get("item"));
+                    let balloons = item.and_then(|item| on_rows.get(item)).cloned().unwrap_or_default();
+                    reply.rows.push(InspectRow { key: key.clone(), rect_mm: corners(row.rect), balloons });
+                }
+            }
+        }
+    }
+    crate::schema::reply(reply)
+}
+
+fn corners(rect: solidcraft_geom::Aabb2) -> [f64; 4] {
+    [rect.min.x, rect.min.y, rect.max.x, rect.max.y]
+}
+
+fn warning_word(warning: solidcraft_geom::cell::Warning) -> &'static str {
+    match warning {
+        solidcraft_geom::cell::Warning::Chars { .. } => "chars",
+        solidcraft_geom::cell::Warning::Height => "height",
+        solidcraft_geom::cell::Warning::Width => "width",
+    }
+}
+
+/// The balloons reading parts list `table`, by the item each reads.
+fn balloons_by_row(s: &Session, d: &Drawing, table: u64) -> BTreeMap<String, Vec<String>> {
+    let balloons: Vec<&solidcraft_doc::drawing::balloon::Balloon> = d.balloons.iter().map(|b| &**b).collect();
+    let mut by_row: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (balloon, row) in balloons.iter().zip(crate::drawing_sources::balloon_rows(s, d, &balloons)) {
+        if let (Some(item), Some(table_read)) = (row.item, row.list)
+            && table_read == table
+        {
+            by_row.entry(item).or_default().push(ids::encode(balloon.id));
+        }
+    }
+    by_row
 }
 
 /// The list a parts list on `sheet` starts with: what its sheet documents, else the design.

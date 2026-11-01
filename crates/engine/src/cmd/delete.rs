@@ -2,7 +2,7 @@
 //! sketching), timeline features and sketches (with the features that depend on them),
 //! construction planes and axes, bodies (a Remove feature from here on in the timeline), occurrences and
 //! components, canvases, point clouds and joints; or, with a drawing open, its views, dimensions,
-//! balloons and notes. `dry_run` reports what would go and what would fail without changing anything, so the UI
+//! balloons, notes and tables. `dry_run` reports what would go and what would fail without changing anything, so the UI
 //! can ask first.
 
 use std::collections::BTreeSet;
@@ -17,7 +17,7 @@ use crate::params::{bad, bool_};
 use crate::{EngineError, Result, Sel, Session};
 
 pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new("selection.delete", "Delete", delete).open_part().icon("delete").params(
-    "items?: [selection items]; components?, occurrences?, canvases?, point_clouds?, joints?: [ids or names]; dry_run?: bool → deleted, deleted_joints, would_fail, skipped (one undo step). With a drawing open, items are its views, dimensions and balloons ({type: drawing, drawing, object}); each view takes its dimensions and balloons with it; a view with views projected from it is refused, naming them, unless they are in items or contents: delete takes them too → views, dimensions, balloons: [the ids that went]",
+    "items?: [selection items]; components?, occurrences?, canvases?, point_clouds?, joints?: [ids or names]; dry_run?: bool → deleted, deleted_joints, would_fail, skipped (one undo step). With a drawing open, items are its views, dimensions and balloons ({type: drawing, drawing, object}); each view takes its dimensions and balloons with it; a view with views projected from it is refused, naming them, unless they are in items or contents: delete takes them too → views, dimensions, balloons, notes, images, tables: [the ids that went]",
 )];
 
 /// Run another command's body inside this one (so the whole delete is one undo step).
@@ -47,7 +47,7 @@ fn delete(s: &mut Session, p: &Value) -> Result<Value> {
     Ok(r)
 }
 
-/// Deletes the views, dimensions, balloons and notes `items` name in the drawing open, as one change: the
+/// Deletes the views, dimensions, balloons, notes and tables `items` name in the drawing open, as one change: the
 /// record's removal ([`solidcraft_doc::drawing::Drawing::remove_objects`]), with no model evaluated.
 fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value> {
     let cmd = "selection.delete";
@@ -90,7 +90,7 @@ fn delete_in_drawing(s: &mut Session, p: &Value, items: &[Sel]) -> Result<Value>
     let listed = |objects: &[u64]| objects.iter().map(|id| ids::encode(*id)).collect::<Vec<_>>();
     let (views, dimensions, balloons) = (listed(&gone.views), listed(&gone.dimensions), listed(&gone.balloons));
     Ok(
-        json!({ "deleted": [], "deleted_joints": [], "would_fail": [], "skipped": [], "views": views, "dimensions": dimensions, "balloons": balloons, "notes": listed(&gone.notes) }),
+        json!({ "deleted": [], "deleted_joints": [], "would_fail": [], "skipped": [], "views": views, "dimensions": dimensions, "balloons": balloons, "notes": listed(&gone.notes), "tables": listed(&gone.tables) }),
     )
 }
 
@@ -664,8 +664,8 @@ mod tests {
         let before = s.drawing("test").unwrap().clone();
         let good = item(drawing, front);
         for (p, says) in [
-            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension, balloon or note"),
-            (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension, balloon or note"),
+            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension, balloon, note or table"),
+            (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension, balloon, note or table"),
             (json!({"items": [good, item(99, front)]}), "isn't the drawing open"),
             (json!({"items": [good, {"type": "body", "name": "Block"}]}), "a drawing is open"),
             (json!({"items": [{"type": "feature", "id": 1}]}), "a drawing is open"),

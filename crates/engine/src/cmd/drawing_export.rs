@@ -83,6 +83,7 @@ fn export(s: &mut Session, p: &Value) -> Result<Value> {
         dimensions: super::drawing_scene::dimension_results(&built.annotations),
         balloons: super::drawing_scene::balloon_results(&built.annotations),
         notes: super::drawing_scene::note_results(&built.annotations),
+        tables: super::drawing_scene::table_results(&built.annotations),
         out_of_date: built.out_of_date.iter().map(|id| ids::encode(*id)).collect(),
         param_warnings: Vec::new(),
     };
