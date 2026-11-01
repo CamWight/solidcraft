@@ -94,6 +94,17 @@ pub const MIN_DPI: f64 = 25.0;
 /// The highest resolution a sheet may ask for.
 pub const MAX_DPI: f64 = 2400.0;
 
+/// When a drawing's views follow what they draw.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Updates {
+    /// As it changes.
+    #[default]
+    Automatic,
+    /// When asked: until then each view shows its last lines, marked out of date.
+    Deferred,
+}
+
 /// A drawing: its sheets and the designs they draw.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,6 +131,8 @@ pub struct Drawing {
     /// First or third angle: what every projected view shows, and the title block's symbol.
     #[serde(default)]
     pub projection: Projection,
+    #[serde(default, skip_serializing_if = "follows_at_once")]
+    pub updates: Updates,
     /// The language of the drawing's content, a BCP 47 tag (`en-GB`).
     pub language: String,
     /// In order, each behind its own `Arc`, so an undo step shares every sheet it didn't change.
@@ -319,6 +332,7 @@ impl Drawing {
             properties: Arc::default(),
             units: Units::default(),
             projection: Projection::default(),
+            updates: Updates::default(),
             language: language.into(),
             sheets: vec![Arc::new(first)],
             views: Vec::new(),
@@ -575,6 +589,10 @@ pub fn check_count(count: usize) -> Result<()> {
 }
 
 /// Whether the drawing has no properties, so its file leaves them out.
+fn follows_at_once(updates: &Updates) -> bool {
+    *updates == Updates::Automatic
+}
+
 fn no_properties(properties: &Arc<Metadata>) -> bool {
     properties.is_empty()
 }
