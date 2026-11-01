@@ -345,7 +345,8 @@ fn a_circle_and_an_arc_read_their_radius_and_diameter() {
 fn one_piece_of_a_name_is_that_edge() {
     let mut f = boxed();
     run(&mut f.s, "solid.cylinder", json!({"radius": 6, "height": 42, "base": [40, -1, 15], "axis": "Y", "operation": "cut", "targets": ["Box"]}));
-    let piece = |e: ModelEdge| ModelEdge { name: format!("{}:c1#1", e.name), ..e };
+    // As a name reads once its second face was split by a face that has since gone.
+    let piece = |e: ModelEdge| ModelEdge { name: format!("{}#[F9:side]#1", e.name), ..e };
     let top = piece(f.edge([0.0, 0.0, 30.0], [80.0, 0.0, 30.0]));
     let rim = piece(f.round([40.0, 0.0, 15.0], 6.0));
     let length = f.add(f.front, DimensionKind::Length { edge: top, direction: LinearDirection::Aligned, reading: Reading::True }, None);

@@ -664,8 +664,8 @@ mod tests {
         let before = s.drawing("test").unwrap().clone();
         let good = item(drawing, front);
         for (p, says) in [
-            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension or balloon"),
-            (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension or balloon"),
+            (json!({"items": [good, item(drawing, 99)]}), "no view, dimension, balloon or note"),
+            (json!({"items": [good, item(drawing, sheet)]}), "no view, dimension, balloon or note"),
             (json!({"items": [good, item(99, front)]}), "isn't the drawing open"),
             (json!({"items": [good, {"type": "body", "name": "Block"}]}), "a drawing is open"),
             (json!({"items": [{"type": "feature", "id": 1}]}), "a drawing is open"),

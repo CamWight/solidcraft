@@ -548,6 +548,7 @@ mod tests {
     #[test]
     fn an_openable_copy_reads_again_without_the_drawing_a_read_refuses() {
         let mut s = Session::default();
+        s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10})).unwrap();
         s.execute("drawing.create", &json!({"name": "Kept"})).unwrap();
         s.execute("drawing.create", &json!({"name": "Broken"})).unwrap();
         let mut doc = (*s.doc).clone();
