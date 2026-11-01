@@ -37,6 +37,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use solidcraft_doc::drawing::dimension::{self, Dimension};
+use solidcraft_doc::drawing::reference;
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet, Updates};
 use solidcraft_doc::drawing_view::TangentEdges;
@@ -107,7 +108,7 @@ pub struct AnnotationState {
     /// The view it hangs on; `None`: the sheet.
     pub view: Option<u64>,
     /// Where it stands with the model.
-    pub status: dimension::Status,
+    pub status: reference::Status,
     /// Whether its lines are in the scene. One that isn't found again has none, and neither has one
     /// whose view isn't drawn.
     pub drawn: bool,
@@ -318,7 +319,7 @@ struct DrawnAnnotation {
     object: u64,
     kind: ObjectKind,
     view: Option<u64>,
-    status: dimension::Status,
+    status: reference::Status,
     group: Option<Group>,
     why: Option<String>,
 }
@@ -395,7 +396,7 @@ fn draw_annotations(s: &Session, d: &Drawing, wanted: &[Annotation], frame: impl
                 let why = nothing.then(|| "what it measures has no place to draw on its view".to_string());
                 drawn(resolved.status.clone(), group, why)
             }
-            Ok(None) | Err(_) => drawn(dimension::Status::Unmeasurable(format!("dimension {} can't be read", ids::encode(record.id))), None, None),
+            Ok(None) | Err(_) => drawn(reference::Status::Unmeasurable(format!("dimension {} can't be read", ids::encode(record.id))), None, None),
         }
     };
     wanted.iter().enumerate().map(|(at, annotation)| one(at, annotation)).collect()

@@ -14,7 +14,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use solidcraft_doc::drawing::Drawing;
-use solidcraft_doc::drawing::dimension::{Located, Resolved};
+use solidcraft_doc::drawing::dimension::Resolved;
+use solidcraft_doc::drawing::reference::Located;
 use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_io::vfs;
 

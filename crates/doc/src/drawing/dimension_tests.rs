@@ -7,6 +7,7 @@ use solidcraft_geom::drawing_view::NamedView;
 
 use super::*;
 use crate::drawing::Source;
+use crate::drawing::reference::one_circle;
 use crate::drawing::view::{View, ViewKind, ViewPlace};
 use crate::drawing_view::{ViewDirection, ViewOverrides};
 use crate::format::DRAWING;

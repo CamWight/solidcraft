@@ -62,6 +62,7 @@ pub mod balloon;
 pub mod by_id;
 pub mod dimension;
 pub mod note;
+pub mod reference;
 pub mod table;
 pub mod view;
 
