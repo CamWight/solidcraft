@@ -249,11 +249,10 @@ pub enum Selectable {
     Dimension,
     Balloon,
     Note,
-    Image,
 }
 
 /// [`Selectable`] in words, for what a command says when an id is none of them.
-pub const SELECTABLE: &str = "view, dimension, balloon, note or image";
+pub const SELECTABLE: &str = "view, dimension, balloon or note";
 
 /// What is on one of a drawing's sheets ([`Drawing::on_sheet`]), each kind by id.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -289,14 +288,13 @@ impl OnSheet {
             Selectable::Dimension => &mut self.dimensions,
             Selectable::Balloon => &mut self.balloons,
             Selectable::Note => &mut self.notes,
-            Selectable::Image => &mut self.images,
         };
         list.push(id);
     }
 
     /// Each list by id and each id once, as [`Drawing::remove_objects`] takes them.
     pub fn finish(&mut self) {
-        for list in [&mut self.views, &mut self.dimensions, &mut self.balloons, &mut self.tags, &mut self.tables, &mut self.notes, &mut self.images] {
+        for list in [&mut self.views, &mut self.dimensions, &mut self.balloons, &mut self.tags, &mut self.tables, &mut self.notes] {
             list.sort_unstable();
             list.dedup();
         }
@@ -423,7 +421,7 @@ impl Drawing {
         } else if self.notes.by_id(id).is_some() {
             Some(Selectable::Note)
         } else {
-            self.sheet_images.by_id(id).map(|_| Selectable::Image)
+            None
         }
     }
 

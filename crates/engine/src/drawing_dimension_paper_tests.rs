@@ -74,6 +74,7 @@ fn parts(group: &Group) -> (Vec<Vec<Vec2>>, Vec<Vec2>) {
                 lines.push(line);
             }
             Item::Fill { region } => tips.push(region.outer.segs[0].start()),
+            Item::Text(_) | Item::Picture(_) => {}
         }
     }
     (lines, tips)
@@ -252,7 +253,7 @@ fn a_chain_of_the_most_points_lays_out() {
     r.text = None;
     let group = paper_group(&dimension(kind, 10.0, TextPlace::Centred), &r, &view_at("1:1")).unwrap();
     assert_eq!(parts(&group).1.len(), 2 * 63);
-    let scene = Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![group] };
+    let scene = Scene::new(Vec2::new(420.0, 297.0), vec![group]);
     assert!(scene.validate().is_ok());
 }
 
@@ -339,7 +340,7 @@ fn hostile_points_and_offsets_never_panic() {
             let resolved = read(&kind, &points, "1");
             let d = dimension(kind, offset, text.clone());
             if let Some(group) = paper_group(&d, &resolved, &view_at("1:5")) {
-                let _ = (Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![group] }).validate();
+                let _ = Scene::new(Vec2::new(420.0, 297.0), vec![group]).validate();
             }
         }
     }

@@ -318,7 +318,7 @@ fn the_source_commands_read_before_they_change() {
         kind,
         place: ViewPlace::At([100.0, 100.0]),
         settings: ViewOverrides::default(),
-        reference_margin_mm: 0.0,
+        reference_shown_percent: 0.0,
     })]);
     s.doc_mut().put_drawing(Arc::new(d.clone()));
     assert!(s.execute(REMOVE, &json!({"source": source})).is_err_and(|e| e.to_string().contains(&ids::encode(view))));
@@ -344,7 +344,7 @@ fn a_linked_plate_follows_the_acceptance_cases() {
     let view = d.allocate_id(&mut s.ids).unwrap();
     let kind = ViewKind::Base { source: source_id, view: ViewDirection::Named(NamedView::Front) };
     let settings = ViewOverrides { scale: Some("1:1".parse().unwrap()), ..ViewOverrides::default() };
-    d.add_views([Arc::new(View { id: view, sheet: d.sheets[0].id, kind, place: ViewPlace::At([200.0, 150.0]), settings, reference_margin_mm: 0.0 })]);
+    d.add_views([Arc::new(View { id: view, sheet: d.sheets[0].id, kind, place: ViewPlace::At([200.0, 150.0]), settings, reference_shown_percent: 0.0 })]);
     s.doc_mut().put_drawing(Arc::new(d));
     let across = json!({"view": ids::encode(view), "kind": {"linear": {"a": [0, 0, 0], "b": [40, 0, 0], "direction": "horizontal"}}});
     assert!((run(&mut s, "drawing.dimension.add", across)["value"].as_f64().unwrap() - 40.0).abs() < 1e-9);

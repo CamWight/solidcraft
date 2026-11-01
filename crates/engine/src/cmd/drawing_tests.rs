@@ -528,7 +528,7 @@ fn inspect_lists_every_view_of_a_deep_or_large_drawing() {
     let looking = ViewDirection::Looking(Looking { direction: [1.0, 1.0, -1.0], up: [0.0, 0.0, 1.0], origin: [0.0; 3] });
     let mut made = vec![d.allocate_id(&mut source).unwrap()];
     let kind = ViewKind::Base { source: drawn, view: looking };
-    d.add_views([Arc::new(View { id: made[0], sheet, kind, place: ViewPlace::At([100.0, 100.0]), settings: scale(), reference_margin_mm: 0.0 })]);
+    d.add_views([Arc::new(View { id: made[0], sheet, kind, place: ViewPlace::At([100.0, 100.0]), settings: scale(), reference_shown_percent: 0.0 })]);
     for _ in 1..MAX_VIEW_DEPTH {
         let id = d.allocate_id(&mut source).unwrap();
         let parent = *made.last().unwrap();
@@ -539,7 +539,7 @@ fn inspect_lists_every_view_of_a_deep_or_large_drawing() {
             kind,
             place: ViewPlace::At([100.0, 100.0]),
             settings: ViewOverrides::default(),
-            reference_margin_mm: 0.0,
+            reference_shown_percent: 0.0,
         })]);
         made.push(id);
     }
@@ -557,7 +557,7 @@ fn inspect_lists_every_view_of_a_deep_or_large_drawing() {
         kind: ViewKind::Base { source: drawn, view: ViewDirection::default() },
         place: ViewPlace::At([100.0, 100.0]),
         settings: scale(),
-        reference_margin_mm: 0.0,
+        reference_shown_percent: 0.0,
     };
     let more: Vec<Arc<View>> = (d.views.len()..MAX_VIEWS).map(|_| Arc::new(base(d.allocate_id(&mut source).unwrap()))).collect();
     let mut many = d.clone();

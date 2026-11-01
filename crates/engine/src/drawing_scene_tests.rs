@@ -7,7 +7,8 @@ use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::Seg2;
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
-use solidcraft_geom::paper::{Item, NoPictures, ObjectKind};
+use solidcraft_geom::paper::text::TextRun;
+use solidcraft_geom::paper::{Item, NoPictures, ObjectKind, Picture};
 
 use super::*;
 use crate::schema::drawing_scene::SheetSceneResult;
@@ -918,7 +919,7 @@ fn a_dimension_is_drawn_after_the_views_on_the_sheet() {
         .iter()
         .filter_map(|item| match item {
             Item::Fill { region } => Some(region.outer.segs[0].start()),
-            Item::Stroke { .. } => None,
+            _ => None,
         })
         .collect();
     assert_eq!(tips.len(), 2);
@@ -1211,7 +1212,7 @@ fn a_views_dimensions_swap_with_its_lines() {
         .iter()
         .filter_map(|item| match item {
             Item::Fill { region } => Some(region.outer.segs[0].start().y),
-            Item::Stroke { .. } => None,
+            _ => None,
         })
         .collect();
     assert!(tips.iter().all(|y| (y - 170.0).abs() < 1e-9), "{tips:?}");
@@ -1258,7 +1259,7 @@ fn cached_views(path: &str) -> usize {
 /// written as current; a drawing with none keeps what the file has; plain JSON has none.
 #[test]
 fn a_save_keeps_only_current_lines_and_draws_nothing() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-sheet");
     let path = folder.path("sheet.solidcraft");
     let (mut s, sheet, [_, top]) = saved_drawn(&path);
     assert_eq!(cached_views(&path), 2);
@@ -1286,7 +1287,7 @@ fn a_save_keeps_only_current_lines_and_draws_nothing() {
 /// longer current, and the file's older ones stay with their old stamp.
 #[test]
 fn a_closed_drawings_lines_keep_until_the_next_save() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-closed");
     let path = folder.path("closed.solidcraft");
     let (mut s, _, _) = saved_drawn(&path);
     run(&mut s, "drawing.close", json!({}));
@@ -1314,7 +1315,7 @@ fn reopened(s: &mut Session, path: &str) -> u64 {
 /// none either. A later save without drawing anything keeps them.
 #[test]
 fn reopening_unchanged_draws_nothing() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-again");
     let path = folder.path("again.solidcraft");
     let (mut s, sheet, [front, _]) = saved_drawn(&path);
     let before = settled(&mut s, sheet);
@@ -1338,7 +1339,7 @@ fn reopening_unchanged_draws_nothing() {
 /// One view's scale changed and saved: only it draws again, after a reopen. The other's lines stayed.
 #[test]
 fn only_the_view_that_changed_draws_again() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-one");
     let path = folder.path("one.solidcraft");
     let (mut s, _, [_, top]) = saved_drawn(&path);
     run(&mut s, "drawing.view.edit", json!({"view": ids::encode(top), "set": {"scale": "1:4"}}));
@@ -1353,7 +1354,7 @@ fn only_the_view_that_changed_draws_again() {
 /// saved edit, reopened, is right either way. A file with no cache is the same as drawing from scratch.
 #[test]
 fn an_edited_model_shows_the_last_lines_then_draws_them_again() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-edited");
     let path = folder.path("edited.solidcraft");
     let (mut s, _, [front, top]) = saved_drawn(&path);
     let sheet = reopened(&mut s, &path);
@@ -1379,7 +1380,7 @@ fn an_edited_model_shows_the_last_lines_then_draws_them_again() {
 /// Damaged or missing lines are the same as none: the drawing opens and draws.
 #[test]
 fn a_missing_cache_draws_as_ever() {
-    let folder = crate::tests::Folder::new();
+    let folder = crate::tests::Folder::new("sheet-lines-none");
     let path = folder.path("none.solidcraft");
     let (mut s, _, _) = saved_drawn(&path);
     let sheet = reopened(&mut s, &path);
@@ -1564,7 +1565,7 @@ fn a_press_on_held_lines_from_the_file_draws_nothing() {
 }
 
 /// In every style, a view's boundary among the scene's objects is the one inspect says, reference
-/// parts and margin included, whether or not the view can be drawn yet (E7a).
+/// parts and percent included, whether or not the view can be drawn yet (E7a).
 #[test]
 fn a_views_boundary_in_the_scene_is_its_boundary_in_every_style() {
     let (design, over) = under_and_over();
@@ -1573,7 +1574,7 @@ fn a_views_boundary_in_the_scene_is_its_boundary_in_every_style() {
     run(&mut s, "drawing.close", json!({}));
     run(&mut s, "occurrence.bom_type", json!({"occurrence": over, "bom_type": "reference"}));
     run(&mut s, "drawing.open", drawing);
-    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"reference_margin_mm": 7.5}}));
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"reference_shown_percent": 50}}));
     for style in ["visible", "visible_hidden", "shaded", "shaded_visible", "shaded_visible_hidden"] {
         run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"display_style": style}}));
         let inspected = run(&mut s, "drawing.view.inspect", json!({"view": ids::encode(front)}));

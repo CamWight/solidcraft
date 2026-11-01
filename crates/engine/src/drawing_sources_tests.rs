@@ -191,7 +191,7 @@ fn view_of(s: &mut Session, source: u64, at: [f64; 2]) -> u64 {
     let sheet = d.sheets[0].id;
     let kind = ViewKind::Base { source, view: ViewDirection::Named(NamedView::Front) };
     let settings = ViewOverrides { scale: Some("1:1".parse().unwrap()), ..ViewOverrides::default() };
-    d.add_views([Arc::new(View { id, sheet, kind, place: ViewPlace::At(at), settings, reference_margin_mm: 0.0 })]);
+    d.add_views([Arc::new(View { id, sheet, kind, place: ViewPlace::At(at), settings, reference_shown_percent: 0.0 })]);
     d.validate().unwrap();
     s.doc_mut().put_drawing(Arc::new(d));
     id

@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use solidcraft_doc::drawing::dimension::{self, Dimension};
+use solidcraft_doc::drawing::dimension::Dimension;
 use solidcraft_doc::drawing::reference;
 use solidcraft_doc::drawing::view::{ResolvedView, View};
 use solidcraft_doc::drawing::{Drawing, Sheet, Updates};

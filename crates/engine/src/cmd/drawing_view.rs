@@ -47,7 +47,7 @@ use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, MAX_PATH_IDS
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, AlongParam, AngleFromParam, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult,
-    InspectParams, InspectResult, LineResult, LineSourceResult, LinesStatusResult, MeasureParam, MeasurementResult, MoveParams, OutsideResult,
+    InspectParams, InspectResult, LineResult, LinesStatusResult, MeasureParam, MeasurementResult, MoveParams, OutsideResult,
     PathSegResult, PictureResult, PieceResult, PlaceParam, ScaleResult, SceneResult, SettingResult, SettingsResult, SnapshotParams, SnapshotResult,
     SourceResult, ToSheetResult, ViewLineParam, ViewMoveParams, ViewMoveResult, ViewResult, ViewSet,
 };

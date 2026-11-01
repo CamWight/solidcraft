@@ -2,7 +2,7 @@
 //! sketching), timeline features and sketches (with the features that depend on them),
 //! construction planes and axes, bodies (a Remove feature from here on in the timeline), occurrences and
 //! components, canvases, point clouds and joints; or, with a drawing open, its views, dimensions,
-//! balloons, notes and images. `dry_run` reports what would go and what would fail without changing anything, so the UI
+//! balloons and notes. `dry_run` reports what would go and what would fail without changing anything, so the UI
 //! can ask first.
 
 use std::collections::BTreeSet;
