@@ -19,14 +19,22 @@
 //!
 //!   How a PDF may carry it ([`Embed`]) comes from its embedding permissions. A bitmap or colour-only
 //!   face, with no outlines to fill, is refused.
-//! - A character the font has no glyph for is refused by name: sketch's `?` stand-in is never set
-//!   on paper.
+//! - A character the font has no glyph for falls back, per character, to an installed font that
+//!   has it ([`fallback`]): the same em size as the text's own font, on its baseline and pitch. The
+//!   runs of a line split by direction, then by font. A space, a digit or punctuation stays with the
+//!   run it follows when that font has it; a mark stays with its letter. A font fallen back to is
+//!   shaped, with the drawing's language, and takes its nearest style: bold or italic isn't refused
+//!   for it. A character no font has is refused by name: sketch's `?` stand-in is never set on paper.
+//! - The search for those fonts reads whole files for the known ones and hashes the ones it finds,
+//!   so the window never waits for it: [`paper_text_now`] asks a thread (`font-search`) and refuses
+//!   with [`SketchError::FontPending`] until the answers are in. Answers, misses too, are kept for
+//!   the process. [`paper_text`] does the search where it is called.
 //! - Lines break at `\n` (and between words, to a width: [`paper_lines`]), a line pitch apart,
 //!   and are aligned as sketch text's are. A line with right-to-left characters is a run per
 //!   direction, shaped. Every run of a line starts where the line does, its glyphs placed along the
 //!   whole line.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -36,9 +44,10 @@ use solidcraft_geom::paper::text::{
 };
 use solidcraft_geom::{Loop2, Vec2};
 
-use crate::fonts::{DEFAULT_FONT_FAMILY, FontData, check_family, find_style_in, font_data, font_dirs, normalize};
+use crate::fonts::fallback::{self, Han, Query};
+use crate::fonts::{DEFAULT_FONT_FAMILY, FontData, check_family, face_at, face_family, find_style_in, font_data, font_dirs, normalize};
 use crate::model::{Result, SketchError};
-use crate::text::{LaidLine, MAX_TEXT_CHARS, Run, SLANT_DEG, TextMetrics, TextStyle, check_height, check_spacing};
+use crate::text::{LaidLine, Laying, MAX_TEXT_CHARS, Run, SLANT_DEG, TextMetrics, TextStyle, check_height, check_spacing};
 
 /// Most faces kept admitted at once (each holds its file's bytes); past it the table starts again.
 const MAX_ADMITTED: usize = 16;
@@ -48,33 +57,52 @@ const MAX_ADMITTED: usize = 16;
 type Admitted = HashMap<(Option<PathBuf>, u32), std::result::Result<Font, String>>;
 static ADMITTED: OnceLock<Mutex<Admitted>> = OnceLock::new();
 
-/// `text` on paper in the font `family` (None or empty: the built-in font), its first line's
-/// baseline starting at `at` (sheet mm) and turned `angle` radians about it, at a capital height of
-/// `height` mm, set in `style` (which follows no path on paper). Its runs, and the fonts they use
-/// (each once, in order of id, holding the glyphs its runs place); None when it sets no glyph
-/// (empty lines only).
+/// `text` on paper in the font `family` (None or empty: the built-in font), in the drawing's
+/// `language`, its first line's baseline starting at `at` (sheet mm) and turned `angle` radians about
+/// it, at a capital height of `height` mm, set in `style` (which follows no path on paper). Its runs,
+/// and the fonts they use (each once, in order of id, holding the glyphs its runs place); None when
+/// it sets no glyph (empty lines only). Fonts to fall back to are searched for here.
 pub fn paper_text(
     text: &str,
     family: Option<&str>,
+    language: &str,
     at: Vec2,
     height: f64,
     angle: f64,
     style: &TextStyle,
 ) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
-    paper_text_in(&font_dirs(), text, family, at, height, angle, style)
+    paper_text_in(&font_dirs(), text, family, language, at, height, angle, style)
 }
 
 /// [`paper_text`] with the fonts installed in `dirs`.
+#[allow(clippy::too_many_arguments)]
 pub fn paper_text_in(
     dirs: &[PathBuf],
     text: &str,
     family: Option<&str>,
+    language: &str,
     at: Vec2,
     height: f64,
     angle: f64,
     style: &TextStyle,
 ) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
-    measure(dirs, text, family, height, None, style)?.set(at, angle)
+    measure(dirs, text, family, language, height, None, style, true)?.set(at, angle)
+}
+
+/// [`paper_text_in`] for the window's thread: the search for fonts to fall back to runs on a thread
+/// of its own, and this refuses with [`SketchError::FontPending`] until its answers are in.
+#[allow(clippy::too_many_arguments)]
+pub fn paper_text_now(
+    dirs: &[PathBuf],
+    text: &str,
+    family: Option<&str>,
+    language: &str,
+    at: Vec2,
+    height: f64,
+    angle: f64,
+    style: &TextStyle,
+) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
+    measure(dirs, text, family, language, height, None, style, false)?.set(at, angle)
 }
 
 /// A text measured for paper: the lines it is set in, each with its width (mm), and the distance
@@ -84,13 +112,10 @@ pub struct PaperLines {
     pub lines: Vec<(String, f64)>,
     pub pitch: f64,
     laid: Vec<LaidLine>,
-    /// The face it is set in and its record (no glyphs yet), its millimetres per font unit, the
-    /// style it was measured in and the slant that style gives it.
-    data: FontData,
-    font: Font,
-    k: f64,
+    /// The faces it is set in, its own first, each with its record (no glyphs yet) and its
+    /// millimetres per font unit, and the style it was measured in.
+    faces: Vec<(FontData, Font, f64)>,
     style: TextStyle,
-    slant: f64,
 }
 
 impl std::fmt::Debug for PaperLines {
@@ -100,16 +125,33 @@ impl std::fmt::Debug for PaperLines {
 }
 
 /// `text` measured for paper in the font `family` (None or empty: the built-in font, as
-/// [`paper_text`] chooses) at a capital height of `height` mm, set in `style` (which follows no path
-/// on paper): broken at each line break, and with `wrap` (a width, mm) also between words, each line
-/// holding as many of its words as fit. Words are the text between spaces, put back one space apart
-/// on a wrapped line. A word is never cut, so a line of one word may be wider than `wrap`.
-pub fn paper_lines(text: &str, family: Option<&str>, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
-    measure(&font_dirs(), text, family, height, wrap, style)
+/// [`paper_text`] chooses), in the drawing's `language`, at a capital height of `height` mm, set in
+/// `style` (which follows no path on paper): broken at each line break, and with `wrap` (a width, mm)
+/// also between words, each line holding as many of its words as fit. Words are the text between
+/// spaces, put back one space apart on a wrapped line. A word is never cut, so a line of one word may
+/// be wider than `wrap`. Fonts to fall back to are searched for here.
+pub fn paper_lines(text: &str, family: Option<&str>, language: &str, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
+    measure(&font_dirs(), text, family, language, height, wrap, style, true)
 }
 
-/// [`paper_lines`] with the fonts installed in `dirs`.
-fn measure(dirs: &[PathBuf], text: &str, family: Option<&str>, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
+/// [`paper_lines`] for the window's thread, as [`paper_text_now`] is for [`paper_text_in`].
+pub fn paper_lines_now(text: &str, family: Option<&str>, language: &str, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
+    measure(&font_dirs(), text, family, language, height, wrap, style, false)
+}
+
+/// [`paper_lines`] with the fonts installed in `dirs`; `wait`: search for fonts here, or refuse until
+/// the search's thread has answered.
+#[allow(clippy::too_many_arguments)]
+fn measure(
+    dirs: &[PathBuf],
+    text: &str,
+    family: Option<&str>,
+    language: &str,
+    height: f64,
+    wrap: Option<f64>,
+    style: &TextStyle,
+    wait: bool,
+) -> Result<PaperLines> {
     if text.chars().count() > MAX_TEXT_CHARS {
         return Err(SketchError::TooLarge);
     }
@@ -124,39 +166,46 @@ fn measure(dirs: &[PathBuf], text: &str, family: Option<&str>, height: f64, wrap
     let (data, font, family) = paper_face(dirs, family, style.bold, style.italic)?;
     let metrics = TextMetrics::new(&data, style)?;
     let (k, pitch) = (metrics.scale(height)?, metrics.line_pitch(height)?);
-    let lay = |line: &str| metrics.laid_out(line, k);
+    // The fonts this text falls back to, and which sets each character its own font lacks.
+    let lacking: BTreeSet<char> = text.split('\n').flat_map(|line| metrics.missing(line)).collect();
+    let (others, found) = fallback_faces(dirs, language, text, &lacking, style, wait)?;
+    let mut faces = vec![&metrics];
+    let other_metrics = others.iter().map(|(data, _)| TextMetrics::new(data, style)).collect::<Result<Vec<_>>>()?;
+    faces.extend(&other_metrics);
+    // Every font takes the same em size.
+    let own_em = f64::from(font.units_per_em);
+    let scale = |font: &Font| k * own_em / f64::from(font.units_per_em);
+    let scales: Vec<f64> = std::iter::once(&font).chain(others.iter().map(|(_, font)| font)).map(scale).collect();
+    let lay = |line: &str| {
+        if metrics.missing(line).is_empty() { Ok(metrics.laid_out(line, k)) } else { mixed_line(line, &faces, &found, &scales, language, &family) }
+    };
     let mut laid = Vec::new();
     for paragraph in text.split('\n') {
-        let missing = metrics.missing(paragraph);
-        if !missing.is_empty() {
-            let chars: String = missing.iter().map(|c| format!(" {c:?}")).collect();
-            return Err(SketchError::Invalid(format!("the font {family} has no glyph for{chars}")));
-        }
         let Some(wrap) = wrap else {
-            laid.push((paragraph.to_string(), lay(paragraph)));
+            laid.push((paragraph.to_string(), lay(paragraph)?));
             continue;
         };
         let mut words = paragraph.split(' ').filter(|w| !w.is_empty());
         let Some(first) = words.next() else {
-            laid.push((String::new(), lay("")));
+            laid.push((String::new(), lay("")?));
             continue;
         };
-        let mut line = (first.to_string(), lay(first));
+        let mut line = (first.to_string(), lay(first)?);
         for word in words {
             let longer = format!("{} {word}", line.0);
-            let wider = lay(&longer);
+            let wider = lay(&longer)?;
             if wider.width <= wrap {
                 line = (longer, wider);
             } else {
-                laid.push(std::mem::replace(&mut line, (word.to_string(), lay(word))));
+                laid.push(std::mem::replace(&mut line, (word.to_string(), lay(word)?)));
             }
         }
         laid.push(line);
     }
-    let slant = if style.italic && !font.metrics.flags.italic { SLANT_DEG.to_radians().tan() } else { 0.0 };
     let lines = laid.iter().map(|(line, l)| (line.clone(), l.width)).collect();
     let laid = laid.into_iter().map(|(_, l)| l).collect();
-    Ok(PaperLines { lines, pitch, laid, data, font, k, style: style.clone(), slant })
+    let faces = std::iter::once((data, font)).chain(others).zip(scales).map(|((data, font), scale)| (data, font, scale)).collect();
+    Ok(PaperLines { lines, pitch, laid, faces, style: style.clone() })
 }
 
 impl PaperLines {
@@ -169,26 +218,168 @@ impl PaperLines {
             return Err(SketchError::Invalid("the text's place and angle must be finite".into()));
         }
         let (sin, cos) = angle.sin_cos();
-        let mut runs = Vec::new();
+        let lean = SLANT_DEG.to_radians().tan();
+        let mut placed: Vec<(usize, TextRun)> = Vec::new();
         for (row, ((line, _), laid)) in self.lines.iter().zip(&self.laid).enumerate() {
             // The line's start: along the baseline by its alignment, then down a pitch a row.
             let (along, down) = (self.style.align.start(laid.width), row as f64 * self.pitch);
             let origin = at + Vec2::new(along * cos + down * sin, along * sin - down * cos);
             for run in laid.runs.iter().filter(|run| !run.glyphs.is_empty()) {
                 let (glyphs, text, clusters) = run_records(laid, run, line)?;
-                runs.push(TextRun { font: self.font.id, scale: self.k, origin, angle, slant: self.slant, glyphs, text, clusters, rtl: run.rtl });
+                let (_, record, scale) = self.faces.get(run.face).ok_or_else(|| SketchError::Invalid("a run in a font it wasn't given".into()))?;
+                let slant = if self.style.italic && !record.metrics.flags.italic { lean } else { 0.0 };
+                placed.push((run.face, TextRun { font: record.id, scale: *scale, origin, angle, slant, glyphs, text, clusters, rtl: run.rtl }));
             }
         }
-        if runs.is_empty() {
+        if placed.is_empty() {
             return Ok(None);
         }
-        let mut font = self.font.clone();
-        let metrics = TextMetrics::new(&self.data, &self.style)?;
-        for g in runs.iter().flat_map(|r| &r.glyphs) {
-            let id = ttf_parser::GlyphId(g.id);
-            font.glyphs.entry(g.id).or_insert_with(|| FontGlyph { advance: metrics.advance(id), outline: outline(&metrics, id) });
+        let metrics = self.faces.iter().map(|(data, ..)| TextMetrics::new(data, &self.style)).collect::<Result<Vec<_>>>()?;
+        let mut records: Vec<Font> = self.faces.iter().map(|(_, font, _)| font.clone()).collect();
+        for (face, run) in &placed {
+            let (record, metrics) = (&mut records[*face], &metrics[*face]);
+            for g in &run.glyphs {
+                let id = ttf_parser::GlyphId(g.id);
+                record.glyphs.entry(g.id).or_insert_with(|| FontGlyph { advance: metrics.advance(id), outline: outline(metrics, id) });
+            }
         }
-        Ok(Some((runs, vec![font])))
+        // Each font once, in order of id; only those a run uses.
+        let mut fonts = BTreeMap::new();
+        for record in records.into_iter().filter(|record| !record.glyphs.is_empty()) {
+            fonts.entry(record.id).or_insert(record);
+        }
+        let runs = placed.into_iter().map(|(_, run)| run).collect();
+        Ok(Some((runs, fonts.into_values().collect())))
+    }
+}
+
+/// The fonts `lacking` falls back to, each with its record, and the font (by its place among
+/// them, counting the text's own as 0) that sets each character; a character no font has isn't
+/// there. Refused with [`SketchError::FontPending`] while they are being looked for, unless `wait`.
+fn fallback_faces(
+    dirs: &[PathBuf],
+    language: &str,
+    text: &str,
+    lacking: &BTreeSet<char>,
+    style: &TextStyle,
+    wait: bool,
+) -> Result<(Vec<(FontData, Font)>, HashMap<char, usize>)> {
+    let (mut others, mut found) = (Vec::new(), HashMap::new());
+    if lacking.is_empty() {
+        return Ok((others, found));
+    }
+    let han = Han::of(language, text);
+    let queries: Vec<Query> = lacking.iter().map(|ch| Query::new(dirs, han, style.bold, style.italic, *ch)).collect();
+    let answers = fallback::answers(&queries, wait).ok_or(SketchError::FontPending)?;
+    let mut places: HashMap<(PathBuf, u32), usize> = HashMap::new();
+    for (ch, answer) in lacking.iter().zip(answers) {
+        let Some(key) = answer else { continue };
+        let place = match places.get(&key) {
+            Some(place) => *place,
+            None => {
+                // A face that can't be set on paper sets nothing: its characters are refused by name.
+                let Some(face) = face_at(&key.0, key.1).and_then(|data| admitted(&data).ok().map(|font| (data, font))) else { continue };
+                others.push(face);
+                places.insert(key, others.len());
+                others.len()
+            }
+        };
+        found.insert(*ch, place);
+    }
+    Ok((others, found))
+}
+
+/// A line some of whose characters its own font lacks: its runs split by direction, then by font.
+fn mixed_line(line: &str, faces: &[&TextMetrics], found: &HashMap<char, usize>, scales: &[f64], language: &str, family: &str) -> Result<LaidLine> {
+    let invalid = || SketchError::Invalid("a run of text the font can't shape".into());
+    let spans = font_spans(line, faces, found).map_err(|missing| {
+        let chars: String = missing.iter().map(|c| format!(" {c:?}")).collect();
+        SketchError::Invalid(format!("the font {family} has no glyph for{chars}, and no other font here has one"))
+    })?;
+    let info = unicode_bidi::BidiInfo::new(line, None);
+    let mut laying = Laying::default();
+    for paragraph in &info.paragraphs {
+        let (levels, level_runs) = info.visual_runs(paragraph, paragraph.range.clone());
+        for level_run in level_runs {
+            let rtl = levels.get(level_run.start).is_some_and(|level| level.is_rtl());
+            let cut = |(span, face): &(std::ops::Range<usize>, usize)| {
+                let (start, end) = (span.start.max(level_run.start), span.end.min(level_run.end));
+                (start < end).then_some((start..end, *face))
+            };
+            let mut pieces: Vec<(std::ops::Range<usize>, usize)> = spans.iter().filter_map(cut).collect();
+            if rtl {
+                pieces.reverse();
+            }
+            for (piece, face) in pieces {
+                let (metrics, k) = (*faces.get(face).ok_or_else(invalid)?, *scales.get(face).ok_or_else(invalid)?);
+                // Runs in the text's own font stay as sketch text sets them.
+                let set = match (face, rtl) {
+                    (0, false) => metrics.plain_run(line, piece, k, face, &mut laying),
+                    (0, true) => metrics.shape_run(line, piece, true, None, k, face, &mut laying),
+                    _ => metrics.shape_run(line, piece, rtl, Some(language), k, face, &mut laying),
+                };
+                set.ok_or_else(invalid)?;
+            }
+        }
+    }
+    Ok(laying.line())
+}
+
+/// Which font sets each stretch of `line`, in the line's order, or the characters no font has.
+fn font_spans(
+    line: &str,
+    faces: &[&TextMetrics],
+    found: &HashMap<char, usize>,
+) -> std::result::Result<Vec<(std::ops::Range<usize>, usize)>, Vec<char>> {
+    use unicode_bidi::BidiClass::{AL, BN, L, NSM, R};
+    let has = |face: usize, ch: char| faces.get(face).is_some_and(|metrics| metrics.missing(ch.encode_utf8(&mut [0; 4])).is_empty());
+    let own = |ch: char| if has(0, ch) { Some(0) } else { found.get(&ch).copied() };
+    let (mut spans, mut missing): (Vec<(std::ops::Range<usize>, usize)>, Vec<char>) = (Vec::new(), Vec::new());
+    for (at, ch) in line.char_indices() {
+        let current = spans.last().map(|(_, face)| *face);
+        let face = match unicode_bidi::bidi_class(ch) {
+            L | R | AL => own(ch),
+            // A mark never leaves its letter's font; a joiner is drawn by none, so one a shaper reads may lack it.
+            NSM => current.map_or_else(|| own(ch), |face| has(face, ch).then_some(face)),
+            BN => current.filter(|face| *face != 0 || has(0, ch)).or_else(|| own(ch)),
+            _ => current.filter(|face| has(*face, ch)).or_else(|| own(ch)),
+        };
+        let Some(face) = face else {
+            missing.push(ch);
+            continue;
+        };
+        match spans.last_mut() {
+            Some((span, last)) if *last == face && span.end == at => span.end = at + ch.len_utf8(),
+            _ => spans.push((at..at + ch.len_utf8(), face)),
+        }
+    }
+    if missing.is_empty() { Ok(spans) } else { Err(missing) }
+}
+
+/// What `texts` fall back to, for a drawing's status ("Hebrew set in Liberation Sans", "Han set in
+/// Yu Gothic for Japanese"), sorted, from the answers the search has given: this looks for no font.
+pub fn paper_fallback_notes<'t>(dirs: &[PathBuf], family: &str, language: &str, texts: impl IntoIterator<Item = &'t str>) -> Vec<String> {
+    let Ok((data, _, _)) = paper_face(dirs, Some(family), false, false) else { return Vec::new() };
+    let Ok(metrics) = TextMetrics::new(&data, &TextStyle::default()) else { return Vec::new() };
+    let mut notes = BTreeSet::new();
+    for text in texts {
+        let han = Han::of(language, text);
+        for ch in text.split('\n').flat_map(|line| metrics.missing(line)) {
+            let Some((path, index)) = fallback::answered(&Query::new(dirs, han, false, false, ch)) else { continue };
+            let Some(name) = face_at(&path, index).as_ref().and_then(face_family) else { continue };
+            notes.insert(match fallback::script_name(ch, han) {
+                (script, Some(language)) => format!("{script} set in {name} for {language}"),
+                (script, None) => format!("{script} set in {name}"),
+            });
+        }
+    }
+    notes.into_iter().collect()
+}
+
+/// Admits the face `index` of the file at `path`, the search's last step, so the window finds it done.
+pub(crate) fn warm(path: &Path, index: u32) {
+    if let Some(data) = face_at(path, index) {
+        let _ = admitted(&data);
     }
 }
 
