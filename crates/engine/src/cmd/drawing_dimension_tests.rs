@@ -350,3 +350,25 @@ fn hostile_dimension_params_never_panic() {
     }
     assert!(internal.is_empty(), "dimension commands panicked:\n{}", internal.join("\n"));
 }
+
+/// A dimension on a reference part's edge: added by its occurrence, reading its length, and the same
+/// after the part stops being reference. The finder doesn't ask what a part's type is.
+#[test]
+fn a_dimension_can_measure_a_reference_parts_edge() {
+    let mut s = Session::default();
+    let block = run(&mut s, "component.create", json!({"name": "Block"}))["occurrence"].clone();
+    run(&mut s, "solid.box", json!({"length": 20, "width": 30, "height": 10, "body_name": "Block", "operation": "new"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "bom_type": "reference"}));
+    run(&mut s, "drawing.create", json!({}));
+    let view = run(&mut s, "drawing.view.base", json!({"sheet": "Sheet 1", "view": "top", "scale": "1:1", "position_mm": [150, 150]}));
+    let edge = json!({"point": [10, 0, 10], "path": [block]});
+    let added = run(&mut s, ADD, json!({"view": view["view"], "kind": {"length": {"edge": edge}}}));
+    assert!((added["value"].as_f64().unwrap() - 20.0).abs() < 1e-9, "{added}");
+    let drawing = ids::encode(s.drawing("test").unwrap().id);
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "bom_type": "normal"}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let read = run(&mut s, INSPECT, json!({"dimension": added["dimension"]}));
+    assert_eq!((&read["status"], &read["value"]), (&json!("ok"), &added["value"]), "{read}");
+}

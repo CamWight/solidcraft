@@ -532,7 +532,7 @@ pub struct LineResult {
     pub occurrence: Vec<u64>,
     /// Its body's name in its definition.
     pub body: String,
-    /// Whether the body is a reference part (none yet: reference parts come with V5).
+    /// Whether the body is a reference part.
     pub reference: bool,
     pub source: LineSourceResult,
     pub pieces: Vec<PieceResult>,

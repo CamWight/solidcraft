@@ -13,8 +13,9 @@ use solidcraft_geom::hlr::{Source, Visibility};
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind};
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_geom::{EPS, Plane, Seg2, Similarity2, Vec2, Vec3};
+use solidcraft_render::VisualStyle;
 
-use super::ShownSet;
+use super::{ShownSet, Styles};
 use crate::mesh_lines::{self, Ask, Origin, Owner, Scene, View};
 use crate::params::bad;
 use crate::{Result, Session};
@@ -32,6 +33,8 @@ pub const MIN_MODEL_CHORD_MM: f64 = 0.0001;
 pub struct ViewLine {
     /// The index of the body among the shown set's.
     pub shown: usize,
+    /// Whether that body is a reference part.
+    pub reference: bool,
     pub source: Source,
     pub pieces: Vec<Piece>,
 }
@@ -69,9 +72,11 @@ pub struct Stats {
     pub occlusion_ms: f64,
 }
 
-/// The lines of the bodies `shown` holds in the view `frame` places on paper: the hidden ones too
-/// when `hidden`, the tangent edges too when `tangent_edges`, sampled at `chord_mm` on paper.
-pub fn lines(s: &Session, shown: &ShownSet, frame: &ViewFrame, hidden: bool, tangent_edges: bool, chord_mm: f64, cmd: &str) -> Result<Lines> {
+/// The lines of the bodies `shown` holds in the view `frame` places on paper, each as its style
+/// draws it: a `visible_hidden` part's hidden ones too, and none of a shaded part's, drawn by its
+/// picture, though it still hides what lies behind it. The tangent edges too when `tangent_edges`,
+/// sampled at `chord_mm` on paper.
+pub fn lines(s: &Session, shown: &ShownSet, frame: &ViewFrame, styles: Styles, tangent_edges: bool, chord_mm: f64, cmd: &str) -> Result<Lines> {
     let scale = frame.scale();
     let model_chord_mm = chord_mm / scale.factor();
     if !(model_chord_mm.is_finite() && model_chord_mm >= MIN_MODEL_CHORD_MM) {
@@ -83,17 +88,25 @@ pub fn lines(s: &Session, shown: &ShownSet, frame: &ViewFrame, hidden: bool, tan
     }
     let started = web_time::Instant::now();
     let names: BTreeSet<&str> = shown.bodies.iter().filter_map(|b| shown.body(b)).map(|b| b.name.as_str()).collect();
-    let scene = mesh_lines::prepare(s, cmd, model_chord_mm, Ask { tangent_edges, sources: true }, |b| names.contains(b.name.as_str()))?;
+    let mut scene = mesh_lines::prepare(s, cmd, model_chord_mm, Ask { tangent_edges, sources: true }, |b| names.contains(b.name.as_str()))?;
     let prepare_ms = started.elapsed().as_secs_f64() * 1000.;
     if scene.placements.len() != shown.bodies.len() {
         return Err(bad(cmd, "two shown bodies have one name: the view can't tell their lines apart"));
     }
-    let drawing = mesh_lines::drawing(&scene, &[], &View::orthographic(&frame.basis())).map_err(|e| bad(cmd, e))?;
     // The scene places the shown bodies in the shown set's order, one placement each.
+    for (placement, body) in scene.placements.iter_mut().zip(&shown.bodies) {
+        placement.reference = body.reference;
+    }
+    scene.one_way = !styles.reference_hides_model;
+    let drawing = mesh_lines::drawing(&scene, &[], &View::orthographic(&frame.basis())).map_err(|e| bad(cmd, e))?;
     let mut by_owner: BTreeMap<Owner, Vec<(Vec2, Vec2, bool)>> = BTreeMap::new();
     let mut covered = 0;
-    for line in drawing.lines.iter().filter(|l| hidden || !l.hidden) {
-        let Some(owner) = line.owner else { continue };
+    let wanted = |owner: Owner, hidden: bool| {
+        let style = shown.bodies.get(owner.placement as usize).map(|b| styles.of(b));
+        style.is_some_and(|style| !style.is_shaded() && (!hidden || style == VisualStyle::VisibleHidden))
+    };
+    for line in &drawing.lines {
+        let Some(owner) = line.owner.filter(|o| wanted(*o, line.hidden)) else { continue };
         covered += usize::from(line.covered);
         by_owner.entry(owner).or_default().push((line.a, line.b, line.hidden));
     }
@@ -133,7 +146,7 @@ pub fn lines(s: &Session, shown: &ShownSet, frame: &ViewFrame, hidden: bool, tan
         if pieces_count > MAX_RECORDS {
             return Err(bad(cmd, format!("the view has more than {MAX_RECORDS} line pieces: raise chord_mm, or choose a smaller view")));
         }
-        out.push(ViewLine { shown: owner.placement as usize, source, pieces });
+        out.push(ViewLine { shown: owner.placement as usize, reference: placement.reference, source, pieces });
     }
     let stats = Stats {
         bodies: scene.placements.len(),
@@ -150,20 +163,26 @@ pub fn lines(s: &Session, shown: &ShownSet, frame: &ViewFrame, hidden: bool, tan
 /// A visible line's width on paper until D2 sets widths by kind of line: the thick line of ISO
 /// 128's 0.5 mm line group.
 pub const VISIBLE_MM: f64 = 0.5;
+/// A reference part's visible line until D2 and the reference line type: that group's thin line,
+/// solid, as paper has no dashed lines yet.
+pub const REFERENCE_MM: f64 = 0.25;
 
-/// `lines` as the paper scene group of the view `object`: each visible piece one stroke,
-/// [`VISIBLE_MM`] wide, closed when it ends where it starts. Hidden pieces are left out until the
-/// paper scene has dashed lines (V7b).
+/// `lines` as the paper scene group of the view `object`, reference parts under the model: each
+/// visible piece one stroke, [`REFERENCE_MM`] or [`VISIBLE_MM`] wide, closed when it ends where it
+/// starts. Hidden pieces are left out until the paper scene has dashed lines (V7b).
 pub fn paper_group(lines: &Lines, object: u64) -> Group {
-    let stroke = |piece: &Piece| {
+    let stroke = |piece: &Piece, width_mm: f64| {
         let path: Vec<Seg2> = piece.path.iter().copied().filter_map(drawable).collect();
         let ends_meet = path.first().zip(path.last()).is_some_and(|(first, last)| last.end().dist(first.start()) <= EPS);
         // One straight line never closes on itself, however short.
         let closed = ends_meet && !matches!(path.as_slice(), [Seg2::Line { .. }]);
-        (!path.is_empty()).then_some(Item::Stroke { path, closed, width_mm: VISIBLE_MM })
+        (!path.is_empty()).then_some(Item::Stroke { path, closed, width_mm })
     };
-    let visible = lines.lines.iter().flat_map(|l| &l.pieces).filter(|p| p.visibility == Visibility::Visible);
-    Group { object, kind: ObjectKind::View, items: visible.filter_map(stroke).collect() }
+    let strokes = |reference: bool, width_mm: f64| {
+        let of_kind = lines.lines.iter().filter(move |l| l.reference == reference).flat_map(|l| &l.pieces);
+        of_kind.filter(|p| p.visibility == Visibility::Visible).filter_map(move |p| stroke(p, width_mm))
+    };
+    Group { object, kind: ObjectKind::View, items: strokes(true, REFERENCE_MM).chain(strokes(false, VISIBLE_MM)).collect() }
 }
 
 /// `seg`, or nothing where it has no length to draw: a line whose ends are one point. An arc too
@@ -328,7 +347,7 @@ mod tests {
     use super::*;
 
     fn lines_of(pieces: Vec<Piece>) -> Lines {
-        let line = ViewLine { shown: 0, source: Source::Edge { edge: 0, tangent: false }, pieces };
+        let line = ViewLine { shown: 0, reference: false, source: Source::Edge { edge: 0, tangent: false }, pieces };
         Lines { lines: vec![line], covered: 0, model_chord_mm: 0.01, stats: Stats::default() }
     }
 
@@ -379,6 +398,19 @@ mod tests {
         let lines = lines_of((0..MAX_RECORDS).map(one).collect());
         let scene = solidcraft_geom::paper::Scene { size_mm: Vec2::new(420.0, 297.0), groups: vec![paper_group(&lines, 0)] };
         assert!(scene.validate().is_err());
+    }
+
+    /// Reference parts' strokes go first, under the model's, thin, wherever they are among the lines.
+    #[test]
+    fn reference_lines_are_thin_and_under_the_models() {
+        let seg = Seg2::Line { a: Vec2::new(0.0, 0.0), b: Vec2::new(10.0, 0.0) };
+        let mut lines = lines_of(vec![piece(Visibility::Visible, vec![seg])]);
+        let mut reference = lines.lines[0].clone();
+        reference.reference = true;
+        lines.lines.push(reference);
+        let widths: Vec<f64> =
+            paper_group(&lines, 0).items.iter().filter_map(|i| if let Item::Stroke { width_mm, .. } = i { Some(*width_mm) } else { None }).collect();
+        assert_eq!(widths, [REFERENCE_MM, VISIBLE_MM]);
     }
 
     /// A quarter of a 5 mm circle round the origin, from 0 to 90 degrees.

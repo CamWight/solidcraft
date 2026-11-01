@@ -423,3 +423,44 @@ fn seeded_edits_and_steps_always_end_at_the_built_scene() {
         assert_eq!(bytes(&end.scene), bytes(&built(&s, sheet).scene), "seed {seed}");
     }
 }
+
+/// A saved view of a plate and a reference block over its edge: the block's strokes are first and
+/// thin, the boundary is the plate's, and a change of the block's type, made with the drawing closed,
+/// is drawn when it opens again. `visible_hidden` for reference parts waits with the model's for
+/// dashed lines, as it would leave their hidden lines out.
+#[test]
+fn a_saved_view_draws_reference_parts_thin_and_follows_their_type() {
+    let mut s = Session::default();
+    run(&mut s, "component.create", json!({"name": "Plate"}));
+    run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 10, "body_name": "Plate", "operation": "new"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    run(&mut s, "component.create", json!({"name": "Block"}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 10, "corner": [90, 20, 20], "body_name": "Block", "operation": "new"}));
+    run(&mut s, "component.activate", json!({"component": 0}));
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "bom_type": "reference"}));
+    run(&mut s, "drawing.create", json!({}));
+    let view = run(&mut s, "drawing.view.base", json!({"sheet": "Sheet 1", "view": "top", "scale": "1:1", "position_mm": [150, 150]}));
+    let drawing = ids::encode(s.drawing("test").unwrap().id);
+    let id = ids::decode(view["view"].as_str().unwrap()).unwrap();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    let widths = |s: &mut Session| -> Vec<f64> {
+        let scene = settled(s, sheet).scene;
+        let group = scene.groups.iter().find(|g| g.object == id).unwrap();
+        group.items.iter().filter_map(|i| if let Item::Stroke { width_mm, .. } = i { Some(*width_mm) } else { None }).collect()
+    };
+    let drawn = widths(&mut s);
+    let thin = drawn.iter().take_while(|w| **w == crate::drawing_view::REFERENCE_MM).count();
+    assert!(thin > 0 && thin < drawn.len() && drawn[thin..].iter().all(|w| *w == crate::drawing_view::VISIBLE_MM), "{drawn:?}");
+    let inspected = run(&mut s, "drawing.view.inspect", json!({"view": view["view"]}));
+    let extent = |at: usize| inspected["boundary_mm"]["max"][at].as_f64().unwrap() - inspected["boundary_mm"]["min"][at].as_f64().unwrap();
+    assert!((extent(0) - 100.0).abs() < 1e-9 && (extent(1) - 60.0).abs() < 1e-9, "{inspected}");
+
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "component.metadata.set", json!({"component": "Block", "bom_type": "normal"}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    assert!(widths(&mut s).iter().all(|w| *w == crate::drawing_view::VISIBLE_MM));
+
+    run(&mut s, "drawing.view.edit", json!({"view": view["view"], "set": {"reference_style": "visible_hidden"}}));
+    let state = settled(&mut s, sheet).views.into_iter().find(|v| v.view == id).unwrap();
+    assert!(matches!(&state.status, Status::Failed(why) if why.contains("need dashed lines")), "{:?}", state.status);
+}

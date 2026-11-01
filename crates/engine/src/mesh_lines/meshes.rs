@@ -30,6 +30,9 @@ pub(crate) struct Placement {
     pub tangent: Vec<bool>,
     /// The pairs of faces every edge between which is drawn, sorted.
     pub joins: Vec<[u32; 2]>,
+    /// A drawing's reference part: its lines never take a stretch from a model part's, and with
+    /// [`Scene::one_way`] it hides none of them.
+    pub reference: bool,
 }
 pub(crate) struct Scene {
     pub meshes: Vec<Arc<Mesh>>,
@@ -38,6 +41,8 @@ pub(crate) struct Scene {
     pub bytes: usize,
     /// Whether each line keeps its source ([`Ask::sources`]).
     pub sources: bool,
+    /// Reference parts don't hide the model, which still hides them.
+    pub one_way: bool,
 }
 
 /// What a caller asks of the meshes besides the chord. The view DXF asks for neither.
@@ -195,9 +200,16 @@ pub(crate) fn prepare(s: &Session, cmd: &str, tolerance: f64, ask: Ask, shown: i
             return Err(bad(cmd, "placed edge identity changed"));
         }
         triangles = triangles.saturating_add(p.triangles);
-        placements.push(Placement { mesh: item.group, transform: item.transform, visibility: p.visibility, tangent: p.tangent, joins: p.joins });
+        placements.push(Placement {
+            mesh: item.group,
+            transform: item.transform,
+            visibility: p.visibility,
+            tangent: p.tangent,
+            joins: p.joins,
+            reference: false,
+        });
     }
-    Ok(Scene { meshes, placements, triangles, bytes: bytes.load(Ordering::Relaxed), sources: ask.sources })
+    Ok(Scene { meshes, placements, triangles, bytes: bytes.load(Ordering::Relaxed), sources: ask.sources, one_way: false })
 }
 
 /// The pairs of faces (smaller first, sorted) every edge between which is drawn: a mesh side

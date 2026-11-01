@@ -1,16 +1,14 @@
 //! A drawing view's shaded pictures (W17b S4, #5624): which pictures a view draws and how each body
 //! takes part in each, from its two visual styles and whether reference parts hide the model.
 //!
-//! - The model is drawn when its style is shaded, reference parts (placed through a reference
-//!   component, [`solidcraft_doc::Document::reference_bodies`]) when theirs is.
+//! - The model is drawn when its style is shaded, reference parts
+//!   ([`crate::drawing_view::Shown::reference`]) when theirs is.
 //! - The model always hides reference parts behind it; reference parts hide the model only when
 //!   `reference_hides_model` is on.
 //! - Shaded reference parts that don't hide the model get a picture of their own, drawn first,
 //!   under the model's, which leaves them out: so they never cover it.
 
 use solidcraft_render::VisualStyle;
-
-use crate::Session;
 
 /// How a body takes part in one picture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,12 +41,6 @@ pub fn pictures(display: VisualStyle, reference: VisualStyle, hides_model: bool,
         (false, true) => vec![picture(|r, _| if r { Part::Painted } else { Part::DepthOnly })],
     };
     pictures.into_iter().filter(|p| p.contains(&Part::Painted)).collect()
-}
-
-/// Whether each body the design places, in the world's order, is a reference part.
-pub fn reference_flags(s: &Session) -> Vec<bool> {
-    let references = s.doc.reference_bodies(&s.model.state());
-    s.world_state().bodies.iter().map(|b| references.contains(&b.name)).collect()
 }
 
 #[cfg(test)]

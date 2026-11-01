@@ -2,6 +2,7 @@ use serde_json::{Value, json};
 use solidcraft_render::VisualStyle::{Shaded, Visible, VisibleHidden};
 
 use super::*;
+use crate::Session;
 
 fn run(s: &mut Session, id: &str, p: Value) -> Value {
     match s.execute(id, &p) {
@@ -50,6 +51,7 @@ fn bodies_placed_through_a_reference_component_are_reference_parts() {
     run(&mut s, "solid.cylinder", json!({"diameter": 4, "height": 30}));
     run(&mut s, "component.activate", json!({"component": 0}));
     run(&mut s, "occurrence.copy", json!({"component": "Hinge", "translate": [0, 50, 0]}));
+    let reference_flags = |s: &Session| -> Vec<bool> { crate::drawing_view::shown(s).unwrap().bodies.iter().map(|b| b.reference).collect() };
     let pin = s.doc.find_component("Pin").unwrap();
     let pins = |s: &Session| s.world_state().bodies.iter().map(|b| b.component == pin).collect::<Vec<bool>>();
     assert_eq!(pins(&s).iter().filter(|p| **p).count(), 2, "{:?}", pins(&s));

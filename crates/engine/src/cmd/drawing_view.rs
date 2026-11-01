@@ -36,7 +36,7 @@ use solidcraft_io::paper::MAX_PICTURE_DPI;
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
-use crate::drawing_view::{CHORD_RANGE, Extents, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Unmeasured};
+use crate::drawing_view::{CHORD_RANGE, Extents, Lines, MAX_PATH_IDS, MAX_PATHS, OnSheet, ShownSet, Styles, Unmeasured};
 use crate::params::bad;
 use crate::schema::drawing_view::{
     AccuracyResult, BoxResult, ChoicesResult, CopyParams, DPI_RANGE, EditParams, EditResult, ExtentsResult, FromResult, InspectParams, InspectResult,
@@ -98,7 +98,9 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     let request: SnapshotParams = crate::schema::read(CMD, p)?;
     let settings = request.settings();
     let basis = settings.validate().map_err(|e| bad(CMD, e.to_string()))?;
-    if let Some(why) = crate::drawing_view::not_drawable(settings.display_style, settings.reference_style, request.scene) {
+    let styles =
+        Styles { display: settings.display_style, reference: settings.reference_style, reference_hides_model: settings.reference_hides_model };
+    if let Some(why) = crate::drawing_view::not_drawable(styles, request.scene) {
         return Err(bad(CMD, why));
     }
     if !(request.sheet.dpi.is_finite() && DPI_RANGE.contains(&request.sheet.dpi)) {
@@ -134,16 +136,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     if !on_paper {
         return Err(bad(CMD, format!("at scale {scale} the view reaches past ±{MAX_COORDINATE_MM} mm on paper: choose a smaller scale")));
     }
-    let hidden = settings.display_style == VisualStyle::VisibleHidden;
-    let mut drawn = crate::drawing_view::lines(s, &set, &frame, hidden, settings.tangent_edges == TangentEdges::Show, chord_mm, CMD)?;
-    let shaded = settings.display_style.is_shaded() || settings.reference_style.is_shaded();
-    if shaded {
-        // A shaded part is drawn by its picture, so its own lines are left out; it still hides
-        // what lies behind it.
-        let references = s.doc.reference_bodies(&s.model.state());
-        let style = |name: &str| if references.contains(name) { settings.reference_style } else { settings.display_style };
-        drawn.lines.retain(|l| set.bodies.get(l.shown).is_none_or(|b| !style(&b.body).is_shaded()));
-    }
+    let drawn = crate::drawing_view::lines(s, &set, &frame, styles, settings.tangent_edges == TangentEdges::Show, chord_mm, CMD)?;
     if let Some(max) = request.max_error_mm {
         certify(&drawn, max, scale)?;
     }
@@ -154,7 +147,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
     } else {
         None
     };
-    let flags = if shaded { crate::drawing_picture::reference_flags(s) } else { Vec::new() };
+    let flags: Vec<bool> = set.bodies.iter().map(|b| b.reference).collect();
     let pictures = crate::drawing_picture::pictures(settings.display_style, settings.reference_style, settings.reference_hides_model, &flags);
     let picture = if pictures.is_empty() { None } else { Some(picture(boundary, request.sheet.dpi)?) };
 
@@ -190,7 +183,7 @@ fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
         stats: drawn.stats.into(),
         scene,
         picture,
-        source: SourceResult { bodies: extents.bodies, timeline_at_end: s.doc.marker.is_none() },
+        source: SourceResult { bodies: set.bodies.len(), timeline_at_end: s.doc.marker.is_none() },
         param_warnings: Vec::new(),
     };
     serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
@@ -247,7 +240,7 @@ fn line_results(shown: &ShownSet, drawn: &Lines) -> Vec<LineResult> {
         LineResult {
             occurrence: body.map(|b| b.path.clone()).unwrap_or_default(),
             body: body.map(|b| b.body.clone()).unwrap_or_default(),
-            reference: false,
+            reference: l.reference,
             source: match l.source {
                 Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
                 Source::Silhouette { face } => LineSourceResult::Silhouette { face },

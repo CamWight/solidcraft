@@ -29,7 +29,7 @@ use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, Picture, Scene};
 use solidcraft_geom::{Aabb2, Loop2, Region2, Seg2, Vec2};
 
-use crate::drawing_view::{CHORD_MM, MIN_MODEL_CHORD_MM, ShownSet, Stats, Unmeasured, paper_group};
+use crate::drawing_view::{CHORD_MM, MIN_MODEL_CHORD_MM, ShownSet, Stats, Styles, Unmeasured, paper_group};
 use crate::params::bad;
 use crate::{EngineError, Result, Session};
 
@@ -128,8 +128,10 @@ struct Drawn {
 /// the paper scene's [`MAX_RECORDS`] are refused here, so no view holds more than a scene takes.
 fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64, view: &ResolvedView) -> Drawn {
     let none = |status| Drawn { group: None, status, stats: None };
+    let styles =
+        Styles { display: view.display_style.value, reference: view.reference_style.value, reference_hides_model: view.reference_hides_model.value };
     // A style that draws hidden lines is refused here too, so the lines below are visible ones.
-    if let Some(why) = crate::drawing_view::not_drawable(view.display_style.value, view.reference_style.value, true) {
+    if let Some(why) = crate::drawing_view::not_drawable(styles, true) {
         return none(Status::Failed(why.into()));
     }
     // Every body the design places, until saved views have `source` and `hide` (V4) to keep a part.
@@ -143,7 +145,7 @@ fn draw(s: &Session, shown: &std::result::Result<ShownSet, Unmeasured>, id: u64,
     // The margin keeps the mesh's chord at or above its floor once divided back by the factor.
     let chord_mm = CHORD_MM.max(MIN_MODEL_CHORD_MM * view.scale.value.factor() * (1.0 + 1e-9));
     let lines = crate::drawing_view::frame(view.basis, view.scale.value, &around, Vec2::ZERO, CMD)
-        .and_then(|frame| crate::drawing_view::lines(s, set, &frame, false, tangent_edges, chord_mm, CMD));
+        .and_then(|frame| crate::drawing_view::lines(s, set, &frame, styles, tangent_edges, chord_mm, CMD));
     match lines {
         Ok(lines) => {
             let group = paper_group(&lines, id);
