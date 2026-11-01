@@ -12,12 +12,39 @@ use std::collections::HashMap;
 use solidcraft_doc::bom::{self, Tree};
 use solidcraft_doc::drawing::table::{Corner, Kind, Place, SheetTable};
 use solidcraft_doc::drawing::{Drawing, Sheet};
-use solidcraft_geom::cell::Part;
+use solidcraft_geom::cell::{HAlign, Part};
+use solidcraft_geom::paper::text::TextRun;
+use solidcraft_geom::paper::{Item, ObjectKind};
 use solidcraft_geom::table::{Heading, Row, Table, TableLayout};
 use solidcraft_geom::{Aabb2, Vec2};
 
 use crate::Session;
-use crate::drawing_annotation_paper::text_width;
+use crate::drawing_annotation_paper::{OnPaper, Text, text_width};
+
+/// `layout`'s lines and its cells' words with capitals `cap_mm` high. Each line stands on its baseline,
+/// its left, middle or right at its anchor as its cell aligns. A word that can't be set says why.
+pub(crate) fn on_paper(layout: &TableLayout, cap_mm: f64, object: u64, kind: ObjectKind) -> OnPaper {
+    let mut group = layout.paper(object, kind);
+    let (mut set, mut fonts, mut why) = (HashMap::new(), Vec::new(), None);
+    for cell in std::iter::once(&layout.heading).chain(&layout.rows).flat_map(|row| &row.cells) {
+        for line in &cell.lines {
+            let text = set.entry(line.text.as_str()).or_insert_with(|| {
+                let text = Text::set(Some(&line.text), cap_mm);
+                fonts.extend(text.fonts.iter().cloned());
+                why = why.take().or_else(|| text.why.clone());
+                text
+            });
+            let before = match cell.align {
+                HAlign::Left => 0.0,
+                HAlign::Centre => text.half.x,
+                HAlign::Right => text.half.x * 2.0,
+            };
+            let start = line.at - Vec2::X * before;
+            group.items.extend(text.runs.iter().map(|run| Item::Text(TextRun { origin: start + run.origin, ..run.clone() })));
+        }
+    }
+    OnPaper { group, fonts, why }
+}
 
 /// A table laid out and placed, and the rows it lists before its filter.
 pub(crate) struct Placed {
