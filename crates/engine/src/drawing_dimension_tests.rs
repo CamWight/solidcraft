@@ -7,9 +7,8 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use solidcraft_doc::ModelBody;
 use solidcraft_doc::appearance::face_index_at;
-use solidcraft_doc::drawing::dimension::{
-    Candidate, Dimension, DimensionKind, Geometry, ModelEdge, ModelFace, ModelPoint, Resolved, Silhouette, Status, TextPlace,
-};
+use solidcraft_doc::drawing::dimension::{Dimension, DimensionKind, Geometry, Resolved, Silhouette, TextPlace};
+use solidcraft_doc::drawing::reference::{Candidate, ModelEdge, ModelFace, ModelPoint, Status};
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing::{Drawing, Source, Units};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};

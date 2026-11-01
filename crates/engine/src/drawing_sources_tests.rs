@@ -257,7 +257,7 @@ fn views_draw_their_own_sources_and_a_lost_one_keeps_its_lines() {
     assert!(matches!(status(big), crate::drawing_scene::Status::Lost(why) if why.contains("not found")));
     assert!(after.scene.groups.iter().any(|g| g.object == big), "its last lines stay");
     assert_eq!(after.scene.groups.len(), groups - 1, "and its lost dimension, centred on what it lost, isn't drawn");
-    assert!(after.annotations.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::dimension::Status::Lost(_))));
+    assert!(after.annotations.iter().all(|one| matches!(&one.status, solidcraft_doc::drawing::reference::Status::Lost(_))));
     // A note says so as a dimension does, and one on the sheet reads no design.
     let lost = run(&mut s, "drawing.note.inspect", json!({"note": far["note"]}));
     assert!(lost["status"] == "lost" && lost["why"].as_str().is_some_and(|why| why.contains("not found")), "{lost}");
