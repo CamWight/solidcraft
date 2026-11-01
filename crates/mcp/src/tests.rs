@@ -2487,6 +2487,61 @@ fn auto_session_bridges_to_a_late_app_only_while_empty() {
     assert!(!s.backend().has_ui());
 }
 
+/// An agent makes a drawing through these tools alone (#4894, W23-6): the milestone plate's model,
+/// the drawing commands from `list_commands`, the ones it uses read with `describe_command`, then
+/// a sheet with views and dimensions, and the SVG read back. The `drawing.*` commands it doesn't
+/// use yet are printed (`--nocapture`), so adding a command fails nothing.
+#[test]
+fn an_agent_makes_a_drawing() {
+    let mut s = server();
+    let recipe: Value = serde_json::from_str(include_str!("../../../examples/acceptance/drawing_m2.json")).unwrap();
+    let model: Vec<&Value> =
+        recipe["commands"].as_array().unwrap().iter().filter(|c| !c["command"].as_str().unwrap().starts_with("drawing.")).collect();
+    assert_eq!(tool(&mut s, "batch", json!({"commands": model}))["completed"], model.len());
+
+    let listed = tool(&mut s, "list_commands", json!({"filter": "drawing."}));
+    let listed: std::collections::BTreeSet<&str> = listed.as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    // Each command it uses, with the parameters the steps below take from its schema.
+    let used: [(&str, &[&str]); 7] = [
+        ("drawing.view.snapshot", &["view", "scale"]),
+        ("drawing.create", &[]),
+        ("drawing.view.base", &["sheet", "view", "scale", "position_mm"]),
+        ("drawing.view.projected", &["parent", "side"]),
+        ("drawing.dimension.add", &["view", "kind"]),
+        ("drawing.dimension.inspect", &["dimension"]),
+        ("drawing.export", &["sheet"]),
+    ];
+    for (id, params) in used {
+        assert!(listed.contains(id), "{id} isn't listed: {listed:?}");
+        let described = tool(&mut s, "describe_command", json!({"id": id}));
+        assert!(described["params"].as_str().is_some_and(|docs| !docs.is_empty()), "{described}");
+        for param in params {
+            assert!(described["input"]["properties"].get(param).is_some(), "{id} has no `{param}`: {described}");
+        }
+    }
+    println!("drawing commands the agent doesn't use yet: {:?}", listed.iter().filter(|id| !used.iter().any(|(u, _)| u == *id)).collect::<Vec<_>>());
+
+    let execute = |s: &mut Server, command: &str, params: Value| tool(s, "execute", json!({"command": command, "params": params}));
+    // A look first: 100 x 80 mm at 1:2, drawing nothing on a sheet.
+    let look = execute(&mut s, "drawing.view.snapshot", json!({"view": "top", "scale": "1:2"}));
+    assert!(look["lines"].as_array().is_some_and(|lines| !lines.is_empty()), "{look}");
+    execute(&mut s, "drawing.create", json!({}));
+    let top = execute(&mut s, "drawing.view.base", json!({"sheet": "Sheet 1", "view": "top", "scale": "1:2", "position_mm": [150, 180]}));
+    execute(&mut s, "drawing.view.projected", json!({"parent": top["view"], "side": "below"}));
+    for (edge, length) in [([50, 0, 20], 100.0), ([0, 40, 20], 80.0)] {
+        let added = execute(&mut s, "drawing.dimension.add", json!({"view": top["view"], "kind": {"length": {"edge": edge}}}));
+        assert!(rel(added["value"].as_f64().unwrap(), length) < 1e-9, "{added}");
+        let read = execute(&mut s, "drawing.dimension.inspect", json!({"dimension": added["dimension"]}));
+        assert_eq!((&read["status"], &read["text"]), (&json!("ok"), &added["text"]), "{read}");
+    }
+
+    let svg = execute(&mut s, "drawing.export", json!({"sheet": "Sheet 1"}));
+    let svg = svg["svg"].as_str().unwrap();
+    assert!(svg.contains("width=\"420mm\" height=\"297mm\""), "{svg}");
+    assert_eq!(svg.matches("data-kind=\"view\"").count(), 2, "{svg}");
+    assert!(svg.matches("<path").count() > 20, "{svg}");
+}
+
 /// A server with no `Auto` backend (`--headless`, `--in`) adds no notice.
 #[test]
 fn plain_headless_adds_no_notice() {

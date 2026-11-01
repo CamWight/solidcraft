@@ -58,6 +58,13 @@ Work the part out as numbers first. Then build it in a few large `batch` calls, 
   - `width` and `height` apply only to model renders.
   - When the server is bridged, `source` defaults to the whole app window and `view` also turns the user's camera, so pass `"source":"model"` and leave out `view` unless the user wants the camera moved.
 
+## Drawing
+A 2D drawing of the design, once the model is verified:
+1. `drawing.create {}`: one A3 sheet, `Sheet 1`. The model's commands then wait until `drawing.close`.
+2. `drawing.view.base {sheet, view, scale, position_mm}`, then `drawing.view.projected {parent, side}`. `drawing.view.snapshot` looks without placing anything.
+3. `drawing.dimension.add {view, kind}`, for example `kind: {"length": {"edge": [x, y, z]}}`. Its `value` should match your numbers.
+4. `drawing.export {sheet}` returns the sheet's SVG. Read it back: `screenshot` shows the model.
+
 ## Finish
 `export {path}` writes `.step` for CAD, `.3mf`/`.stl` for printing, or `.urdf` (an assembly with joints, for robot simulators). `save {path}` writes `.sc` (`.solidcraft` files from earlier releases still open).
 

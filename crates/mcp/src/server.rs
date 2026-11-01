@@ -35,7 +35,10 @@ and dimension (`sketch.dimension {entities, value}`; values may name parameters)
 edge], radius}`, `solid.chamfer`, patterns, mirror, primitives). Use `batch` for several steps at once, \
 `list_commands` for ids and parameter docs, `describe_command` for a command's schemas, `inspect_design` / `measure` to verify, \
 `body_topology` to find edge points, `set_parameter` to drive the design and `screenshot` to look at it. A call whose error \
-starts `still running:` was not cancelled: don't send it again; `pending` waits for its result.";
+starts `still running:` was not cancelled: don't send it again; `pending` waits for its result. A 2D drawing of the design: \
+`drawing.create`, `drawing.view.base {sheet, view, scale, position_mm}`, `drawing.view.projected {parent, side}`, \
+`drawing.dimension.add {view, kind}`, then read the sheet back with `drawing.export {sheet}`; model commands wait until \
+`drawing.close`.";
 
 pub struct Server {
     backend: Box<dyn Backend>,
