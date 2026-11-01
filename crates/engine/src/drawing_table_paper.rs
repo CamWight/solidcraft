@@ -7,7 +7,7 @@
 //! the model or the paper changes, so this never runs per frame.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use solidcraft_doc::bom::{self, Tree};
 use solidcraft_doc::drawing::table::{Corner, Kind, Place, SheetTable};
@@ -103,8 +103,12 @@ fn rows_of(s: &Session, d: &Drawing, record: &SheetTable) -> Result<Vec<Row>, St
     let state = from.model.state();
     let mut tree = Tree::new(&from.doc, &state);
     let request = bom::Request { mass: shows_mass(&record.table), ..list.request() };
-    let listed = bom::list(&mut tree, &request).map_err(|e| e.to_string())?;
-    Ok(list.rows(&listed, s.doc.drawing_units(d)))
+    let balloons = d.balloons_shown_by(record);
+    let listed = bom::list_with(&mut tree, &request, !balloons.is_empty()).map_err(|e| e.to_string())?;
+    let ballooned: HashSet<String> = balloons.iter().filter_map(|b| listed.key_of(&tree, b.occurrence()).ok()).collect();
+    let mut rows = list.rows(&listed, s.doc.drawing_units(d));
+    rows.iter_mut().for_each(|row| row.ballooned = ballooned.contains(&row.key));
+    Ok(rows)
 }
 
 /// Whether a column shows a row's mass, which is what makes a list weigh its parts.

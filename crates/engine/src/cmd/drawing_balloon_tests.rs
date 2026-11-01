@@ -442,6 +442,103 @@ fn a_balloon_is_read_again_when_its_lists_design_changes() {
     assert!(crate::drawing_scene::extract(&mut s, sheet).unwrap().stale_annotations.contains(&balloon));
 }
 
+/// A parts list of one sheet shows what that sheet's balloons read, each row numbered and counted as in
+/// the whole list; with none, its heading alone. A balloon on a view moved to another sheet goes with it.
+#[test]
+fn a_list_can_show_only_what_its_sheet_balloons() {
+    let (mut s, view, [_, bracket]) = placed();
+    let drawing = ids::encode(s.drawing("test").unwrap().id);
+    run(&mut s, "drawing.close", json!({}));
+    let made = |s: &mut Session, name: &str, x: f64| {
+        let occurrence = run(s, "component.create", json!({"name": name}))["occurrence"].as_u64().unwrap();
+        run(s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [x, 0, 0], "body_name": name}));
+        run(s, "component.activate", json!({"component": "root"}));
+        occurrence
+    };
+    let pin = made(&mut s, "Pin", 300.0);
+    let nut = made(&mut s, "Nut", 400.0);
+    run(&mut s, "occurrence.copy", json!({"component": "Nut", "translate": [0, 100, 0]}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+
+    let second = ids::decode(run(&mut s, "drawing.sheet.add", json!({"name": "Sheet 2"}))["sheet"].as_str().unwrap()).unwrap();
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let other = d.allocate_id(&mut ids::IdSource::seeded(3875)).unwrap();
+    let mut moved = (**d.views.iter().find(|v| v.id == view).unwrap()).clone();
+    moved.id = other;
+    moved.sheet = second;
+    d.add_views([Arc::new(moved)]);
+    s.doc_mut().put_drawing(Arc::new(d));
+
+    let table = s.execute("drawing.table.add", &json!({"sheet": ids::encode(second), "kind": "parts_list"})).unwrap();
+    let table = ids::decode(table["table"].as_str().unwrap()).unwrap();
+    let names = |s: &Session| -> Vec<(String, String, String)> {
+        let d = s.drawing("test").unwrap().clone();
+        let record = d.tables.by_id(table).unwrap();
+        let sheet = d.sheets.iter().find(|sheet| sheet.id == second).unwrap();
+        let placed = crate::drawing_table_paper::place(s, &d, record, crate::drawing_table_paper::drawing_space(sheet)).unwrap();
+        let by_key = |key: &str| placed.rows.iter().find(|row| row.key == key).unwrap();
+        let field = |key: &str, name: &str| by_key(key).fields.get(name).cloned().unwrap_or_default();
+        placed
+            .layout
+            .rows
+            .iter()
+            .filter_map(|row| row.key.as_deref())
+            .map(|key| (field(key, "name"), field(key, "item"), field(key, "quantity")))
+            .collect()
+    };
+    let whole = names(&s);
+    assert_eq!(whole.len(), 3, "{whole:?}");
+    let filter = |s: &mut Session, scope: &str| {
+        let set = json!({"filter": {"ballooned": scope}});
+        s.execute("drawing.table.edit", &json!({"table": ids::encode(table), "set": set})).unwrap();
+    };
+    let of = |name: &str| whole.iter().find(|row| row.0 == name).unwrap().clone();
+
+    filter(&mut s, "sheet");
+    assert!(names(&s).is_empty(), "no balloons: its heading alone");
+
+    let on = |s: &mut Session, view: u64, occurrence: u64, x: f64| {
+        let edge = json!({"point": [x, 0, 0], "path": [occurrence]});
+        run(s, ADD, json!({"view": ids::encode(view), "edge": edge, "at": [60, 40]}))["balloon"].clone()
+    };
+    on(&mut s, other, nut, 405.0);
+    assert_eq!(names(&s), [of("Nut")], "numbered and counted as in the whole list");
+    assert_eq!(of("Nut").2, "2");
+    on(&mut s, other, pin, 305.0);
+    assert_eq!(names(&s), [of("Nut"), of("Pin")]);
+    on(&mut s, view, bracket, 40.0);
+    assert_eq!(names(&s).len(), 2, "the balloon on the other sheet isn't this sheet's");
+
+    let sheet = second;
+    crate::drawing_scene::extract(&mut s, sheet).unwrap();
+    while crate::drawing_scene::step(&mut s) {}
+    filter(&mut s, "drawing");
+    assert_eq!(names(&s).len(), 3, "the drawing's balloons");
+    while crate::drawing_scene::step(&mut s) {}
+    let drawn = crate::drawing_scene::extract(&mut s, sheet).unwrap();
+    on(&mut s, view, bracket, 41.0);
+    let waiting = crate::drawing_scene::extract(&mut s, sheet).unwrap();
+    assert!(waiting.stale_annotations.contains(&table), "another balloon can change what it shows: {drawn:?}");
+
+    filter(&mut s, "sheet");
+    assert_eq!(names(&s).len(), 2);
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let at = d.views.iter().position(|v| v.id == view).unwrap();
+    Arc::make_mut(d.views.get_mut(at).unwrap()).sheet = second;
+    s.doc_mut().put_drawing(Arc::new(d));
+    assert_eq!(names(&s).len(), 3, "its view moved here");
+}
+
+/// A revision table has no rows a balloon reads, so it can't be filtered by them.
+#[test]
+fn a_revision_table_cant_show_only_what_is_ballooned() {
+    let (mut s, ..) = placed();
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    let table = s.execute("drawing.table.add", &json!({"sheet": sheet, "kind": "revision"})).unwrap()["table"].clone();
+    let e = refused(&mut s, "drawing.table.edit", json!({"table": table, "set": {"filter": {"ballooned": "sheet"}}}));
+    assert!(e.contains("parts list"), "{e}");
+}
+
 /// A balloon with no list says so, and reads the only one when there is one: the row its part is
 /// counted in. Two lists leave it to choose, with the choices listed, until it names one. A list's
 /// delete reports the balloon that named it and leaves the balloon. One undo step each.

@@ -464,7 +464,7 @@ impl RevisionRecord {
         self.rows
             .iter()
             .filter(|r| r.sheet == sheet && !r.hidden)
-            .map(|r| table::Row { key: crate::ids::encode(r.id), kind: RowKind::Part, purchased: false, fields: fields(r) })
+            .map(|r| table::Row { key: crate::ids::encode(r.id), kind: RowKind::Part, purchased: false, ballooned: false, fields: fields(r) })
             .collect()
     }
 }

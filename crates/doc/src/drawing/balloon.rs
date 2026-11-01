@@ -21,9 +21,12 @@
 //! [`Document::resolve_balloons`] finds each balloon's edge again as a dimension's is found
 //! ([`super::reference::Status`]): by name, strictly, and what it can't decide it says.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
+use solidcraft_geom::table::Ballooned;
 
 use super::by_id::Record;
 use super::reference::{Located, Lookup, ModelEdge, check_edge};
@@ -86,6 +89,14 @@ impl Drawing {
             [only] => Ok((only.0, only.2)),
             _ => Err(lists.iter().map(|(id, ..)| *id).collect()),
         }
+    }
+
+    /// The balloons table `t` shows the rows of: those that read it, where its filter looks for them
+    /// ([`solidcraft_geom::table::Filter::ballooned`]). None without that filter.
+    pub fn balloons_shown_by(&self, t: &SheetTable) -> Vec<&Arc<Balloon>> {
+        let Some(scope) = t.table.filter.ballooned else { return Vec::new() };
+        let in_scope = |b: &Balloon| scope == Ballooned::Drawing || self.view(b.view).is_some_and(|v| v.sheet == t.sheet);
+        self.balloons.iter().filter(|b| in_scope(b) && self.parts_list_for(b).is_ok_and(|(list, _)| list == t.id)).collect()
     }
 
     /// The balloons' rules (the module's notes). The views and the tables are checked first, so they
