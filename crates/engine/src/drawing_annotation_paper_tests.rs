@@ -97,7 +97,8 @@ fn what_it_cant_draw_leaves_the_rest_and_says_why() {
     assert!(parts(&empty.group).3.is_none() && parts(&empty.group).2.is_some());
     assert_eq!(empty.why.as_deref(), Some("no list"));
     valid(&empty);
-    for tip in [Vec2::ZERO, Vec2::new(2.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(5.0 + ARROW_MM, 0.0)] {
+    // 0.1 mm from the centre is under the circle, further from its rim than an arrowhead.
+    for tip in [Vec2::ZERO, Vec2::new(0.1, 0.0), Vec2::new(2.0, 0.0), Vec2::new(5.0, 0.0), Vec2::new(5.0 + ARROW_MM, 0.0)] {
         let near = balloon_group(7, Vec2::new(0.0, 0.0), Some("3"), Some(tip), None);
         assert!(parts(&near.group).2.is_none() && near.why.as_deref().is_some_and(|why| why.contains("too near")), "{tip:?}: {:?}", near.why);
         assert_eq!(parts(&near.group).0.len(), 1);
