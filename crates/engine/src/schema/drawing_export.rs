@@ -62,6 +62,9 @@ pub struct ExportResult {
     /// Each dimension of a view on the sheet, as `drawing.scene` reports it: one that isn't drawn
     /// leaves the file written, and says why here.
     pub dimensions: Vec<SheetSceneDimension>,
+    /// What a deferred drawing wrote as it last was, as `drawing.scene` reports it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub out_of_date: Vec<String>,
     /// Each balloon of a view on the sheet, as `drawing.scene` reports it.
     pub balloons: Vec<SheetSceneBalloon>,
     /// Each note on the sheet or on a view of it, as `drawing.scene` reports it.

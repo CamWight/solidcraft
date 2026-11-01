@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use solidcraft_doc::drawing::view::{MAX_VIEW_DEPTH, View, ViewKind};
-use solidcraft_doc::drawing::{self, Drawing, Source, Units};
+use solidcraft_doc::drawing::{self, Drawing, Source, Units, Updates};
 use solidcraft_doc::drawing_view::ViewDirection;
 use solidcraft_doc::ids;
 use solidcraft_geom::cell::Projection;
@@ -54,7 +54,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .in_drawing()
         .icon("settings")
         .doc_only()
-        .params("name?, language?: a BCP 47 tag, units?: \"follow_model\" or one length unit such as \"mm\", projection?: first or third (angle), which every projected view follows, revision_numbering?: {numbers: {start: 0 or 1}} or \"letters\", how new revisions are named: rows already there stay as typed. One undo step."),
+        .params("name?, language?: a BCP 47 tag, units?: \"follow_model\" or one length unit such as \"mm\", projection?: first or third (angle), which every projected view follows, updates?: automatic, or deferred: views follow a changed model only on drawing.update, revision_numbering?: {numbers: {start: 0 or 1}} or \"letters\", how new revisions are named: rows already there stay as typed. One undo step."),
     CommandSpec::new("drawing.properties", "Drawing Properties", properties).in_drawing().icon("settings").noundo().doc_only().params(
         "→ metadata: the drawing's properties as saved (other tools' keys too); properties: project, part_number, revision, author, organization, description and license, each its text or null. The design properties' rules (document.metadata).",
     ),
@@ -83,6 +83,14 @@ fn projection(cmd: &str, p: &Value) -> Result<Option<Projection>> {
     match p.get("projection") {
         None => Ok(None),
         Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad(cmd, "`projection` is first or third (angle)")),
+    }
+}
+
+/// When `p` asks the views to follow what they draw.
+fn updates(cmd: &str, p: &Value) -> Result<Option<Updates>> {
+    match p.get("updates") {
+        None => Ok(None),
+        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad(cmd, "`updates` is automatic or deferred")),
     }
 }
 
@@ -272,6 +280,7 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         "name": d.name,
         "units": d.units,
         "projection": d.projection,
+        "updates": d.updates,
         "language": d.language,
         "properties": d.properties,
         "sources": d.sources.iter().map(source_reply).collect::<Vec<_>>(),
@@ -300,6 +309,9 @@ fn set(s: &mut Session, p: &Value) -> Result<Value> {
         }
         if let Some(projection) = projection(cmd, p)? {
             d.projection = projection;
+        }
+        if let Some(updates) = updates(cmd, p)? {
+            d.updates = updates;
         }
         if let Some(numbering) = revision_numbering(cmd, p)? {
             Arc::make_mut(&mut d.revisions).numbering = numbering;

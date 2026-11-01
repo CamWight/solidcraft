@@ -26,6 +26,10 @@
 //! Written by this build for this very model and as a view would draw now, a view's lines are fresh
 //! and nothing is drawn; otherwise they show, listed in `stale`, until they are drawn again.
 //!
+//! A deferred drawing ([`Updates::Deferred`]) draws nothing once its model has moved on from its last
+//! [`update`], which isn't saved: its last lines show, listed in `stale`, and every command that reads
+//! a sheet ([`as_shown`]) reads those and says so.
+//!
 //! [`SheetLayout::paper`]: solidcraft_geom::drawing_sheet::SheetLayout::paper
 
 use std::borrow::Borrow;
@@ -38,7 +42,7 @@ use solidcraft_doc::drawing::dimension::{self, Dimension};
 use solidcraft_doc::drawing::note::{Anchor, Note};
 use solidcraft_doc::drawing::table::{Kind, PartsList, SheetTable};
 use solidcraft_doc::drawing::view::{ResolvedView, View};
-use solidcraft_doc::drawing::{Drawing, Sheet};
+use solidcraft_doc::drawing::{Drawing, Sheet, Updates};
 use solidcraft_doc::drawing_view::TangentEdges;
 use solidcraft_doc::{DocError, ModelState, ids};
 use solidcraft_geom::drawing_view::ViewFrame;
@@ -130,6 +134,8 @@ pub struct SheetScene {
     pub objects: Vec<SheetObject>,
     /// Each annotation on the sheet, by view and id.
     pub annotations: Vec<AnnotationState>,
+    /// The views and annotations a deferred drawing shows as they last were ([`as_shown`]).
+    pub out_of_date: Vec<u64>,
 }
 
 /// One sheet as the provider last drew it ([`extract`]).
@@ -175,7 +181,7 @@ pub fn line_at(s: &mut Session, sheet: u64, point_mm: Vec2, band_mm: f64) -> Res
     let Some(found) = hit(&views, point_mm, band_mm) else { return Ok(None) };
     let id = found.object;
     let d = s.drawing(CMD)?.clone();
-    if s.drawing_scenes.views.get(&id).is_some_and(|e| e.drawn.group.is_some() && e.drawn.owners.is_none()) {
+    if !held(s, &d) && s.drawing_scenes.views.get(&id).is_some_and(|e| e.drawn.group.is_some() && e.drawn.owners.is_none()) {
         let view = d.resolve_view(id).map_err(|e| bad(CMD, e.to_string()))?;
         let (state, units) = (s.drawn_state(&d, view.source), s.doc.drawing_units(&d).to_string());
         draw_now(s, &d, id, view, &state, &units);
@@ -219,7 +225,42 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
     let annotations = draw_annotations(s, drawing, &wanted, |view| frames.get(&view).copied());
     assembly.add_annotations(annotations.iter());
     let (scene, views, objects, annotations) = assembly.finish()?;
-    Ok(SheetScene { scene, views, objects, annotations })
+    Ok(SheetScene { scene, views, objects, annotations, out_of_date: Vec::new() })
+}
+
+/// Sheet `sheet` of `d`, the drawing open, as a command reads it: drawn at once ([`build`]) unless `d`
+/// is deferred, when it is what the last [`update`] allows, and what that leaves behind is listed.
+pub fn as_shown(s: &mut Session, d: &Drawing, sheet: u64) -> Result<SheetScene> {
+    if d.updates == Updates::Automatic {
+        return build(s, d, sheet);
+    }
+    extract(s, sheet)?;
+    settle(s, d);
+    let shown = extract(s, sheet)?;
+    let out_of_date = shown.stale.into_iter().chain(shown.stale_annotations).collect();
+    let (scene, objects) = (Arc::unwrap_or_clone(shown.scene), shown.objects.to_vec());
+    Ok(SheetScene { scene, views: shown.views, objects, annotations: shown.annotations, out_of_date })
+}
+
+/// Draws what is waiting on the sheet last extracted: each view once, then each view's annotations and
+/// the sheet's. A script waits for what the sheet page shows as it draws.
+pub(crate) fn settle(s: &mut Session, d: &Drawing) {
+    for _ in 0..=d.views.len().saturating_mul(2).saturating_add(1) {
+        if !step(s) {
+            break;
+        }
+    }
+}
+
+/// Lets `d`, the drawing open, draw from the model as it is now: until that moves on, when a deferred
+/// drawing holds again. [`step`] does the drawing, on whichever sheet is shown.
+pub(crate) fn update(s: &mut Session, d: &Drawing) {
+    s.drawing_scenes.updated = Some(Worlds::now(s, d));
+}
+
+/// `d`, the drawing open, is deferred and its model has moved on from its last [`update`].
+pub(crate) fn held(s: &Session, d: &Drawing) -> bool {
+    s.drawing_scenes.holds(d, &Worlds::now(s, d))
 }
 
 /// A view's lines for a sheet scene, centred on the view, or why it has none.
@@ -717,6 +758,8 @@ pub struct Cache {
     /// for it.
     shown: BTreeMap<u64, (Arc<ModelState>, std::result::Result<ShownSet, Unmeasured>)>,
     last: Option<Assembled>,
+    /// What a deferred drawing may draw from: the last [`update`].
+    updated: Option<Worlds>,
     /// Numbers each view drawn and each read of annotations, so a scene is assembled again only when
     /// one of its views or annotations was.
     serial: u64,
@@ -857,6 +900,12 @@ impl Cache {
     }
 }
 
+impl Cache {
+    fn holds(&self, d: &Drawing, worlds: &Worlds) -> bool {
+        d.updates == Updates::Deferred && !self.updated.as_ref().is_some_and(|updated| updated.same(worlds))
+    }
+}
+
 /// Where one view of a drawing stands with the provider ([`standing`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ViewStanding {
@@ -960,6 +1009,9 @@ pub fn step(s: &mut Session) -> bool {
     let (Ok(d), Some(sheet)) = (s.drawing(CMD).cloned(), s.drawing_scenes.sheet) else { return false };
     let Ok(on) = views_on(&d, sheet) else { return false };
     let worlds = Worlds::now(s, &d);
+    if s.drawing_scenes.holds(&d, &worlds) {
+        return false;
+    }
     let units = s.doc.drawing_units(&d).to_string();
     keep_what_shows_the_same(s, &d, &on, &worlds);
     let waiting: Vec<(u64, ResolvedView)> =

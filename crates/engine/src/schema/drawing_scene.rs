@@ -219,6 +219,21 @@ pub struct SheetLineResult {
 #[schemars(deny_unknown_fields)]
 pub struct DrawingStatusParams {}
 
+/// Lets the drawing open draw from the model as it is now. It takes nothing.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct DrawingUpdateParams {}
+
+/// What `drawing.update` returns.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DrawingUpdateResult {
+    /// How many views wait to be drawn: the sheet page draws them, as a command that reads their sheet does.
+    pub waiting: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub param_warnings: Vec<String>,
+}
+
 /// One view: `current`, `out_of_date`, `placeholder` or `failed`, with why for the last two.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ViewStatusResult {
@@ -247,6 +262,9 @@ pub struct DrawingStatusResult {
     pub dimensions: Vec<DimensionStatusResult>,
     /// How many views are out of date.
     pub waiting: usize,
+    /// A deferred drawing: they wait for `drawing.update`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub held: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
 }
@@ -268,6 +286,9 @@ pub struct SheetSceneResult {
     pub notes: Vec<SheetSceneNote>,
     /// Each table on the sheet, by id.
     pub tables: Vec<SheetSceneTable>,
+    /// The views and annotations a deferred drawing shows as they last were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub out_of_date: Vec<String>,
     /// In the warn parameter-check mode: what the call's parameters got wrong.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub param_warnings: Vec<String>,
