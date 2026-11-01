@@ -348,6 +348,108 @@ fn after_a_model_change_the_last_scene_shows_until_its_views_are_drawn_again() {
     assert_eq!((last.stale.len(), s.drawing_scenes.projections, bytes(&last.scene)), (0, projections + 2, bytes(&now)));
 }
 
+/// A deferred drawing keeps its lines through a model change, marked and saying so everywhere it is
+/// read, until it is updated; the next change waits again, and an update lasts only as long as its model.
+#[test]
+fn a_deferred_drawing_keeps_its_lines_until_it_is_updated() {
+    let (mut s, sheet, [front, top]) = front_and_top();
+    let (drawing, sheet_id) = (ids::encode(s.open_drawing.unwrap()), ids::encode(sheet));
+    let before = bytes(&settled(&mut s, sheet).scene);
+    let grow = |s: &mut Session, name: &str| {
+        run(s, "drawing.close", json!({}));
+        run(s, "solid.box", json!({"length": 20, "width": 20, "height": 40, "corner": [40, 60, 0], "body_name": name, "operation": "new"}));
+        run(s, "drawing.open", json!({"drawing": drawing}));
+    };
+    let later = s.execute("drawing.set", &json!({"updates": "later"})).unwrap_err().to_string();
+    assert!(later.contains("automatic or deferred"), "{later}");
+    assert_eq!(run(&mut s, "drawing.inspect", json!({}))["updates"], json!("automatic"));
+    assert!(!serde_json::to_string(&**s.drawing("test").unwrap()).unwrap().contains(r#""updates""#), "saved only when set");
+    run(&mut s, "drawing.set", json!({"updates": "deferred"}));
+    assert!(serde_json::to_string(&**s.drawing("test").unwrap()).unwrap().contains(r#""updates":"deferred""#));
+    assert_eq!(run(&mut s, "drawing.inspect", json!({}))["updates"], json!("deferred"));
+    assert!(status_of(&mut s).0.get("held").is_none(), "nothing waits");
+
+    grow(&mut s, "Tower");
+    let projections = s.drawing_scenes.projections;
+    let held = settled(&mut s, sheet);
+    assert_eq!((held.stale.len(), bytes(&held.scene)), (2, before.clone()), "its last lines");
+    let (reply, words) = status_of(&mut s);
+    assert!(all_are(&words, "out_of_date") && reply["held"] == json!(true), "{reply}");
+    let marked = json!([ids::encode(front), ids::encode(top)]);
+    let scene = run(&mut s, "drawing.scene", json!({"sheet": sheet_id}));
+    assert_eq!(scene["out_of_date"], marked, "{}", scene["out_of_date"]);
+    let shown: serde_json::Value = serde_json::from_str(&before).unwrap();
+    assert_eq!(scene["scene"], shown, "a script reads what the page shows");
+    let exported = run(&mut s, "drawing.export", json!({"sheet": sheet_id}));
+    assert_eq!(exported["out_of_date"], marked, "an export says so");
+    assert!(exported["views"].as_array().is_some_and(|views| views.len() == 2), "{exported}");
+    let hit = run(&mut s, "drawing.scene.hit", json!({"sheet": sheet_id, "point_mm": [150, 150]}));
+    assert_eq!(hit["hit"]["object"], json!(ids::encode(front)), "{hit}");
+    assert_eq!(s.drawing_scenes.projections, projections, "and nothing drew");
+
+    let reply = run(&mut s, "drawing.update", json!({}));
+    assert_eq!(reply["waiting"], json!(2), "{reply}");
+    assert!(status_of(&mut s).0.get("held").is_none());
+    let updated = settled(&mut s, sheet);
+    assert_eq!((updated.stale.len(), s.drawing_scenes.projections), (0, projections + 2));
+    assert_eq!(bytes(&updated.scene), bytes(&built(&s, sheet).scene));
+    let scene = run(&mut s, "drawing.scene", json!({"sheet": sheet_id}));
+    assert!(scene.get("out_of_date").is_none(), "{}", scene["out_of_date"]);
+
+    grow(&mut s, "Second tower");
+    let again = settled(&mut s, sheet);
+    assert_eq!((again.stale.len(), bytes(&again.scene)), (2, bytes(&updated.scene)), "an update doesn't outlive a close");
+    run(&mut s, "drawing.update", json!({}));
+    run(&mut s, "drawing.set", json!({"updates": "automatic"}));
+    let scene = run(&mut s, "drawing.scene", json!({"sheet": sheet_id}));
+    assert!(scene.get("out_of_date").is_none());
+    assert_eq!(bytes(&settled(&mut s, sheet).scene), bytes(&built(&s, sheet).scene));
+}
+
+/// An update lets every sheet draw, each as it is shown; a view set up in a held drawing waits with the
+/// rest, and a drawing opened again holds until it is updated.
+#[test]
+fn a_deferred_update_reaches_each_sheet_until_the_model_moves() {
+    let (mut s, sheet, [front, top]) = front_and_top();
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    let second = ids::decode(run(&mut s, "drawing.sheet.add", json!({"name": "Second"}))["sheet"].as_str().unwrap()).unwrap();
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let other = d.allocate_id(&mut ids::IdSource::seeded(3875)).unwrap();
+    let mut there = (**d.views.iter().find(|v| v.id == front).unwrap()).clone();
+    there.id = other;
+    there.sheet = second;
+    d.add_views([Arc::new(there)]);
+    s.doc_mut().put_drawing(Arc::new(d));
+    run(&mut s, "drawing.set", json!({"updates": "deferred"}));
+    assert_eq!(extract(&mut s, sheet).unwrap().stale, [front, top], "not drawn before the first update");
+    assert!(!step(&mut s));
+    assert!(status_of(&mut s).0["held"] == json!(true));
+
+    run(&mut s, "drawing.update", json!({}));
+    assert!(settled(&mut s, sheet).stale.is_empty());
+    assert_eq!(extract(&mut s, second).unwrap().stale, [other]);
+    assert!(settled(&mut s, second).stale.is_empty(), "the other sheet, as it is shown");
+
+    // The model moves with the drawing open: it holds again, until the next update.
+    let block = s.doc.features.first().unwrap().id;
+    let suppress = json!({"command": "timeline.suppress", "params": {"feature": block, "suppressed": true}});
+    run(&mut s, "drawing.source.execute", suppress);
+    assert_eq!(extract(&mut s, sheet).unwrap().stale, [front, top], "the model moved");
+    assert!(!step(&mut s), "an update doesn't outlive its model");
+    assert!(status_of(&mut s).0["held"] == json!(true));
+    let back = json!({"command": "timeline.suppress", "params": {"feature": block, "suppressed": false}});
+    run(&mut s, "drawing.source.execute", back);
+    run(&mut s, "drawing.update", json!({}));
+    assert!(settled(&mut s, sheet).stale.is_empty());
+
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"display_style": "shaded"}}));
+    let waiting = extract(&mut s, sheet).unwrap().stale;
+    assert!(waiting.contains(&front), "{waiting:?}");
+    assert!(!step(&mut s), "held until it is updated");
+}
+
 /// A view is drawn again only when what it shows changes: a parameter or its undo, a part's move, a
 /// suppressed feature; not a body's appearance or eye, and an edit undone draws nothing.
 #[test]
@@ -1482,6 +1584,26 @@ fn a_press_on_lines_from_the_file_draws_that_view_once() {
     assert_eq!(bytes(&scene), bytes(&extract(&mut s, sheet).unwrap().scene), "the same lines");
     line_under(&mut s, sheet, [150.0, 155.2], 0.5);
     assert_eq!(s.drawing_scenes.projections, projections + 1);
+}
+
+/// A press on a deferred drawing's lines from the file draws nothing.
+#[test]
+fn a_press_on_held_lines_from_the_file_draws_nothing() {
+    let folder = crate::tests::Folder::new("press-held-lines");
+    let path = folder.path("drawn.solidcraft");
+    let (mut s, _, _) = saved_drawn(&path);
+    let sheet = reopened(&mut s, &path);
+    run(&mut s, "drawing.set", json!({"updates": "deferred"}));
+    let scene = extract(&mut s, sheet).unwrap().scene;
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "solid.box", json!({"length": 20, "width": 20, "height": 40, "corner": [40, 60, 0], "body_name": "Tower", "operation": "new"}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    extract(&mut s, sheet).unwrap();
+    let projections = s.drawing_scenes.projections;
+    assert!(line_under(&mut s, sheet, [150.0, 155.2], 0.5).is_null());
+    assert_eq!(s.drawing_scenes.projections, projections);
+    assert_eq!(bytes(&scene), bytes(&extract(&mut s, sheet).unwrap().scene));
 }
 
 /// In every style, a view's boundary among the scene's objects is the one inspect says, reference
