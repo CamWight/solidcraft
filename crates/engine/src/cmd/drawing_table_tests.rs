@@ -164,6 +164,27 @@ fn a_tables_space_is_inside_the_drawing_border() {
     assert_eq!((bare.min.x, bare.min.y, bare.max.x, bare.max.y), (0.0, 0.0, paper.x, paper.y));
 }
 
+/// A word the font can't set says why, and the rest of the table still draws.
+#[test]
+fn a_word_that_cant_be_set_says_why() {
+    use solidcraft_geom::paper::ObjectKind;
+
+    let mut s = assembly();
+    let sheet = sheet_of(&s);
+    let table = id_of(&run(&mut s, ADD, json!({"sheet": sheet, "kind": "parts_list"})));
+    let d = s.drawing("test").unwrap().clone();
+    let space = crate::drawing_table_paper::drawing_space(&d.sheets[0]);
+    let mut layout = crate::drawing_table_paper::place(&s, &d, &d.tables[0], space).unwrap().layout;
+    let cap_mm = d.tables[0].table.cap_mm;
+    let plain = crate::drawing_table_paper::on_paper(&layout, cap_mm, table, ObjectKind::PartsList);
+    assert!(plain.why.is_none(), "{:?}", plain.why);
+    let cell = layout.rows.iter_mut().flat_map(|row| &mut row.cells).find(|cell| !cell.lines.is_empty()).unwrap();
+    cell.lines[0].text = "\u{e000}".into();
+    let unset = crate::drawing_table_paper::on_paper(&layout, cap_mm, table, ObjectKind::PartsList);
+    assert!(unset.why.as_deref().is_some_and(|why| why.contains("no glyph")), "{:?}", unset.why);
+    assert_eq!(unset.group.items.len() + 1, plain.group.items.len(), "only that word goes");
+}
+
 /// One that can't be laid out says why and draws nothing; the rest of the sheet still draws. Here the
 /// text it would hold is past a table's 1 MiB: 300 revision rows, each with a 4096 byte column.
 #[test]
