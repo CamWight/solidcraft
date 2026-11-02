@@ -761,10 +761,10 @@ fn font_schema(ring: Value) -> Value {
     json!({
         "type": "object",
         "properties": {
-            "id": font_id_schema(), "face": int, "postscript_name": {"type": "string"}, "num_glyphs": int, "units_per_em": int, "metrics": metrics,
+            "id": font_id_schema(), "face": int, "postscript_name": {"type": "string"}, "embed": {"enum": ["subset", "whole", "outlines"]}, "num_glyphs": int, "units_per_em": int, "metrics": metrics,
             "glyphs": {"type": "object", "additionalProperties": glyph}
         },
-        "required": ["id", "face", "postscript_name", "num_glyphs", "units_per_em", "metrics", "glyphs"],
+        "required": ["id", "face", "postscript_name", "embed", "num_glyphs", "units_per_em", "metrics", "glyphs"],
         "additionalProperties": false
     })
 }

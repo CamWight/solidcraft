@@ -197,7 +197,7 @@ fn a_right_to_left_line_is_a_run_per_direction_with_marks_in_their_letters_clust
 #[test]
 fn a_character_no_font_has_is_refused_by_name() {
     let e = err("Size \u{d55c}", None, &TextStyle::default());
-    assert!(e.contains("no glyph for '\u{d55c}'"), "{e}");
+    assert!(e.contains("no glyph for '\u{d55c}'") && !e.contains("the web"), "{e}");
     let e = err("a\tb", None, &TextStyle::default());
     assert!(e.contains("'\\t'"), "{e}");
 }
@@ -212,7 +212,8 @@ fn dimension_marks_are_set_and_those_the_font_lacks_refused_by_name() {
     assert!(runs.iter().flat_map(|r| &r.glyphs).all(|g| g.id != 0), "{runs:?}");
     scene(&runs, &font).validate().unwrap();
     for mark in ['\u{2205}', '\u{2300}', '\u{2220}', '\u{22a5}', '\u{2225}', '\u{2312}', '\u{21a7}', '\u{2334}', '\u{2335}'] {
-        let e = err(&format!("A {mark}"), None, &TextStyle::default());
+        // With no other font to fall back on (a font that has one sets it: the fallback tests).
+        let e = paper_text_in(&[], &format!("A {mark}"), None, "", AT, 5.0, 0.0, &TextStyle::default()).unwrap_err().to_string();
         assert!(e.contains(&format!("no glyph for {mark:?}")), "{e}");
     }
 }
@@ -830,7 +831,7 @@ fn hostile_numbers_and_sizes_are_refused() {
 #[test]
 fn lines_wrap_between_words_to_a_width_and_never_cut_one() {
     let plain = TextStyle::default();
-    let lines = |text: &str, wrap| paper_lines(text, None, 5.0, wrap, &plain).unwrap();
+    let lines = |text: &str, wrap| paper_lines(text, None, "", 5.0, wrap, &plain).unwrap();
     let text = "Bracket for the left hand side";
     let wrapped = lines(text, Some(40.0));
     assert!(wrapped.lines.len() > 1, "{wrapped:?}");
@@ -847,7 +848,7 @@ fn lines_wrap_between_words_to_a_width_and_never_cut_one() {
     assert_eq!(wrapped.pitch, TextMetrics::new(&font_data(None).unwrap(), &TextStyle::default()).unwrap().line_pitch(5.0).unwrap());
     // Set as measured: the runs `paper_text` sets for the same lines joined by breaks.
     let joined = wrapped.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("\n");
-    assert_eq!(wrapped.set(AT, 0.3).unwrap(), paper_text(&joined, None, AT, 5.0, 0.3, &plain).unwrap());
+    assert_eq!(wrapped.set(AT, 0.3).unwrap(), paper_text(&joined, None, "", AT, 5.0, 0.3, &plain).unwrap());
     // A word wider than the width is a line of its own, whole.
     let long = lines("a Bracketforthelefthandside b", Some(20.0));
     assert_eq!(long.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["a", "Bracketforthelefthandside", "b"]);
@@ -856,12 +857,19 @@ fn lines_wrap_between_words_to_a_width_and_never_cut_one() {
     let kept = lines("A  B\n\nC", Some(1000.0));
     assert_eq!(kept.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), ["A B", "", "C"]);
     assert_eq!(lines("A  B\nC", None).lines, vec![("A  B".to_string(), width("A  B")), ("C".to_string(), width("C"))]);
-    assert!(paper_lines("A", None, 5.0, Some(f64::NAN), &plain).is_err());
-    assert!(paper_lines("A", None, f64::NAN, None, &plain).is_err());
-    assert!(matches!(paper_lines(&"A".repeat(MAX_TEXT_CHARS + 1), None, 5.0, None, &plain), Err(SketchError::TooLarge)));
+    assert!(paper_lines("A", None, "", 5.0, Some(f64::NAN), &plain).is_err());
+    assert!(paper_lines("A", None, "", f64::NAN, None, &plain).is_err());
+    assert!(matches!(paper_lines(&"A".repeat(MAX_TEXT_CHARS + 1), None, "", 5.0, None, &plain), Err(SketchError::TooLarge)));
     // Measuring refuses what setting would: a character the font lacks, a bold face, a path.
-    assert!(paper_lines("A 零", None, 5.0, Some(40.0), &plain).unwrap_err().to_string().contains("has no glyph for"));
-    assert!(paper_lines("A", None, 5.0, None, &TextStyle { bold: true, ..TextStyle::default() }).is_err());
+    assert!(paper_lines("A \u{10fffd}", None, "", 5.0, Some(40.0), &plain).unwrap_err().to_string().contains("has no glyph for"));
+    assert!(paper_lines("A", None, "", 5.0, None, &TextStyle { bold: true, ..TextStyle::default() }).is_err());
+    // A line a font falls back on wraps by its width in both, and is set as measured.
+    let words = "Part \u{30c6}\u{30b9}\u{30c8} and \u{90e8}\u{54c1}";
+    let wrapped = super::measure(&repo_fonts(), words, None, "ja", 5.0, Some(30.0), &plain, true).unwrap();
+    assert!(wrapped.lines.len() > 1 && wrapped.lines.iter().all(|(_, w)| *w <= 30.0), "{wrapped:?}");
+    let joined = wrapped.lines.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>().join("\n");
+    assert_eq!(wrapped.set(AT, 0.3).unwrap(), paper_text_in(&repo_fonts(), &joined, None, "ja", AT, 5.0, 0.3, &plain).unwrap());
+    assert_eq!(wrapped.set(AT, 0.3).unwrap().unwrap().1.len(), 2);
     assert!(lines("A", None).set(AT, f64::NAN).is_err());
 }
 

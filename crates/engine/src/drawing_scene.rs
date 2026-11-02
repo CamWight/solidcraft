@@ -120,7 +120,7 @@ pub fn build(s: &Session, drawing: &Drawing, sheet: u64) -> Result<SheetScene> {
     // placed as they are drawn, so at most one view's are held beside the scene.
     let shown = crate::drawing_view::shown(s);
     let drawn = on.iter().map(|(id, view, centre)| (*id, *centre, draw(s, &shown, *id, view)));
-    let text = block_text(record, drawing, &texts(s, drawing, sheet))?;
+    let (text, _) = block_text(record, drawing, &texts(s, drawing, sheet), true)?;
     let (scene, views) = assemble(record, drawing.projection, &text, drawn)?;
     Ok(SheetScene { scene, views })
 }
@@ -259,11 +259,15 @@ fn texts(s: &Session, d: &Drawing, sheet: u64) -> Vec<(String, Shown)> {
 
 /// Sheet `sheet` of `d`.
 /// Sheet `record`'s title block text as `texts` gives it, set on paper in the font of `drawing`, the
-/// drawing it is on: nothing without a block.
-fn block_text(record: &Sheet, drawing: &Drawing, texts: &[(String, Shown)]) -> Result<Set> {
+/// drawing it is on: nothing without a block. Also whether a text waits for a font to fall back to,
+/// which only the window's sheet leaves to the search's thread (`wait` false).
+fn block_text(record: &Sheet, drawing: &Drawing, texts: &[(String, Shown)], wait: bool) -> Result<(Set, bool)> {
     Ok(match (&record.title_block, record.title_block_layout().map_err(|e| bad(CMD, e.to_string()))?) {
-        (Some(block), Some(placed)) => title_block_text::lay(block, &placed, &drawing.font, texts).set(),
-        _ => Set::default(),
+        (Some(block), Some(placed)) => {
+            let laid = title_block_text::lay(block, &placed, &drawing.font, &drawing.language, texts, wait);
+            (laid.set(), laid.pending)
+        }
+        _ => (Set::default(), false),
     })
 }
 
@@ -304,6 +308,8 @@ pub struct Cache {
     /// The title block text of the sheet last extracted, as read and as set, and the drawing and
     /// model it was read from.
     texts: Option<(u64, Arc<Drawing>, Arc<ModelState>, Vec<(String, Shown)>, Arc<Set>)>,
+    /// Whether that text waits for a font to fall back to: it is set again until it doesn't.
+    text_pending: bool,
     last: Option<Assembled>,
     /// Numbers each view drawn, so a scene is assembled again only when one of its views was.
     serial: u64,
@@ -329,6 +335,7 @@ struct Inputs {
     sheet: Sheet,
     projection: Projection,
     faces: Vec<[u8; 32]>,
+    text_pending: bool,
     texts: Vec<(String, Shown)>,
     views: Vec<(u64, u64, Vec2)>,
 }
@@ -361,6 +368,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     if let Some(last) = &cache.last
         && last.sheet == sheet
         && last.serial == cache.serial
+        && !cache.text_pending
         && Arc::ptr_eq(&last.drawing, &d)
         && Arc::ptr_eq(&last.state, &state)
     {
@@ -371,11 +379,16 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     let record = sheet_of(&d, sheet)?;
     let model = s.model.state();
     let (texts, set) = match s.drawing_scenes.texts.take() {
-        Some((was, drawing, state, texts, set)) if was == sheet && Arc::ptr_eq(&drawing, &d) && Arc::ptr_eq(&state, &model) => (texts, set),
+        Some((was, drawing, state, texts, set))
+            if was == sheet && Arc::ptr_eq(&drawing, &d) && Arc::ptr_eq(&state, &model) && !s.drawing_scenes.text_pending =>
+        {
+            (texts, set)
+        }
         _ => {
             let texts = texts(s, &d, sheet);
-            let set = Arc::new(block_text(record, &d, &texts)?);
-            (texts, set)
+            let (set, pending) = block_text(record, &d, &texts, false)?;
+            s.drawing_scenes.text_pending = pending;
+            (texts, Arc::new(set))
         }
     };
     let cache = &mut s.drawing_scenes;
@@ -386,7 +399,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &state, view)).map(|(id, ..)| *id).collect();
     let serial = |id: &u64| cache.views.get(id).map_or(0, |e| e.serial);
     let views = on.iter().map(|(id, _, centre)| (*id, serial(id), *centre)).collect();
-    let inputs = Inputs { sheet: record.clone(), projection: d.projection, faces: set.faces(), texts, views };
+    let inputs = Inputs { sheet: record.clone(), projection: d.projection, faces: set.faces(), text_pending: cache.text_pending, texts, views };
     let (scene, views, generation) = match cache.last.take() {
         Some(last) if last.inputs == inputs => (last.answer.scene, last.answer.views, last.answer.generation),
         _ => {
@@ -404,7 +417,8 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
 }
 
 /// Draws the first view out of date on the sheet last extracted, and says whether more are
-/// waiting: a short piece of work for the UI's tick, one view's projection.
+/// waiting, or its text is, for a font [`extract`] will set it in: a short piece of work for the UI's
+/// tick, one view's projection.
 pub fn step(s: &mut Session) -> bool {
     forget_closed(s);
     let (Ok(d), Some(sheet)) = (s.drawing(CMD).cloned(), s.drawing_scenes.sheet) else { return false };
@@ -412,7 +426,8 @@ pub fn step(s: &mut Session) -> bool {
     let state = s.world_state();
     let waiting: Vec<(u64, ResolvedView)> =
         on.into_iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &state, view)).map(|(id, view, _)| (id, view)).collect();
-    let Some(&(id, view)) = waiting.first() else { return false };
+    let pending = s.drawing_scenes.text_pending;
+    let Some(&(id, view)) = waiting.first() else { return pending };
     let shown = match s.drawing_scenes.shown.take() {
         Some((was, shown)) if Arc::ptr_eq(&was, &state) => shown,
         _ => crate::drawing_view::shown(s),
@@ -426,7 +441,7 @@ pub fn step(s: &mut Session) -> bool {
     {
         cache.projections += 1;
     }
-    waiting.len() > 1
+    waiting.len() > 1 || pending
 }
 
 /// Drops the cache once its drawing isn't the one open: closing a drawing (or opening another) ends

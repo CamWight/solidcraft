@@ -214,12 +214,36 @@ fn text_is_its_outlines_filled_black_nonzero() {
 fn symbols_and_a_right_to_left_line_are_written() {
     use solidcraft_sketch::{TextStyle, paper_text};
     for line in ["Ø12 ±0.1 30°", "קו 12"] {
-        let (runs, fonts) = paper_text(line, None, p(20.0, 30.0), 3.5, 0.0, &TextStyle::default()).unwrap().unwrap();
+        let (runs, fonts) = paper_text(line, None, "", p(20.0, 30.0), 3.5, 0.0, &TextStyle::default()).unwrap().unwrap();
         let loops: usize = runs.iter().map(|r| r.outlines(&fonts[0]).count()).sum();
         let count = runs.len();
         let scene = Scene { fonts, ..sheet(runs.into_iter().map(Item::Text).collect()) };
         let (text, _) = svg(&scene);
         assert_eq!(text.matches("<path fill=\"#000\" stroke=\"none\" d=\"").count(), count, "{line}");
         assert!(loops > 0 && text.matches('M').count() == loops && text.matches('Z').count() == loops, "{line}: {text}");
+    }
+}
+
+/// A sheet in more than one language (#4890 F7), with the repository's fonts only: each run is one
+/// path of the loops of the font it names, whichever way the line reads, and the same bytes again.
+#[test]
+fn a_sheet_in_two_languages_is_written_font_by_font() {
+    use solidcraft_sketch::{TextStyle, paper_text_in};
+    let folder = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts");
+    for text in ["Part \u{30c6}\u{30b9}\u{30c8} 12", "\u{5e7}\u{5d5} \u{30c6}\u{30b9}\u{30c8}", "Part\n\u{90e8}\u{54c1}"] {
+        let written = || {
+            let (runs, fonts) =
+                paper_text_in(std::slice::from_ref(&folder), text, None, "ja", p(20.0, 30.0), 3.5, 0.0, &TextStyle::default()).unwrap().unwrap();
+            assert_eq!(fonts.len(), 2, "{text}");
+            assert!(fonts.iter().all(|font| runs.iter().any(|run| run.font == font.id)), "{text}");
+            let loops: usize = runs.iter().map(|run| run.outlines(fonts.iter().find(|font| font.id == run.font).unwrap()).count()).sum();
+            let count = runs.len();
+            let scene = Scene { fonts, ..sheet(runs.into_iter().map(Item::Text).collect()) };
+            (svg(&scene).0, count, loops)
+        };
+        let (svg_text, count, loops) = written();
+        assert_eq!(svg_text.matches("<path fill=\"#000\" stroke=\"none\" d=\"").count(), count, "{text}");
+        assert!(svg_text.matches('M').count() == loops && svg_text.matches('Z').count() == loops, "{text}: {svg_text}");
+        assert_eq!(written().0, svg_text, "{text}: the same bytes again");
     }
 }

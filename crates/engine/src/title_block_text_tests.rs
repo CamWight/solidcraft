@@ -53,7 +53,7 @@ fn find<'a>(runs: &'a [TextRun], text: &str) -> &'a TextRun {
 }
 
 fn width(text: &str, cap_mm: f64) -> f64 {
-    paper_lines(text, None, cap_mm, None, &TextStyle::default()).unwrap().lines[0].1
+    paper_lines(text, None, "", cap_mm, None, &TextStyle::default()).unwrap().lines[0].1
 }
 
 /// What `drawing.inspect` notes of cell `name`.
@@ -123,7 +123,7 @@ fn a_wrapped_value_breaks_to_its_box_and_what_doesnt_fit_is_noted() {
     let owner = placed(&s, "legal_owner").value_box;
     let words = "Tangency Labs and all of its many good friends everywhere";
     typed(&mut s, json!({"legal_owner": words}));
-    let wrapped = paper_lines(words, None, 3.5, Some(owner.size().x), &TextStyle::default()).unwrap();
+    let wrapped = paper_lines(words, None, "", 3.5, Some(owner.size().x), &TextStyle::default()).unwrap();
     assert_eq!(wrapped.lines.len(), 2, "{wrapped:?}");
     let drawn = runs(&s, sheet);
     for (row, (line, w)) in wrapped.lines.iter().enumerate() {
@@ -151,19 +151,62 @@ fn a_wrapped_value_breaks_to_its_box_and_what_doesnt_fit_is_noted() {
     }
 }
 
-/// A value in a script the drawing font has no glyphs for is left off the sheet, which is drawn all
-/// the same, and `drawing.inspect` says why; a right-to-left one is set as such.
+/// A value no font has a glyph for (a private character of the last plane) is left off the sheet,
+/// which is drawn all the same, and `drawing.inspect` says why; a right-to-left one is set as such.
 #[test]
-fn a_value_the_font_cant_set_is_left_off_and_noted() {
+fn a_value_no_font_can_set_is_left_off_and_noted() {
     let (mut s, sheet) = drawing();
-    typed(&mut s, json!({"title": "零件", "material": "פלדה 12"}));
+    typed(&mut s, json!({"title": "\u{10fffd}", "material": "פלדה 12"}));
+    // Asked first: `drawing.inspect` searches for what it's asked about, and doesn't wait for a thread.
+    let refused = notes(&mut s, "title");
     let drawn = runs(&s, sheet);
     find(&drawn, "Title");
-    assert!(drawn.iter().all(|r| r.text != "零件"));
+    assert!(drawn.iter().all(|r| r.text != "\u{10fffd}"));
     assert!(drawn.iter().any(|r| r.rtl && r.text.contains("פלדה")));
-    let refused = notes(&mut s, "title");
     assert!(refused[0]["refused"].as_str().unwrap().contains("has no glyph for"), "{refused}");
     assert_eq!(notes(&mut s, "material"), Value::Null);
+}
+
+/// A value in a script the drawing's font lacks: the window's sheet leaves it to the search's thread
+/// and `step` keeps asking, until it is the sheet an export draws, whichever fonts this computer has.
+/// A second one comes while the first's font is on the sheet: no new face, and it still comes. The
+/// drawing's language chooses among the fonts for Han, as it does for an export.
+#[test]
+fn a_value_in_another_script_ends_as_an_export_draws_it() {
+    let (mut s, sheet) = drawing();
+    let settled = |s: &mut Session| {
+        let started = std::time::Instant::now();
+        extract(s, sheet).unwrap();
+        while step(s) {
+            assert!(started.elapsed().as_secs() < 120, "the search for fonts never answered");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            extract(s, sheet).unwrap();
+        }
+        let window = extract(s, sheet).unwrap();
+        let d = s.drawing("test").unwrap().clone();
+        assert_eq!(serde_json::to_string(&*window.scene).unwrap(), serde_json::to_string(&build(s, &d, sheet).unwrap().scene).unwrap());
+    };
+    // Characters asked for nowhere else, so the search hasn't answered yet.
+    typed(&mut s, json!({"title": "\u{9f8d}"}));
+    extract(&mut s, sheet).unwrap();
+    assert!(step(&mut s), "the window's sheet leaves it to the search");
+    settled(&mut s);
+    typed(&mut s, json!({"title": "\u{9f8d}", "material": "\u{9f9c}"}));
+    extract(&mut s, sheet).unwrap();
+    assert!(step(&mut s), "the window's sheet leaves it to the search");
+    settled(&mut s);
+    let refused = notes(&mut s, "title");
+    assert_eq!(notes(&mut s, "material").is_null(), refused.is_null(), "the same font has both, or none has");
+    let fallbacks = run(&mut s, "drawing.inspect", json!({}));
+    assert_eq!(fallbacks["font_fallbacks"].as_array().unwrap().is_empty(), !refused.is_null(), "{fallbacks}");
+    for language in ["ja", "zh-CN"] {
+        run(&mut s, "drawing.set", json!({"language": language}));
+        settled(&mut s);
+        let plain = TextStyle::default();
+        if let Ok(Some((own, _))) = solidcraft_sketch::paper_text("\u{9f8d}", None, language, Vec2::ZERO, 3.5, 0.0, &plain) {
+            assert_eq!(find(&runs(&s, sheet), "\u{9f8d}").font, own[0].font, "{language}");
+        }
+    }
 }
 
 /// The sheet page follows a change of the drawing's fields at once, and draws no view again for it.

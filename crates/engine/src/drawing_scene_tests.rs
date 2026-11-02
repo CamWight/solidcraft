@@ -492,7 +492,7 @@ fn a_view_past_the_sheets_records_leaves_out_only_itself() {
     };
     for title_block in [None, Some(solidcraft_geom::title_block::default_block())] {
         let record = Sheet { title_block, ..(**d.sheets.iter().find(|x| x.id == sheet).unwrap()).clone() };
-        let text = block_text(&record, &d, &[]).unwrap();
+        let (text, _) = block_text(&record, &d, &[], true).unwrap();
         let (empty, _) = assemble(&record, Projection::Third, &text, std::iter::empty::<(u64, Vec2, Drawn)>()).unwrap();
         assert_eq!(empty.groups.len(), if record.title_block.is_some() { 4 } else { 3 });
         // The block's text and its fonts count too.
@@ -560,7 +560,7 @@ fn seeded_edits_and_steps_always_end_at_the_built_scene() {
 #[test]
 fn a_replys_text_and_fonts_keep_to_its_schema() {
     let style = solidcraft_sketch::TextStyle::default();
-    let (runs, fonts) = solidcraft_sketch::paper_text("\u{d8}12", None, Vec2::new(20.0, 30.0), 3.5, 0.5, &style).unwrap().unwrap();
+    let (runs, fonts) = solidcraft_sketch::paper_text("\u{d8}12", None, "", Vec2::new(20.0, 30.0), 3.5, 0.5, &style).unwrap().unwrap();
     let items = runs.into_iter().map(Item::Text).collect();
     let mut scene = Scene::new(Vec2::new(420.0, 297.0), vec![Group { object: 1, kind: ObjectKind::View, items }]);
     scene.add_fonts(fonts);

@@ -180,7 +180,11 @@ fn measure(
     let scale = |font: &Font| k * own_em / f64::from(font.units_per_em);
     let scales: Vec<f64> = std::iter::once(&font).chain(others.iter().map(|(_, font)| font)).map(scale).collect();
     let lay = |line: &str| {
-        if metrics.missing(line).is_empty() { Ok(metrics.laid_out(line, k)) } else { mixed_line(line, &faces, &found, &scales, language, &family, dirs.is_empty()) }
+        if metrics.missing(line).is_empty() {
+            Ok(metrics.laid_out(line, k))
+        } else {
+            mixed_line(line, &faces, &found, &scales, language, &family, dirs.is_empty())
+        }
     };
     let mut laid = Vec::new();
     for paragraph in text.split('\n') {
