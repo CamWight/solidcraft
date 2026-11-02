@@ -430,12 +430,30 @@ fn a_deferred_update_reaches_each_sheet_until_the_model_moves() {
     assert_eq!(extract(&mut s, second).unwrap().stale, [other]);
     assert!(settled(&mut s, second).stale.is_empty(), "the other sheet, as it is shown");
 
+    // The model moves with the drawing open: it holds again, until the next update.
+    let block = s.doc.features.first().unwrap().id;
+    let suppress = json!({"command": "timeline.suppress", "params": {"feature": block, "suppressed": true}});
+    run(&mut s, "drawing.source.execute", suppress);
+    assert_eq!(extract(&mut s, sheet).unwrap().stale, [front, top], "the model moved");
+    assert!(!step(&mut s), "an update doesn't outlive its model");
+    assert!(status_of(&mut s).0["held"] == json!(true));
+    let back = json!({"command": "timeline.suppress", "params": {"feature": block, "suppressed": false}});
+    run(&mut s, "drawing.source.execute", back);
+    run(&mut s, "drawing.update", json!({}));
+    assert!(settled(&mut s, sheet).stale.is_empty());
+
     run(&mut s, "drawing.close", json!({}));
     run(&mut s, "drawing.open", json!({"drawing": drawing}));
     run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"display_style": "shaded"}}));
     let waiting = extract(&mut s, sheet).unwrap().stale;
     assert!(waiting.contains(&front), "{waiting:?}");
     assert!(!step(&mut s), "held until it is updated");
+
+    // What waits on the sheet itself is listed with the views.
+    let note = run(&mut s, "drawing.note.add", json!({"anchor": {"sheet": "Sheet 1"}, "at": [20, 20], "content": "Held"}));
+    let scene = run(&mut s, "drawing.scene", json!({"sheet": ids::encode(sheet)}));
+    let listed = scene["out_of_date"].as_array().unwrap();
+    assert!(listed.contains(&note["record"]["id"]) && listed.contains(&json!(ids::encode(front))), "{listed:?} {note}");
 }
 
 /// A view is drawn again only when what it shows changes: a parameter or its undo, a part's move, a
