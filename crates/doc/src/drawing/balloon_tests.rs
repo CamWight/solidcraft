@@ -262,7 +262,7 @@ fn the_others_on_a_balloon_that_goes_stand_on_the_next() {
     let third = 1 << 41;
     let at = d.balloons.index_of(second).unwrap();
     Arc::make_mut(&mut d.balloons[at]).at = on(first);
-    let copy = Balloon { id: third, ..(**d.balloons.by_id(second).unwrap()).clone() };
+    let copy = Balloon { id: third, ..d.balloons.by_id(second).unwrap().clone() };
     d.balloons.add([Arc::new(copy)]);
     d.validate().unwrap();
     let place = d.balloons.by_id(first).unwrap().at;
@@ -321,7 +321,7 @@ fn a_list_counts_only_the_balloons_that_read_it() {
         Arc::make_mut(&mut d.balloons[at]).parts_list = Some(list);
     }
     let shown = |list: u64| -> Vec<u64> {
-        let mut table = (**d.tables.by_id(list).unwrap()).clone();
+        let mut table = d.tables.by_id(list).unwrap().clone();
         table.table.filter.ballooned = Some(solidcraft_geom::table::Ballooned::Sheet);
         d.balloons_shown_by(&table).iter().map(|b| b.id).collect()
     };
