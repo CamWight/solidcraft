@@ -278,6 +278,19 @@ fn read(s: &mut Session, balloon: &str) -> Value {
     run(s, INSPECT, json!({"balloon": balloon}))
 }
 
+/// A balloon stacked on another reads the list that one names.
+#[test]
+fn a_stacked_balloon_reads_the_list_of_the_one_under_it() {
+    let (mut s, view, [_, bracket]) = placed();
+    let chosen = list(&mut s, json!({}));
+    list(&mut s, json!({}));
+    let edge = json!({"point": [40, 0, 0], "path": [bracket]});
+    let first = run(&mut s, ADD, json!({"view": ids::encode(view), "edge": edge, "at": [60, 40], "parts_list": chosen}));
+    let first = first["balloon"].as_str().unwrap().to_string();
+    let second = run(&mut s, STACK_ADD, json!({"on": first, "edge": edge}));
+    assert_eq!(read(&mut s, second["balloon"].as_str().unwrap())["record"]["parts_list"], json!(chosen));
+}
+
 /// The balloon's group in a sheet's reply, and the reply's word on it.
 fn on_sheet(s: &mut Session, balloon: &str) -> (Value, Value) {
     let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);

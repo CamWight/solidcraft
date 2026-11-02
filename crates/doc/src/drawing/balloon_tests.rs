@@ -254,6 +254,61 @@ fn a_balloon_reads_the_list_it_names_else_the_only_one() {
     assert_eq!(read(&d).unwrap_err(), vec![1 << 42, 1 << 43]);
 }
 
+/// What stood on a balloon that goes stands on the first of them, which takes its place.
+#[test]
+fn the_others_on_a_balloon_that_goes_stand_on_the_next() {
+    let (mut d, [first, second]) = ballooned();
+    let on = |on: u64| BalloonPlace::On(Stacked { on, angle: 0.0 });
+    let third = 1 << 41;
+    let at = d.balloons.index_of(second).unwrap();
+    Arc::make_mut(&mut d.balloons[at]).at = on(first);
+    let copy = Balloon { id: third, ..(**d.balloons.by_id(second).unwrap()).clone() };
+    d.balloons.add([Arc::new(copy)]);
+    d.validate().unwrap();
+    let place = d.balloons.by_id(first).unwrap().at;
+    d.remove_objects(&OnSheet { balloons: vec![first], ..Default::default() });
+    d.validate().unwrap();
+    let (next, other) = (second.min(third), second.max(third));
+    assert_eq!((d.balloons.by_id(next).unwrap().at, d.balloons.by_id(other).unwrap().at), (place, on(next)));
+}
+
+/// A stack stays on one view, and holds at most its size whether its balloons stand in a line or on one.
+#[test]
+fn a_stacks_view_and_size_are_kept_on_reading() {
+    let (mut d, [placed, nested]) = ballooned();
+    let other = 1 << 41;
+    let view = View { id: other, place: ViewPlace::At([300.0, 150.0]), ..(*d.views[0]).clone() };
+    d.add_views([Arc::new(view)]);
+    d.validate().unwrap();
+    let [placed, nested] = [placed, nested].map(ids::encode);
+    let across = refused(&d, |v| {
+        balloon(v, &nested)["at"] = json!({"on": placed, "angle": 0.0});
+        balloon(v, &nested)["view"] = json!(ids::encode(other));
+    });
+    assert!(across.contains("another view"), "{across}");
+
+    let stack = |n: u64, in_line: bool| {
+        let mut v = file(&d);
+        let one = balloon(&mut v, &placed).clone();
+        let copies = (1..=n).map(|i| {
+            let mut copy = one.clone();
+            copy["id"] = json!(ids::encode(i));
+            if i > 1 {
+                copy["at"] = json!({"on": ids::encode(if in_line { i - 1 } else { 1 }), "angle": 0.0});
+            }
+            copy
+        });
+        v["balloons"] = Value::Array(copies.collect());
+        Drawing::from_json(&v.to_string()).map(|d| d.balloons.len()).map_err(|e| e.to_string())
+    };
+    let size = MAX_STACK_BALLOONS as u64;
+    for in_line in [false, true] {
+        assert_eq!(stack(size, in_line), Ok(MAX_STACK_BALLOONS), "{in_line}");
+    }
+    assert!(stack(size + 1, false).unwrap_err().contains("at most"));
+    assert!(stack(size + 1, true).unwrap_err().contains("goes round"));
+}
+
 /// A list that shows only what is ballooned counts the balloons that read it, not another list's.
 #[test]
 fn a_list_counts_only_the_balloons_that_read_it() {
