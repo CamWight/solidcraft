@@ -149,6 +149,21 @@ fn a_tables_place_follows_the_paper_and_its_record() {
     assert_eq!(on_sheet(&mut s, free).1, was_free, "a free one stays");
 }
 
+/// Tables are anchored inside a sheet's drawing border, and on its paper when it has none.
+#[test]
+fn a_tables_space_is_inside_the_drawing_border() {
+    let s = assembly();
+    let mut sheet = (*s.drawing("test").unwrap().sheets[0]).clone();
+    let paper = sheet.sheet.size_mm().unwrap();
+    let border = sheet.border.as_ref().unwrap().layout(&sheet.sheet).unwrap().drawing_border;
+    let space = crate::drawing_table_paper::drawing_space(&sheet);
+    assert_eq!((space.min, space.max), (border.min, border.max));
+    assert!(space.min.x > 0.0 && space.max.x < paper.x, "{space:?}");
+    sheet.border = None;
+    let bare = crate::drawing_table_paper::drawing_space(&sheet);
+    assert_eq!((bare.min.x, bare.min.y, bare.max.x, bare.max.y), (0.0, 0.0, paper.x, paper.y));
+}
+
 /// One that can't be laid out says why and draws nothing; the rest of the sheet still draws. Here the
 /// text it would hold is past a table's 1 MiB: 300 revision rows, each with a 4096 byte column.
 #[test]
