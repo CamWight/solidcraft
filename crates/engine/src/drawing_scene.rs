@@ -50,7 +50,7 @@ use solidcraft_geom::cell::Projection;
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::hlr::Source;
 use solidcraft_geom::paper::line::LineGroup;
-use solidcraft_geom::paper::text::TextRun;
+use solidcraft_geom::paper::text::{Font, TextRun, font_in};
 use solidcraft_geom::paper::{Group, Item, MAX_RECORDS, ObjectKind, Picture, Scene};
 use solidcraft_geom::prelude::*;
 use solidcraft_geom::{Aabb2, ArcMap};
@@ -354,7 +354,24 @@ struct DrawnDimension {
     view: u64,
     status: dimension::Status,
     group: Option<Group>,
+    /// The fonts its group's text uses.
+    fonts: Vec<Font>,
     why: Option<String>,
+}
+
+/// What a drawing's dimensions read and are set in: its units (the design's, when it follows them),
+/// its language and its font. A dimension drawn in other ones is read again.
+#[derive(Clone, Debug, PartialEq)]
+struct Lettering {
+    units: String,
+    language: String,
+    font: String,
+}
+
+impl Lettering {
+    fn of(s: &Session, d: &Drawing) -> Lettering {
+        Lettering { units: s.doc.drawing_units(d).to_string(), language: d.language.clone(), font: d.font.clone() }
+    }
 }
 
 /// View `id`, drawing as `view` does, of the bodies `shown` holds: its lines, the hidden ones too
@@ -425,14 +442,21 @@ fn draw_dimensions(
     let read = s.doc.resolve_dimensions(&s.model, d, &ids);
     let one = |at: usize, record: &Arc<Dimension>| match read.as_ref().map(|all| all.get(at)) {
         Ok(Some(resolved)) => {
-            let group = frame(record.view).and_then(|(frame, lines)| crate::drawing_dimension_paper::paper_group(record, resolved, &frame, lines));
-            let nothing = group.is_none() && !resolved.points.is_empty() && frame(record.view).is_some();
-            let why = nothing.then(|| "what it measures has no place to draw on its view".to_string());
-            DrawnDimension { dimension: record.id, view: record.view, status: resolved.status.clone(), group, why }
+            let paper = frame(record.view)
+                .and_then(|(frame, lines)| crate::drawing_dimension_paper::paper_group(record, resolved, &frame, lines, &d.font, &d.language));
+            let drawn =
+                |group, fonts, why| DrawnDimension { dimension: record.id, view: record.view, status: resolved.status.clone(), group, fonts, why };
+            match paper {
+                Some(paper) => drawn(Some(paper.group), paper.fonts, paper.why),
+                None => {
+                    let nothing = !resolved.points.is_empty() && frame(record.view).is_some();
+                    drawn(None, Vec::new(), nothing.then(|| "what it measures has no place to draw on its view".to_string()))
+                }
+            }
         }
         Ok(None) | Err(_) => {
             let status = dimension::Status::Unmeasurable(format!("dimension {} can't be read", ids::encode(record.id)));
-            DrawnDimension { dimension: record.id, view: record.view, status, group: None, why: None }
+            DrawnDimension { dimension: record.id, view: record.view, status, group: None, fonts: Vec::new(), why: None }
         }
     };
     wanted.iter().enumerate().map(|(at, record)| one(at, record)).collect()
@@ -471,20 +495,25 @@ enum LeftOut {
 }
 
 impl Assembly {
-    /// Puts `group` in the scene moved to `centre`, and gives the box round it there.
-    fn add(&mut self, group: &Group, centre: Vec2) -> std::result::Result<Aabb2, LeftOut> {
-        let more = group.records();
+    /// Puts `group`, whose text uses `fonts`, in the scene moved to `centre`, and gives the box round
+    /// it there. Only a group that joins adds to the scene's fonts, and a font's records it adds count.
+    fn add(&mut self, group: &Group, fonts: &[Font], centre: Vec2) -> std::result::Result<Aabb2, LeftOut> {
+        self.alone.add_fonts(fonts.iter().cloned());
+        let more = group.records().saturating_add(self.scene.font_records_beyond(&self.alone.fonts));
         if self.records.saturating_add(more) > MAX_RECORDS {
+            self.alone.fonts.clear();
             return Err(LeftOut::TooManyRecords);
         }
         self.alone.groups.push(moved(group, centre));
         if let Err(e) = self.alone.validate() {
             self.alone.groups.clear();
+            self.alone.fonts.clear();
             return Err(LeftOut::Invalid(e.to_string()));
         }
         self.records += more;
-        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, group_bounds);
+        let bounds = self.alone.groups.first().map_or(Aabb2::EMPTY, |one| group_bounds(one, &self.alone.fonts));
         self.scene.groups.append(&mut self.alone.groups);
+        self.scene.add_fonts(std::mem::take(&mut self.alone.fonts));
         Ok(bounds)
     }
 
@@ -496,7 +525,7 @@ impl Assembly {
             let mut drawn = false;
             match (self.placed.get(&one.view).map(|(_, centre)| *centre), &one.group) {
                 (None, _) => why = Some("its view isn't drawn".into()),
-                (Some(centre), Some(group)) => match self.add(group, centre) {
+                (Some(centre), Some(group)) => match self.add(group, &one.fonts, centre) {
                     Ok(bounds_mm) => {
                         drawn = true;
                         self.objects.push(SheetObject { object: one.dimension, kind: ObjectKind::Dimension, bounds_mm, boundary_mm: None });
@@ -544,7 +573,7 @@ fn assemble<D: Borrow<Drawn>>(
     if !border.is_empty() {
         // The border's groups are one object, measured before the images painted with them join
         // them: an image isn't one of the objects a sheet's commands pick.
-        let bounds_mm = border.iter().map(group_bounds).fold(Aabb2::EMPTY, |all, one| all.union(&one));
+        let bounds_mm = border.iter().map(|group| group_bounds(group, &[])).fold(Aabb2::EMPTY, |all, one| all.union(&one));
         objects.push(SheetObject { object: record.id, kind: ObjectKind::DrawingBorder, bounds_mm, boundary_mm: None });
     }
     border.extend_from_slice(images);
@@ -557,7 +586,7 @@ fn assemble<D: Borrow<Drawn>>(
         let mut status = drawn.status.clone();
         let mut lines = None;
         if let Some(group) = &drawn.group {
-            match assembly.add(group, centre) {
+            match assembly.add(group, &[], centre) {
                 Ok(bounds) => {
                     lines = Some(bounds);
                     if let Some(frame) = drawn.frame {
@@ -581,16 +610,20 @@ fn assemble<D: Borrow<Drawn>>(
     Ok(assembly)
 }
 
-/// The box round what `group` draws, along its lines' paths and round its pictures. Text isn't
-/// measured here: nothing on a sheet draws any yet, and its outlines need its font.
-fn group_bounds(group: &Group) -> Aabb2 {
+/// The box round what `group` draws: along its lines' paths and its text's outlines, in `fonts`,
+/// and round its pictures.
+fn group_bounds(group: &Group, fonts: &[Font]) -> Aabb2 {
     let mut bounds = Aabb2::EMPTY;
     for item in &group.items {
         let mut add = |path: &[Seg2]| path.iter().for_each(|seg| bounds = bounds.union(&seg.bounds()));
         match item {
             Item::Stroke { path, .. } => add(path),
             Item::Fill { region } => region.loops().for_each(|ring| add(&ring.segs)),
-            Item::Text(_) => {}
+            Item::Text(run) => {
+                if let Some(font) = font_in(fonts, &run.font) {
+                    run.outlines(font).for_each(|ring| add(&ring.segs));
+                }
+            }
             Item::Picture(picture) => bounds = bounds.union(&picture.rect),
         }
     }
@@ -702,12 +735,12 @@ impl Entry {
 }
 
 /// A dimension's last drawing, and what it was drawn from: its record, the world state, its view's
-/// drawing (by serial, which holds its frame) and the drawing's units.
+/// drawing (by serial, which holds its frame) and the drawing's lettering.
 struct DimensionEntry {
     state: Arc<ModelState>,
     record: Arc<Dimension>,
     view_serial: u64,
-    units: String,
+    lettering: Lettering,
     drawn: DrawnDimension,
     serial: u64,
 }
@@ -724,13 +757,13 @@ struct Inputs {
     dimensions: Vec<(u64, u64)>,
 }
 
-/// The last answer of [`extract`], for the sheet, drawing, world state, units and serial it was for:
-/// the same five again return it as it is.
+/// The last answer of [`extract`], for the sheet, drawing, world state, lettering and serial it was
+/// for: the same five again return it as it is.
 struct Assembled {
     sheet: u64,
     drawing: Arc<Drawing>,
     state: Arc<ModelState>,
-    units: String,
+    lettering: Lettering,
     serial: u64,
     inputs: Inputs,
     answer: SheetView,
@@ -777,23 +810,30 @@ impl Cache {
     }
 
     /// Keeps `records` as `lines` drew them, numbered with the cache's serial.
-    fn keep_dimensions(&mut self, records: Vec<Arc<Dimension>>, lines: Vec<DrawnDimension>, state: &Arc<ModelState>, view_serial: u64, units: &str) {
+    fn keep_dimensions(
+        &mut self,
+        records: Vec<Arc<Dimension>>,
+        lines: Vec<DrawnDimension>,
+        state: &Arc<ModelState>,
+        view_serial: u64,
+        lettering: &Lettering,
+    ) {
         let serial = self.serial;
         for (record, drawn) in records.into_iter().zip(lines) {
-            let entry = DimensionEntry { state: state.clone(), record, view_serial, units: units.to_string(), drawn, serial };
+            let entry = DimensionEntry { state: state.clone(), record, view_serial, lettering: lettering.clone(), drawn, serial };
             self.dimensions.insert(entry.record.id, entry);
         }
     }
 
     /// The dimensions of the views `on`, by view and id, to read again: each whose view is up to
-    /// date, last drawn from another record, model, drawing of its view, or units.
-    fn stale_dimensions(&self, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], state: &Arc<ModelState>, units: &str) -> Vec<Arc<Dimension>> {
+    /// date, last drawn from another record, model, drawing of its view, or lettering.
+    fn stale_dimensions(&self, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], state: &Arc<ModelState>, lettering: &Lettering) -> Vec<Arc<Dimension>> {
         let fresh = on.iter().filter(|(id, view, _)| self.fresh(*id, state, view));
         let serials: BTreeMap<u64, u64> = fresh.filter_map(|(id, ..)| self.views.get(id).map(|e| (*id, e.serial))).collect();
         let current = |record: &Arc<Dimension>, serial: u64| {
-            self.dimensions
-                .get(&record.id)
-                .is_some_and(|e| Arc::ptr_eq(&e.record, record) && Arc::ptr_eq(&e.state, state) && e.view_serial == serial && e.units == units)
+            self.dimensions.get(&record.id).is_some_and(|e| {
+                Arc::ptr_eq(&e.record, record) && Arc::ptr_eq(&e.state, state) && e.view_serial == serial && e.lettering == *lettering
+            })
         };
         let mut stale = dimensions_on(d, serials.keys().copied());
         stale.retain(|record| serials.get(&record.view).is_some_and(|serial| !current(record, *serial)));
@@ -841,12 +881,12 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     forget_closed(s);
     let d = s.drawing(CMD)?.clone();
     let state = s.world_state()?;
-    let units = s.doc.drawing_units(&d).to_string();
+    let lettering = Lettering::of(s, &d);
     let cache = &mut s.drawing_scenes;
     if let Some(last) = &cache.last
         && last.sheet == sheet
         && last.serial == cache.serial
-        && last.units == units
+        && last.lettering == lettering
         && Arc::ptr_eq(&last.drawing, &d)
         && Arc::ptr_eq(&last.state, &state)
     {
@@ -862,7 +902,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
     keep_what_shows_the_same(s, &on, &state);
     let cache = &mut s.drawing_scenes;
     let stale = on.iter().filter(|(id, view, _)| !cache.fresh(*id, &state, view)).map(|(id, ..)| *id).collect();
-    let stale_dimensions = cache.stale_dimensions(&d, &on, &state, &units).iter().map(|record| record.id).collect();
+    let stale_dimensions = cache.stale_dimensions(&d, &on, &state, &lettering).iter().map(|record| record.id).collect();
     let inputs = cache.inputs(&d, record, &on);
     let (scene, views, objects, dimensions, generation) = match cache.last.take() {
         Some(last) if last.inputs == inputs => {
@@ -881,7 +921,7 @@ pub fn extract(s: &mut Session, sheet: u64) -> Result<SheetView> {
         }
     };
     let answer = SheetView { scene, generation, views, stale, objects, dimensions, stale_dimensions };
-    cache.last = Some(Assembled { sheet, drawing: d, state, units, serial: cache.serial, inputs, answer: answer.clone() });
+    cache.last = Some(Assembled { sheet, drawing: d, state, lettering, serial: cache.serial, inputs, answer: answer.clone() });
     Ok(answer)
 }
 
@@ -897,10 +937,10 @@ pub fn step(s: &mut Session) -> bool {
     if s.drawing_scenes.holds(&d, &state) {
         return false;
     }
-    let units = s.doc.drawing_units(&d).to_string();
+    let lettering = Lettering::of(s, &d);
     let waiting: Vec<(u64, ResolvedView)> =
         on.iter().filter(|(id, view, _)| !s.drawing_scenes.fresh(*id, &state, view)).map(|(id, view, _)| (*id, view.clone())).collect();
-    let Some((id, view)) = waiting.first().cloned() else { return step_dimensions(s, &d, &on, &state, units) };
+    let Some((id, view)) = waiting.first().cloned() else { return step_dimensions(s, &d, &on, &state, lettering) };
     let shown = match s.drawing_scenes.shown.take() {
         Some((was, shown)) if Arc::ptr_eq(&was, &state) => shown,
         _ => crate::drawing_view::shown(s),
@@ -916,18 +956,18 @@ pub fn step(s: &mut Session) -> bool {
     cache.serial += 1;
     let serial = cache.serial;
     cache.views.insert(id, Entry { state: state.clone(), shows, view, drawn, serial });
-    cache.keep_dimensions(these, lines, &state, serial, &units);
+    cache.keep_dimensions(these, lines, &state, serial, &lettering);
     #[cfg(test)]
     {
         cache.projections += 1;
     }
-    waiting.len() > 1 || !cache.stale_dimensions(&d, &on, &state, &units).is_empty()
+    waiting.len() > 1 || !cache.stale_dimensions(&d, &on, &state, &lettering).is_empty()
 }
 
 /// Reads the dimensions out of date of the first view that has any, through its frame, and says
 /// whether another view's are waiting.
-fn step_dimensions(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], state: &Arc<ModelState>, units: String) -> bool {
-    let stale = s.drawing_scenes.stale_dimensions(d, on, state, &units);
+fn step_dimensions(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)], state: &Arc<ModelState>, lettering: Lettering) -> bool {
+    let stale = s.drawing_scenes.stale_dimensions(d, on, state, &lettering);
     let Some(view) = stale.first().map(|record| record.view) else { return false };
     let (these, others): (Vec<_>, Vec<_>) = stale.into_iter().partition(|record| record.view == view);
     let entry = s.drawing_scenes.views.get(&view);
@@ -936,7 +976,7 @@ fn step_dimensions(s: &mut Session, d: &Drawing, on: &[(u64, ResolvedView, Vec2)
     let lines = draw_dimensions(s, d, &these, |_| frame);
     let cache = &mut s.drawing_scenes;
     cache.serial += 1;
-    cache.keep_dimensions(these, lines, state, view_serial, &units);
+    cache.keep_dimensions(these, lines, state, view_serial, &lettering);
     !others.is_empty()
 }
 
