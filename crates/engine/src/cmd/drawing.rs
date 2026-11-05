@@ -92,7 +92,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         "drawing: id → deleted: its id; closed when it was open (one undo step of the model)",
     ),
     CommandSpec::new("drawing.inspect", "Inspect Drawing", inspect).in_drawing().icon("inspect").noundo().doc_only().params(
-        "→ {id, name, units, projection, language, font, font_note: why its text is set in the built-in font instead (the font isn't on this computer, or can't be set on paper), or null, properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, title_block (its definition, or null), title_block_cells: [{name, text, value?, notes?}] (each text cell as the sheet shows it: its fields' values, nothing for one with none, or the text typed over it with the value it hides as `value`; `notes` are what doesn't fit on paper, each {fit: chars (with count and max), height or width}, shown whole, or {refused: why} for a label or value the drawing's font can't set, left off the sheet), title_block_overrides, dpi, documents, excluded, views: [{id, kind: base|projected, parent?, side?, label, dimensions: [ids], balloons: [ids]}], base views by id, each followed by those projected from it}], revisions: {rows: [{row, revision, description, designer, checker, date, hidden}], the oldest first (the newest is the drawing's revision), next: the revision a new row gets}}. Read-only.",
+        "→ {id, name, units, projection, language, font, font_note: why its text is set in the built-in font instead (the font isn't on this computer, or can't be set on paper), or null, font_fallbacks: which font set each script of its title blocks' text that the drawing's font lacks, as lines such as \"Kana set in BIZ UDPGothic\", properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, title_block (its definition, or null), title_block_cells: [{name, text, value?, notes?}] (each text cell as the sheet shows it: its fields' values, nothing for one with none, or the text typed over it with the value it hides as `value`; `notes` are what doesn't fit on paper, each {fit: chars (with count and max), height or width}, shown whole, or {refused: why} for a label or value the drawing's font can't set, left off the sheet), title_block_overrides, dpi, documents, excluded, views: [{id, kind: base|projected, parent?, side?, label, dimensions: [ids], balloons: [ids]}], base views by id, each followed by those projected from it}], revisions: {rows: [{row, revision, description, designer, checker, date, hidden}], the oldest first (the newest is the drawing's revision), next: the revision a new row gets}}. Read-only.",
     ),
     CommandSpec::new("drawing.set", "Drawing Settings", set)
         .in_drawing()
@@ -385,15 +385,20 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
     // One tree for the drawing: each component it documents is weighed once.
     let mut tree = Tree::new(&s.doc, &state);
     let mut sheets = Vec::with_capacity(d.sheets.len());
+    // The title blocks' text, labels too, for which font set each script the drawing's font lacks.
+    let mut texts: Vec<String> = Vec::new();
     for (at, sheet) in d.sheets.iter().enumerate() {
         let size = sheet.sheet.size_mm().map_err(|e| bad(cmd, e.to_string()))?;
+        let cells = title_block_cells(&s.doc, &mut tree, d, at);
+        texts.extend(cells.iter().filter_map(|cell| cell["text"].as_str()).map(str::to_string));
+        texts.extend(sheet.title_block.iter().flat_map(|block| &block.cells).filter_map(|cell| cell.label.as_ref()).map(|label| label.text.clone()));
         sheets.push(json!({
             "id": ids::encode(sheet.id),
             "name": sheet.name,
             "size_mm": [size.x, size.y],
             "orientation": sheet.sheet.orientation,
             "title_block": sheet.title_block,
-            "title_block_cells": title_block_cells(&s.doc, &mut tree, d, at),
+            "title_block_cells": cells,
             "title_block_overrides": sheet.title_block_overrides,
             "dpi": sheet.dpi,
             "documents": sheet.documents.map(|c| json!({"source": ids::encode(c.source), "component": c.component})),
@@ -411,6 +416,7 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         "language": d.language,
         "font": d.font,
         "font_note": solidcraft_sketch::paper_font_note(&solidcraft_sketch::font_dirs(), &d.font),
+        "font_fallbacks": solidcraft_sketch::paper_fallback_notes(&solidcraft_sketch::font_dirs(), &d.font, &d.language, texts.iter().map(String::as_str)),
         "properties": d.properties,
         "sources": d.sources.iter().map(|source| json!({"id": ids::encode(source.id)})).collect::<Vec<_>>(),
         "sheets": sheets,
@@ -447,7 +453,7 @@ fn title_block_cells(doc: &Document, tree: &mut Tree<'_>, d: &Drawing, at: usize
     let shown = title_block_text::shown(doc, tree, d, at);
     // Laid out for its notes only: nothing is placed on a sheet here.
     let block = d.sheets.get(at).and_then(|sheet| Some((sheet.title_block.as_ref()?, sheet.title_block_layout().ok().flatten()?)));
-    let notes = block.map(|(block, placed)| title_block_text::lay(block, &placed, &d.font, &d.language, &shown).notes).unwrap_or_default();
+    let notes = block.map(|(block, placed)| title_block_text::lay(block, &placed, &d.font, &d.language, &shown, true).notes).unwrap_or_default();
     let note = |note: &Note| match note {
         Note::Fit(Warning::Chars { count, max }) => json!({"fit": "chars", "count": count, "max": max}),
         Note::Fit(Warning::Height) => json!({"fit": "height"}),
