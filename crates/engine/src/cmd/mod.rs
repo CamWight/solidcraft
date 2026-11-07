@@ -47,6 +47,7 @@ mod drawing_note;
 mod drawing_revision;
 mod drawing_scene;
 mod drawing_sheet;
+mod drawing_source;
 mod drawing_table;
 mod drawing_ui;
 mod drawing_view;
@@ -465,6 +466,7 @@ pub fn command_specs() -> Vec<&'static CommandSpec> {
     v.extend(drawing_table::COMMANDS.iter());
     v.extend(drawing_scene::COMMANDS.iter());
     v.extend(drawing_sheet::COMMANDS.iter());
+    v.extend(drawing_source::COMMANDS.iter());
     v.extend(drawing_view::COMMANDS.iter());
     v.extend(settings::COMMANDS.iter());
     v.extend(diagnostics::COMMANDS.iter());
