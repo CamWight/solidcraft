@@ -1,5 +1,5 @@
 use solidcraft_geom::prelude::*;
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -714,4 +714,39 @@ fn a_views_centre_is_its_point_or_lined_up_with_its_parent() {
         assert_eq!(d.view_centre(id).unwrap_err().to_string(), format!("base view {} isn't placed at a point", ids::encode(front)));
     }
     assert_eq!(d.view_centre(99).unwrap_err().to_string(), format!("the drawing has no view {}", ids::encode(99)));
+}
+
+/// A `source` path takes everything under it, `[]` only the design's own bodies, and a `hide`
+/// path wins over a `source` path above it.
+#[test]
+fn a_body_is_drawn_under_a_source_path_and_no_hide_path() {
+    let set = |paths: &[&'static [u64]]| paths.iter().copied().collect::<HashSet<&[u64]>>();
+    let paths: [&[u64]; 5] = [&[], &[1], &[1, 2], &[1, 2, 3], &[4]];
+    let cases: [(Option<HashSet<&[u64]>>, HashSet<&[u64]>, [bool; 5]); 4] = [
+        (None, set(&[&[1, 2]]), [true, true, false, false, true]),
+        (Some(set(&[&[1, 2]])), set(&[]), [false, false, true, true, false]),
+        (Some(set(&[&[]])), set(&[]), [true, false, false, false, false]),
+        (Some(set(&[&[1], &[4]])), set(&[&[1, 2]]), [false, true, false, false, true]),
+    ];
+    for (source, hide, want) in cases {
+        let got = paths.map(|p| chosen(p, source.as_ref(), &hide));
+        assert_eq!(got, want, "{source:?} {hide:?}");
+    }
+}
+
+/// Seeded paths and choices: `chosen` always agrees with the rule worked out the long way.
+#[test]
+fn seeded_choices_agree_with_the_rule() {
+    let pick = |seed: u64, salt: u64, n: u64| ((seed ^ salt).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) % n;
+    let path = |seed: u64, salt: u64| -> Vec<u64> { (0..pick(seed, salt, 4)).map(|i| 1 + pick(seed, salt + 10 + i, 3)).collect() };
+    for seed in 1..=500u64 {
+        let sources: Vec<Vec<u64>> = (0..pick(seed, 1, 3)).map(|i| path(seed, 100 + i * 20)).collect();
+        let hides: Vec<Vec<u64>> = (0..pick(seed, 2, 3)).map(|i| path(seed, 200 + i * 20)).filter(|p| !p.is_empty()).collect();
+        let body = path(seed, 3);
+        let source = (pick(seed, 4, 2) == 0).then(|| sources.iter().map(Vec::as_slice).collect::<HashSet<&[u64]>>());
+        let hide: HashSet<&[u64]> = hides.iter().map(Vec::as_slice).collect();
+        let under = |p: &Vec<u64>| if p.is_empty() { body.is_empty() } else { body.starts_with(p) };
+        let long_way = (source.is_none() || sources.iter().any(under)) && !hides.iter().any(under);
+        assert_eq!(chosen(&body, source.as_ref(), &hide), long_way, "seed {seed}: {body:?} {sources:?} {hides:?}");
+    }
 }
