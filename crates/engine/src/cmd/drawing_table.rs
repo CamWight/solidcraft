@@ -1,5 +1,5 @@
 //! `drawing.table.add`, `.edit` and `.delete` (#3874): a parts list, a revision table, a family
-//! table or a general table saved on a sheet of the open drawing. Its definition is the record's ([`solidcraft_doc::drawing::table`]).
+//! table, a general table or a hole table saved on a sheet of the open drawing. Its definition is the record's ([`solidcraft_doc::drawing::table`]).
 //! Each is one undo step of the drawing, and none evaluates the model. `drawing.table.inspect` says
 //! where a table sits and what it shows, laid out as the sheet draws it
 //! ([`crate::drawing_table_paper`]), or why it can't be.
@@ -12,7 +12,10 @@
 use std::sync::Arc;
 
 use serde_json::Value;
-use solidcraft_doc::drawing::table::{Family, General, Kind, LeftOut, MassFormat, PartsList, SheetTable};
+use solidcraft_doc::drawing::hole_callout::HoleRef;
+use solidcraft_doc::drawing::table::{
+    Family, General, Hole, HoleTag, Kind, LeftOut, MassFormat, PartsList, SheetTable, check_hole_count, hole_name, hole_tags,
+};
 use solidcraft_doc::drawing::{Drawing, OnSheet, SheetComponent};
 use solidcraft_doc::ids;
 use solidcraft_geom::Aabb2;
@@ -25,8 +28,8 @@ use crate::drawing_scene::sheet_id;
 use crate::drawing_table_paper::{Unplaced, drawing_space, place};
 use crate::params::bad;
 use crate::schema::drawing_table::{
-    AddParams, DeleteParams, DeleteResult, EditParams, GeneralSet, InspectOverride, InspectParams, InspectResult, InspectRow, InspectWarning,
-    KindParam, ListSet, TableResult, TableSet,
+    AddParams, DeleteParams, DeleteResult, EditParams, GeneralSet, HoleKindParam, HoleParam, HolesSet, InspectMissing, InspectOverride,
+    InspectParams, InspectResult, InspectRow, InspectWarning, KindParam, ListSet, TableResult, TableSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{EngineError, Result, Session};
@@ -51,7 +54,10 @@ pub static COMMANDS: &[CommandSpec] = &[
             "sheet: id or name; kind: parts_list (at the top right; lists the component its sheet documents, else the design) or \
              revision (at the bottom left) or family (at the top left; the design's configurations, a row each, with NAME and a \
              column per configuration column, as many as a table has room for) or general (at the top left; cells typed in, as plain \
-             text, under columns A, B and C); set?: as drawing.table.edit → {table, sheet, record: as saved, warnings?}. A parts \
+             text, under columns A, B and C) or {hole: {view: its id, origin: a corner as drawing.dimension.add picks one, or \
+             {centre} a circle's, holes: [{feature, point?}] as drawing.hole_callout names a hole}} (at the top right; TAG, X, Y \
+             and SIZE, a row each hole in tag order: each hole tagged once by its callout text, then in the order given, A1, A2, \
+             B1; its place from the origin as the view shows it, signed; its tag beside it on the view); set?: as drawing.table.edit → {table, sheet, record: as saved, warnings?}. A parts \
              list saves the numbers its view shows, if it has none saved, so what is printed doesn't move. One undo step; no \
              model is evaluated.",
         ),
@@ -65,7 +71,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(
             "table: its id; set: {sheet?, list?: {component?, levels?, group_by?, group_children?, show_purchased_contents?, mass?: \
              {unit: g|kg|lb, decimals}}, general?: {rows?: [{key: text}] (every row, each its cells by column key), cells?: \
-             [{row (from 1 to the last), column (its key), text (\"\" clears it)}] (after rows)}, columns?, heading?: top|bottom, row_height_mm?, cap_mm?, filter?, overrides?, split?: {rows, gap_mm?, side?: left|right} or null, sort?: [{column, descending?}] (at most 4, the first first, each level of a parts list on its own; [] for the list's order), place?: \
+             [{row (from 1 to the last), column (its key), text (\"\" clears it)}] (after rows)}, holes?: {remove?: [hole], add?: \
+             [hole] (each tagged after the tags kept), retag?: true (every hole tagged again from its size now)}, columns?, heading?: top|bottom, row_height_mm?, cap_mm?, filter?, overrides?, split?: {rows, gap_mm?, side?: left|right} or null, sort?: [{column, descending?}] (at most 4, the first first, each level of a parts list on its own; [] for the list's order), place?: \
              {anchor: {corner, offset_mm?}} or {at: [x, y]}}, columns, filter and overrides as a drawing saves them → as \
              drawing.table.add. One undo step, none when nothing changes.",
         ),
@@ -86,7 +93,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(
             "table: its id → {table, sheet, status: ok|failed, why?, outline_mm?: [x0, y0, x1, y1] on the sheet, rows?: [{key, \
              rect_mm}] those it shows, listed: how many before its filter, overrides?: [{row, column, text, replaced}], warnings?: \
-             [{row?, column, warning: width|height|chars}]}, laid out in the drawing's font as the sheet draws it. Read-only; a parts \
+             [{row?, column, warning: width|height|chars}], missing?: [{row, why}] a hole table's rows with no values}, laid out in the \
+             drawing's font as the sheet draws it. Read-only; a parts \
              list showing a mass weighs the design.",
         ),
 ];
@@ -100,6 +108,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         KindParam::PartsList => Kind::PartsList(new_list(&record, sheet)?),
         KindParam::Family => Kind::Family(Family { of: sheet_component(&record, sheet)? }),
         KindParam::General => Kind::General(General::default()),
+        KindParam::Hole(hole) => Kind::Hole(new_hole(s, &record, hole)?),
     };
     let (start, left_out) = match &kind {
         Kind::Family(family) => family.table(&s.doc),
@@ -172,7 +181,12 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         listed: 0,
         overrides: Vec::new(),
         warnings: Vec::new(),
+        missing: Vec::new(),
     };
+    if let Kind::Hole(hole) = &table.kind {
+        let read = s.doc.read_holes(&s.model, &d, hole).map_err(|e| bad(INSPECT, e.to_string()))?;
+        reply.missing = read.missing.into_iter().map(|(row, why)| InspectMissing { row, why }).collect();
+    }
     // A command waits for a font search, as an export does, so the answer is final.
     match place(s, &d, table, drawing_space(sheet), &PaperFonts::new(&d.font, &d.language, true)) {
         Err(Unplaced::Failed(why)) => (reply.status, reply.why) = ("failed", Some(why)),
@@ -221,6 +235,42 @@ fn sheet_component(d: &Drawing, sheet: u64) -> Result<SheetComponent> {
     documents.or_else(design).ok_or_else(|| bad(ADD, "the drawing draws no design to list"))
 }
 
+/// The hole table `param` asks for: each hole tagged by its size now ([`hole_tags`]), in the order
+/// given. A hole that can't be read is refused: its tag needs its size.
+fn new_hole(s: &Session, d: &Drawing, param: HoleKindParam) -> Result<Hole> {
+    let origin = s.doc.corner_reference(&s.model, &param.origin.pick, &param.origin.path).map_err(|why| bad(ADD, format!("its origin: {why}")))?;
+    check_hole_count(param.holes.len()).map_err(|e| bad(ADD, e.to_string()))?;
+    let holes: Vec<HoleRef> = param.holes.iter().map(HoleParam::hole).collect();
+    let sizes = s.doc.hole_sizes(&s.model, d, &holes).map_err(|e| bad(ADD, e.to_string()))?;
+    let tags = hole_tags([], sizes.iter().map(String::as_str));
+    Ok(Hole { view: param.view.0, origin, holes: holes.into_iter().zip(tags).map(|(hole, tag)| HoleTag { hole, tag }).collect() })
+}
+
+/// `set` on a hole table: those removed go, then each added is tagged after the tags kept, by the
+/// sizes they read now; with `retag`, every hole is tagged again from its size now. A kept tag never
+/// changes otherwise, so a model edit never renames a hole.
+fn apply_holes(s: &Session, d: &Drawing, hole: &mut Hole, set: HolesSet, cmd: &str) -> Result<()> {
+    for gone in set.remove.iter().map(HoleParam::hole) {
+        let at = hole.holes.iter().position(|one| one.hole == gone).ok_or_else(|| bad(cmd, format!("it lists no hole {}", hole_name(&gone))))?;
+        hole.holes.remove(at);
+    }
+    check_hole_count(hole.holes.len().saturating_add(set.add.len())).map_err(|e| bad(cmd, e.to_string()))?;
+    let added: Vec<HoleRef> = set.add.iter().map(HoleParam::hole).collect();
+    let sized = |holes: &[HoleRef]| s.doc.hole_sizes(&s.model, d, holes).map_err(|e| bad(cmd, e.to_string()));
+    if set.retag {
+        let holes: Vec<HoleRef> = hole.holes.drain(..).map(|one| one.hole).chain(added).collect();
+        let tags = hole_tags([], sized(&holes)?.iter().map(String::as_str));
+        hole.holes = holes.into_iter().zip(tags).map(|(hole, tag)| HoleTag { hole, tag }).collect();
+    } else if !added.is_empty() {
+        // A kept hole that can't be read now has no size, and keeps its letter's number taken.
+        let kept = s.doc.read_holes(&s.model, d, hole).map_err(|e| bad(cmd, e.to_string()))?;
+        let placed = kept.rows.iter().map(|row| (row.fields.get("size").map_or("", String::as_str), row.key.as_str()));
+        let tags = hole_tags(placed, sized(&added)?.iter().map(String::as_str));
+        hole.holes.extend(added.into_iter().zip(tags).map(|(hole, tag)| HoleTag { hole, tag }));
+    }
+    Ok(())
+}
+
 /// The list a parts list on `sheet` starts with.
 fn new_list(d: &Drawing, sheet: u64) -> Result<PartsList> {
     let of = sheet_component(d, sheet)?;
@@ -230,7 +280,7 @@ fn new_list(d: &Drawing, sheet: u64) -> Result<PartsList> {
 fn listed(table: &SheetTable) -> Option<PartsList> {
     match table.kind {
         Kind::PartsList(list) => Some(list),
-        Kind::Revision | Kind::Family(_) | Kind::General(_) => None,
+        Kind::Revision | Kind::Family(_) | Kind::General(_) | Kind::Hole(_) => None,
     }
 }
 
@@ -248,6 +298,10 @@ fn apply(s: &Session, d: &Drawing, table: &mut SheetTable, set: TableSet, cmd: &
             Kind::General(old) => apply_general(old, general, cmd)?,
             other => return Err(bad(cmd, general_on_another(other))),
         }
+    }
+    if let Some(holes) = set.holes {
+        let Kind::Hole(old) = &mut table.kind else { return Err(bad(cmd, "`holes` is for a hole table")) };
+        apply_holes(s, d, old, holes, cmd)?;
     }
     if let Some(place) = set.place {
         table.place = serde_json::from_value(place).map_err(|e| bad(cmd, format!("`place`: {e}")))?;

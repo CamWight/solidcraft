@@ -48,6 +48,8 @@ impl JsonSchema for SheetPaperScene {
                 ObjectKind::RevisionTable,
                 ObjectKind::FamilyTable,
                 ObjectKind::GeneralTable,
+                ObjectKind::HoleTable,
+                ObjectKind::HoleTag,
                 ObjectKind::TitleBlock,
             ],
             true,

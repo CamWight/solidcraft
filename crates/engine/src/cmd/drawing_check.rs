@@ -130,9 +130,20 @@ fn on_sheet(d: &Drawing, sheet: u64, shown: SheetScene) -> Result<Vec<Finding>> 
                 }
                 continue;
             }
+            // A hole table's tags stand on its view, one object named by the table: off the paper, they
+            // are the table's finding, told from the table's own by why.
+            ObjectKind::HoleTag => {
+                if off(placed.bounds_mm) {
+                    let why = "its tags lie off the paper".into();
+                    out.push(finding(FindingKind::OutsideSheet, sheet, object(CheckedKind::Table, placed.object), why));
+                }
+                continue;
+            }
             ObjectKind::Dimension => CheckedKind::Dimension,
             ObjectKind::Note => CheckedKind::Note,
-            ObjectKind::PartsList | ObjectKind::RevisionTable | ObjectKind::FamilyTable | ObjectKind::GeneralTable => CheckedKind::Table,
+            ObjectKind::PartsList | ObjectKind::RevisionTable | ObjectKind::FamilyTable | ObjectKind::GeneralTable | ObjectKind::HoleTable => {
+                CheckedKind::Table
+            }
             // Images are painted with the border and aren't among the objects: read below.
             ObjectKind::SheetImage | ObjectKind::SheetBorder | ObjectKind::DrawingBorder | ObjectKind::TitleBlock => continue,
         };

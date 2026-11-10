@@ -355,6 +355,26 @@ fn a_dimension_off_the_paper_is_listed() {
     }
 }
 
+/// A hole table off the paper is outside the sheet, as a table; so are its tags, which stand on its
+/// view, when the view takes them off the paper, each told by why.
+#[test]
+fn a_hole_table_and_its_tags_off_the_paper_are_listed() {
+    let (mut s, _) = plate();
+    run(&mut s, "solid.hole", json!({"position": [20, 0, 5], "diameter": 4, "name": "Pin"}));
+    let (sheet, view) = drawn(&mut s);
+    let pin = s.doc.find_feature("Pin").map(|f| f.id).unwrap();
+    let hole = json!({"view": ids::encode(view), "origin": {"centre": {"point": [22, 0, 5]}}, "holes": [{"feature": pin}]});
+    let add = json!({"sheet": ids::encode(sheet), "kind": {"hole": hole}, "set": {"place": {"at": [-500, 100]}}});
+    let table = run(&mut s, "drawing.table.add", add)["table"].clone();
+    let reply = checked(&mut s, json!({}));
+    assert_eq!(of_kind(&reply, "outside_sheet"), [named("table", &table)], "{reply}");
+    run(&mut s, "drawing.table.edit", json!({"table": table.clone(), "set": {"place": {"at": [20, 280]}}}));
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(view), "set": {"place": {"at": [-500, 100]}}}));
+    let reply = checked(&mut s, json!({}));
+    let tags: Vec<_> = reply["findings"].as_array().unwrap().iter().filter(|f| f["why"] == json!("its tags lie off the paper")).collect();
+    assert_eq!(tags.iter().map(|f| f["object"]["id"].clone()).collect::<Vec<_>>(), [table], "{reply}");
+}
+
 /// The check changes nothing: the design and the undo steps are as they were. Its answer is the
 /// same twice, the first time with a font search that nothing else asked (the typed letters are
 /// Tibetan, in no other test), and the same from a fresh session with nothing cached.

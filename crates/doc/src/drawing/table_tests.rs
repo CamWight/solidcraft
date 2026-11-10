@@ -5,7 +5,9 @@ use serde_json::{Value, json};
 use solidcraft_geom::drawing_sheet::{self, Orientation, PaperSize};
 
 use super::*;
+use crate::drawing::view::{View as DrawingView, ViewKind, ViewPlace};
 use crate::drawing::{OnSheet, Source as DrawingSource};
+use crate::drawing_view::{ViewDirection, ViewOverrides};
 use crate::ids::IdSource;
 
 /// A drawing of one design on one A3 sheet with a parts list and a revision table, and the first's id.
@@ -635,4 +637,125 @@ fn a_general_tables_cells_keep_the_caps() {
     *d.tables.get_mut(at).unwrap() = Arc::new(over);
     let why = d.validate().unwrap_err().to_string();
     assert!(why.contains("type into the cell"), "{why}");
+}
+
+/// `tabled` with a front view of its design on its sheet, and a hole table on that view of `holes`
+/// (feature id, tag), measured from a corner of the plate: the drawing and the table's id.
+fn with_holes(holes: &[(u64, &str)]) -> (Drawing, u64) {
+    let (mut d, _) = tabled();
+    let mut id_source = IdSource::seeded(13058);
+    let (view, id) = (d.allocate_id(&mut id_source).unwrap(), d.allocate_id(&mut id_source).unwrap());
+    let sheet = d.sheets[0].id;
+    let source = d.sources[0].id;
+    let front = ViewKind::Base { source, view: ViewDirection::Named(solidcraft_geom::drawing_view::NamedView::Front) };
+    let place = ViewPlace::At([150.0, 150.0]);
+    // A base view keeps a scale.
+    let settings = ViewOverrides { scale: Some("1:1".parse().unwrap()), ..ViewOverrides::default() };
+    d.add_views([Arc::new(DrawingView { id: view, sheet, kind: front, place, settings, reference_shown_percent: 0.0 })]);
+    let origin = ModelPoint { body: "Plate".into(), origin_feature: 1, edges: vec!["F1:e0".into(), "F1:e1".into()], centre: false, path: Vec::new() };
+    let tags = holes.iter().map(|(feature, tag)| HoleTag { hole: HoleRef { feature: *feature, point: None }, tag: tag.to_string() }).collect();
+    let kind = Kind::Hole(Hole { view, origin, holes: tags });
+    d.tables.add([Arc::new(SheetTable { id, sheet, table: kind.default_table(), place: kind.default_place(), kind })]);
+    (d, id)
+}
+
+/// Holes of one size share a letter, the sizes lettered in the order the list first shows them, and
+/// each hole numbered in list order (#13056 S5, Q5's default). One size is one callout text, compared
+/// as text, so two holes that read alike share a letter and no tolerance is invented. A hole added
+/// later takes the next number of its size's letter, never one an earlier hole had, or the next letter.
+#[test]
+fn hole_tags_go_by_size_then_order() {
+    let none: [(&str, &str); 0] = [];
+    assert_eq!(hole_tags(none, ["Ø6.00 THRU", "Ø10.00 THRU", "Ø6.00 THRU"]), ["A1", "B1", "A2"]);
+    // A counterbore's lines are its size too: the same drill with a counterbore is another size.
+    assert_eq!(hole_tags(none, ["Ø6.00 THRU", "Ø6.00 THRU\n⌴ Ø11.00 ↧ 6.00", "Ø6.00 THRU"]), ["A1", "B1", "A2"]);
+    // Compared as text: two decimals against one is another size, not the same within a tolerance.
+    assert_eq!(hole_tags(none, ["Ø6.00 THRU", "Ø6.0 THRU"]), ["A1", "B1"]);
+    // Added later: Ø10 takes B2; a new size takes C1; Ø6 takes A4 past the A3 kept, though A1 is gone.
+    let placed = [("Ø6.00 THRU", "A3"), ("Ø10.00 THRU", "B1"), ("Ø6.00 THRU", "A2")];
+    assert_eq!(hole_tags(placed, ["Ø10.00 THRU", "Ø8.00 THRU", "Ø6.00 THRU", "Ø8.00 THRU"]), ["B2", "C1", "A4", "C2"]);
+    // Past Z the letters go on as AA, AB, as columns are lettered.
+    let sizes: Vec<String> = (1..=28).map(|n| format!("Ø{n}.00 THRU")).collect();
+    let tags = hole_tags(none, sizes.iter().map(String::as_str));
+    assert_eq!((tags[0].as_str(), tags[25].as_str(), tags[26].as_str(), tags[27].as_str()), ("A1", "Z1", "AA1", "AB1"));
+    // A letter a kept tag uses isn't given to another size, whatever its number.
+    assert_eq!(hole_tags([("Ø6.00 THRU", "B7")], ["Ø8.00 THRU", "Ø6.00 THRU"]), ["A1", "B8"]);
+}
+
+/// A hole table saves its view, its origin and each hole with its tag, and reads back. It starts at the
+/// top right with TAG, X, Y and SIZE, lists no component, and keeps its rules in a file as from a command.
+#[test]
+fn a_hole_table_saves_its_holes_and_keeps_its_rules() {
+    let (d, id) = with_holes(&[(7, "A1"), (8, "A2"), (9, "B1")]);
+    d.validate().unwrap();
+    let saved = d.to_json().unwrap();
+    assert_eq!(Drawing::from_json(&saved).unwrap(), d);
+    let v: Value = serde_json::from_str(&saved).unwrap();
+    let hole = v["tables"].as_array().unwrap().iter().find(|t| t["kind"].get("hole").is_some()).cloned().unwrap();
+    assert_eq!(hole["kind"]["hole"]["holes"][2], json!({"hole": {"feature": 9}, "tag": "B1"}), "{hole}");
+    let table = d.tables.by_id(id).unwrap();
+    let columns: Vec<_> = table.table.columns.iter().map(|c| (c.name.as_str(), c.heading.as_str())).collect();
+    assert_eq!(columns, [("tag", "TAG"), ("x", "X"), ("y", "Y"), ("size", "SIZE")]);
+    assert_eq!(table.place, Place::Anchor { corner: Corner::TopRight, offset_mm: [0.0, 0.0] });
+    assert_eq!(table.kind.of(), None);
+
+    let with = |holes: Vec<(u64, String)>| {
+        let tagged: Vec<(u64, &str)> = holes.iter().map(|(f, t)| (*f, t.as_str())).collect();
+        with_holes(&tagged).0.validate().map(|_| ()).map_err(|e| e.to_string())
+    };
+    let many: Vec<(u64, String)> = (1..=MAX_HOLES as u64 + 1).map(|n| (n, format!("A{n}"))).collect();
+    for (holes, words) in [
+        (vec![], "1 to"),
+        (many, "1 to"),
+        (vec![(7, "A1".to_string()), (7, "A2".to_string())], "twice"),
+        (vec![(7, "A1".to_string()), (8, "A1".to_string())], "tag"),
+        (vec![(7, String::new())], "tag"),
+        (vec![(7, "A123456789".to_string())], "tag"),
+        (vec![(7, "A\u{7}".to_string())], "tag"),
+        (vec![(7, "A 1".to_string())], "tag"),
+    ] {
+        let why = with(holes).unwrap_err();
+        assert!(why.contains(words), "{words}: {why}");
+    }
+    // A view the drawing doesn't have is refused (on any of its sheets, a view is the table's to measure on).
+    let why = damaged(&d, |v| {
+        for t in v["tables"].as_array_mut().unwrap() {
+            if let Some(hole) = t["kind"].get_mut("hole") {
+                hole["view"] = json!(crate::ids::encode(99));
+            }
+        }
+    });
+    assert!(why.contains("view"), "{why}");
+    // An origin that names no corner, and a hole's point id with a line break, are refused.
+    let why = damaged(&d, |v| {
+        for t in v["tables"].as_array_mut().unwrap() {
+            if let Some(hole) = t["kind"].get_mut("hole") {
+                hole["origin"]["edges"] = json!(["F1:e0"]);
+            }
+        }
+    });
+    assert!(why.contains("corner"), "{why}");
+    let why = damaged(&d, |v| {
+        for t in v["tables"].as_array_mut().unwrap() {
+            if let Some(hole) = t["kind"].get_mut("hole") {
+                hole["holes"][0]["hole"]["point"] = json!("p\n1");
+            }
+        }
+    });
+    assert!(why.contains("point"), "{why}");
+}
+
+/// A hole table goes with the view its holes are measured on, wherever the table stands: the view's
+/// contents list it, so deleting the view takes it and leaves the drawing whole, and so do its sheet's.
+#[test]
+fn a_hole_table_goes_with_its_view() {
+    let (d, id) = with_holes(&[(7, "A1")]);
+    let Kind::Hole(hole) = &d.tables.by_id(id).unwrap().kind else { panic!("not a hole table") };
+    let contents = d.with_contents(vec![hole.view]);
+    assert_eq!(contents.tables, [id]);
+    assert!(d.on_sheet(d.sheets[0].id).tables.contains(&id));
+    let mut gone = d.clone();
+    gone.remove_objects(&contents);
+    assert!(gone.tables.by_id(id).is_none());
+    gone.validate().unwrap();
 }

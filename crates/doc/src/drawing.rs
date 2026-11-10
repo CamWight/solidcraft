@@ -448,19 +448,24 @@ impl Drawing {
         let mut on = self.with_contents(self.views.iter().filter(|v| v.sheet == id).map(|v| v.id).collect());
         on.images = self.sheet_images.iter().filter(|i| i.sheet == id).map(|i| i.id).collect();
         on.tags = self.revisions.tags().iter().filter(|t| t.sheet == id).map(|t| t.id).collect();
-        on.tables = self.tables.iter().filter(|t| t.sheet == id).map(|t| t.id).collect();
+        // The sheet's own tables, and the hole tables of its views, wherever they stand.
+        let of_views = std::mem::take(&mut on.tables);
+        on.tables = self.tables.iter().filter(|t| t.sheet == id || of_views.binary_search(&t.id).is_ok()).map(|t| t.id).collect();
         let in_views = |n: &Note| n.anchor.view().is_some_and(|v| on.views.binary_search(&v).is_ok());
         on.notes = self.notes.iter().filter(|n| n.anchor == Anchor::Sheet(id) || in_views(n)).map(|n| n.id).collect();
         on
     }
 
-    /// `views`, listed by id, with the dimensions and balloons in them. An image sits on a sheet, never in a
-    /// view, so there are none.
+    /// `views`, listed by id, with the dimensions and balloons in them, and the hole tables measured on
+    /// them, which go with their view wherever they stand. An image sits on a sheet, never in a view, so
+    /// there are none.
     pub fn with_contents(&self, views: Vec<u64>) -> OnSheet {
         let dimensions = self.dimensions.iter().filter(|d| views.binary_search(&d.view).is_ok()).map(|d| d.id).collect();
         let balloons = self.balloons.iter().filter(|b| views.binary_search(&b.view).is_ok()).map(|b| b.id).collect();
         let notes = self.notes.iter().filter(|n| n.anchor.view().is_some_and(|v| views.binary_search(&v).is_ok())).map(|n| n.id).collect();
-        OnSheet { views, dimensions, balloons, images: Vec::new(), tags: Vec::new(), tables: Vec::new(), notes }
+        let on_views = |t: &&Arc<table::SheetTable>| matches!(&t.kind, table::Kind::Hole(hole) if views.binary_search(&hole.view).is_ok());
+        let tables = self.tables.iter().filter(on_views).map(|t| t.id).collect();
+        OnSheet { views, dimensions, balloons, images: Vec::new(), tags: Vec::new(), tables, notes }
     }
 
     /// Takes sheet `id` out with everything on it ([`Drawing::on_sheet`]), and answers what that

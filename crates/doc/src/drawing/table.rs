@@ -12,28 +12,37 @@
 //!   component is for what draws it to report.
 //! - **A general table** holds cells typed in ([`General`]), as plain text. Its cells are the
 //!   table's, so an override over one is refused: the cell itself is typed.
+//! - **A hole table** lists holes picked on a view ([`Hole`]), each with the tag it was given
+//!   ([`hole_tags`]: by size, then in order), measured from one point of the model as the view shows
+//!   it. Its view must be one of the drawing's, and it goes with its view when that is deleted
+//!   ([`Drawing::with_contents`]). The places and sizes are read from the model when it is drawn.
 //! - **Where it sits** is a corner of the sheet's drawing space with an offset, so a change of
 //!   paper takes it along and moves nothing else, or a free place on paper.
 //!
 //! The rules, beside the record's: a table is on one of the drawing's sheets; its definition keeps
 //! [`Table::validate`]; its place is on paper ([`is_paper_coordinate`]); at most [`MAX_TABLES`],
-//! listed by id. A general table's cells keep a table's caps (`General::check`).
+//! listed by id. A general table's cells keep a table's caps (`General::check`); a hole table's
+//! holes and tags theirs (`Hole::check`).
 
 use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
+use solidcore_record::Vec3;
 use solidcraft_geom::cell::{self, Content, Format, HAlign, MAX_NAME_BYTES, Part, Source};
+use solidcraft_geom::drawing_measure::on_view;
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 use solidcraft_geom::table::{self, BALLOONED, Column, Filter, Heading, Table};
 
 use super::by_id::Record;
+use super::dimension::{DEFAULT_DECIMALS, LabelKind, Lookup, ModelPoint, Status, check_point, reading_label};
+use super::hole_callout::{self, HoleRef, Resolution, TextStyle};
 use super::{Drawing, SheetComponent, require};
 use crate::assembly::BomType;
 use crate::bom::{self, Bom, Group, Mass, Quantity, Request, View};
 use crate::config::Column as ConfigColumn;
 use crate::display_units::{NumberFormat, format_length, format_number};
-use crate::{DocError, Document, Result, expr, ids};
+use crate::{DocError, Document, Model, Result, expr, ids};
 
 /// The most tables a drawing may have.
 pub const MAX_TABLES: usize = 1_000;
@@ -41,6 +50,10 @@ pub const MAX_TABLES: usize = 1_000;
 const MAX_MASS_DECIMALS: u8 = 6;
 /// The row field that marks a family table's active configuration, which no new table prints.
 pub const ACTIVE: &str = "active";
+/// The most holes a hole table lists.
+pub const MAX_HOLES: usize = 1_000;
+/// The most characters a hole's tag has.
+pub const MAX_TAG_CHARS: usize = 8;
 
 /// A table on a sheet.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -65,6 +78,28 @@ pub enum Kind {
     Revision,
     Family(Family),
     General(General),
+    Hole(Hole),
+}
+
+/// The holes a hole table lists: picked on `view` and measured on it from `origin`, each with its tag.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Hole {
+    /// The view the holes are measured on and their tags stand on.
+    #[serde(with = "crate::ids")]
+    pub view: u64,
+    /// The point of the model the places are measured from: a corner, or a circle's centre.
+    pub origin: ModelPoint,
+    /// In the order they were given.
+    pub holes: Vec<HoleTag>,
+}
+
+/// One hole of a hole table and its tag, given once ([`hole_tags`]), so a model edit never renames it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoleTag {
+    pub hole: HoleRef,
+    pub tag: String,
 }
 
 /// The cells a general table holds, typed in: each row its cells by column key, so a column moved
@@ -379,6 +414,198 @@ impl General {
     }
 }
 
+impl Hole {
+    /// The rules: its view is one of `d`'s; its origin a point a dimension could name; 1 to
+    /// [`MAX_HOLES`] holes, each a hole reference by its own rule and none twice; each tag 1 to
+    /// [`MAX_TAG_CHARS`] letters and digits, no two the same.
+    fn check(&self, d: &Drawing) -> Result<()> {
+        require(d.view(self.view).is_some(), || format!("its view {} isn't one of the drawing's views", ids::encode(self.view)))?;
+        check_point(&self.origin)?;
+        check_hole_count(self.holes.len())?;
+        let (mut holes, mut tags) = (HashSet::new(), HashSet::new());
+        for one in &self.holes {
+            one.hole.validate()?;
+            require(holes.insert((one.hole.feature, one.hole.point.as_deref())), || format!("it lists hole {} twice", hole_name(&one.hole)))?;
+            let tag_ok = (1..=MAX_TAG_CHARS).contains(&one.tag.chars().count()) && one.tag.chars().all(|c| c.is_ascii_alphanumeric());
+            require(tag_ok, || format!("a hole's tag is 1 to {MAX_TAG_CHARS} letters and digits"))?;
+            require(tags.insert(one.tag.as_str()), || format!("two of its holes have the tag `{}`", one.tag))?;
+        }
+        Ok(())
+    }
+}
+
+/// A hole table read from the model: what it shows, and where its tags stand.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct HoleRead {
+    /// A row a hole, in tag order: TAG; X and Y, its centre's place from the origin as the view shows
+    /// it, signed, in the drawing's unit with a dimension's decimals; SIZE, its callout's lines. A hole
+    /// that can't be read keeps its row and its tag, with no values.
+    pub rows: Vec<table::Row>,
+    /// Each row with no values, by tag, and why.
+    pub missing: Vec<(String, String)>,
+    /// Each hole read, by tag: its centre on the face it starts on, in the design's frame.
+    pub centres: Vec<(String, Vec3)>,
+}
+
+impl Document {
+    /// What `hole`, a hole table of `drawing` (one of this design's), shows of `model` (this
+    /// design's) now. `Err` only for a view the drawing doesn't have.
+    pub fn read_holes(&self, model: &Model, drawing: &Drawing, hole: &Hole) -> Result<HoleRead> {
+        let basis = drawing.resolve_view(hole.view)?.basis;
+        let style = hole_text_style(self, drawing);
+        let origin = Lookup::new(self, model).corner(&hole.origin).map(|(at, _)| at).map_err(|status| format!("its origin: {}", why_of(&status)));
+        let mut tagged: Vec<&HoleTag> = hole.holes.iter().collect();
+        tagged.sort_by_key(|one| {
+            let (letters, number) = split_tag(&one.tag);
+            (letters.len(), letters.to_string(), number)
+        });
+        let mut out = HoleRead::default();
+        for one in tagged {
+            let read = origin.clone().and_then(|origin| {
+                let (callout, size) = read_hole(self, model, &one.hole, &style)?;
+                let centre = Vec3::new(callout.start[0], callout.start[1], callout.start[2]);
+                Ok((on_view(&basis, centre - origin), size, centre))
+            });
+            let mut fields = BTreeMap::from([("tag".to_string(), one.tag.clone())]);
+            let mut numbers = BTreeMap::new();
+            match read {
+                Ok((place, size, centre)) => {
+                    for (key, mm) in [("x", place.x), ("y", place.y)] {
+                        let text = signed_length(mm, &style.units, style.decimals);
+                        numbers.extend(table::typed_number(&text).map(|n| (key.to_string(), n)));
+                        fields.insert(key.to_string(), text);
+                    }
+                    fields.insert("size".to_string(), size);
+                    out.centres.push((one.tag.clone(), centre));
+                }
+                // No values: the table shows its own mark for a field a row lacks.
+                Err(why) => out.missing.push((one.tag.clone(), why)),
+            }
+            out.rows.push(table::Row { key: one.tag.clone(), kind: table::RowKind::Part, purchased: false, fields, level: 0, numbers });
+        }
+        Ok(out)
+    }
+
+    /// The sizes of `holes` on `model` (this design's), as a hole table on `drawing` (one of this
+    /// design's) prints them and tags them by ([`hole_tags`]): each one's callout text. A hole that
+    /// can't be read now is refused, with why: a new tag needs its size.
+    pub fn hole_sizes(&self, model: &Model, drawing: &Drawing, holes: &[HoleRef]) -> Result<Vec<String>> {
+        let style = hole_text_style(self, drawing);
+        holes
+            .iter()
+            .map(|hole| {
+                read_hole(self, model, hole, &style)
+                    .map(|(_, size)| size)
+                    .map_err(|why| DocError::Invalid(format!("hole {}: {why}", hole_name(hole))))
+            })
+            .collect()
+    }
+}
+
+/// A hole table's text: the drawing's unit and language, with a dimension's decimals, so a table and a
+/// dimension on one sheet read alike.
+fn hole_text_style(doc: &Document, drawing: &Drawing) -> TextStyle {
+    TextStyle { units: doc.drawing_units(drawing).to_string(), decimals: DEFAULT_DECIMALS, language: drawing.language.clone() }
+}
+
+/// `hole`'s callout on `model` and its text as one size, or why it can't be read.
+fn read_hole(doc: &Document, model: &Model, hole: &HoleRef, style: &TextStyle) -> std::result::Result<(hole_callout::HoleCallout, String), String> {
+    match hole_callout::resolve(doc, model, hole).map_err(|e| e.to_string())? {
+        Resolution::Resolved { callout } => {
+            let size = hole_callout::text(&callout, style).map_err(|e| e.to_string())?.join("\n");
+            Ok((callout, size))
+        }
+        Resolution::Suppressed => Err(format!("feature {} is suppressed", hole.feature)),
+        Resolution::Failed { reason } | Resolution::Lost { reason } => Err(reason),
+    }
+}
+
+/// A length shown as a dimension shows it ([`reading_label`]), but signed: one that rounds to zero
+/// shows no sign, so a hole on the origin reads `0.00`, never `-0.00`.
+fn signed_length(mm: f64, units: &str, decimals: u8) -> String {
+    let text = reading_label(LabelKind::Length, mm, units, decimals);
+    match text.strip_prefix('-') {
+        Some(magnitude) if magnitude.chars().all(|c| c == '0' || c == '.') => magnitude.to_string(),
+        _ => text,
+    }
+}
+
+/// Why a point can't be found, in words.
+fn why_of(status: &Status) -> String {
+    match status {
+        Status::Ambiguous(_) => "its edges meet at more than one point".into(),
+        Status::Suppressed => "a feature it needs is suppressed".into(),
+        Status::Failed(why) | Status::Lost(why, _) | Status::Unmeasurable(why) => why.clone(),
+        Status::Ok | Status::Overridden => "it can't be found".into(),
+    }
+}
+
+/// A hole table lists 1 to [`MAX_HOLES`] holes. A command checks a list's count with it before
+/// reading any hole, as each read costs a lookup in the model.
+pub fn check_hole_count(count: usize) -> Result<()> {
+    require((1..=MAX_HOLES).contains(&count), || format!("a hole table lists 1 to {MAX_HOLES} holes"))
+}
+
+/// A hole as a message names it: its feature, and its sketch point if it has one.
+pub fn hole_name(hole: &HoleRef) -> String {
+    match &hole.point {
+        Some(point) => format!("{} at point `{point}`", hole.feature),
+        None => hole.feature.to_string(),
+    }
+}
+
+/// The tags of holes whose sizes are `sizes`, given in that order, beside `placed` (each kept hole's
+/// size and tag). Holes of one size share a letter, and each is numbered after the last number its
+/// letter has. A size is a hole's callout text, compared as text, so holes that read alike share a
+/// letter and no tolerance is invented. A size no kept tag has takes the first letter no kept tag
+/// uses: A to Z, then AA, AB, as columns are lettered.
+pub fn hole_tags<'a>(placed: impl IntoIterator<Item = (&'a str, &'a str)>, sizes: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    let mut letter_of: BTreeMap<&str, String> = BTreeMap::new();
+    let mut last: BTreeMap<String, u64> = BTreeMap::new();
+    for (size, tag) in placed {
+        let (letters, number) = split_tag(tag);
+        letter_of.entry(size).or_insert_with(|| letters.to_string());
+        let at = last.entry(letters.to_string()).or_insert(0);
+        *at = (*at).max(number);
+    }
+    let mut next = 1;
+    sizes
+        .into_iter()
+        .map(|size| {
+            let letters = letter_of.entry(size).or_insert_with(|| {
+                loop {
+                    let letters = column_letters(next);
+                    next += 1;
+                    if !last.contains_key(&letters) {
+                        break letters;
+                    }
+                }
+            });
+            let number = last.entry(letters.clone()).or_insert(0);
+            *number = number.saturating_add(1);
+            format!("{letters}{number}")
+        })
+        .collect()
+}
+
+/// A tag's letters and its number: `B12` is `B` and 12. A tag with no number has 0.
+fn split_tag(tag: &str) -> (&str, u64) {
+    let digits = tag.find(|c: char| c.is_ascii_digit()).unwrap_or(tag.len());
+    let (letters, number) = tag.split_at(digits);
+    (letters, number.parse().unwrap_or(0))
+}
+
+/// The `n`th set of letters, from 1, as columns are lettered: A to Z, then AA.
+fn column_letters(mut n: usize) -> String {
+    let mut letters = Vec::new();
+    while n > 0 {
+        n -= 1;
+        letters.extend(b"ABCDEFGHIJKLMNOPQRSTUVWXYZ".get(n % 26).map(|b| char::from(*b)));
+        n /= 26;
+    }
+    letters.iter().rev().collect()
+}
+
 impl MassFormat {
     /// A mass as this format shows it, without its unit: the column's heading says that.
     fn text(self, mass: Mass) -> Option<String> {
@@ -409,6 +636,12 @@ impl Kind {
             ],
             Kind::Family(_) => vec![column("name", "NAME", HAlign::Left)],
             Kind::General(_) => vec![column("a", "A", HAlign::Left), column("b", "B", HAlign::Left), column("c", "C", HAlign::Left)],
+            Kind::Hole(_) => vec![
+                column("tag", "TAG", HAlign::Centre),
+                column("x", "X", HAlign::Right),
+                column("y", "Y", HAlign::Right),
+                column("size", "SIZE", HAlign::Left),
+            ],
             Kind::Revision => vec![
                 column("revision", "REV", HAlign::Centre),
                 column("description", "DESCRIPTION", HAlign::Left),
@@ -431,11 +664,11 @@ impl Kind {
         }
     }
 
-    /// Where a new table of this kind goes: a parts list at the top right, a revision table at the
-    /// bottom left, a family table and a general table at the top left.
+    /// Where a new table of this kind goes: a parts list and a hole table at the top right, a revision
+    /// table at the bottom left, a family table and a general table at the top left.
     pub fn default_place(&self) -> Place {
         let corner = match self {
-            Kind::PartsList(_) => Corner::TopRight,
+            Kind::PartsList(_) | Kind::Hole(_) => Corner::TopRight,
             Kind::Revision => Corner::BottomLeft,
             Kind::Family(_) | Kind::General(_) => Corner::TopLeft,
         };
@@ -447,7 +680,7 @@ impl Kind {
         match self {
             Kind::PartsList(list) => Some(list.of),
             Kind::Family(family) => Some(family.of),
-            Kind::Revision | Kind::General(_) => None,
+            Kind::Revision | Kind::General(_) | Kind::Hole(_) => None,
         }
     }
 }
@@ -481,6 +714,7 @@ impl Drawing {
                 require(list.mass.decimals <= MAX_MASS_DECIMALS, || format!("a mass shows at most {MAX_MASS_DECIMALS} decimals"))?;
             }
             Kind::General(general) => general.check(&t.table)?,
+            Kind::Hole(hole) => hole.check(self)?,
             Kind::Revision | Kind::Family(_) => {}
         }
         let [x, y] = match t.place {

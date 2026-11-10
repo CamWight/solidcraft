@@ -152,6 +152,10 @@ pub enum ObjectKind {
     FamilyTable,
     /// The sheet table whose cells are typed in.
     GeneralTable,
+    /// The sheet table that lists holes picked on a view, by tag, with their places and sizes.
+    HoleTable,
+    /// A hole table's tags, each beside its hole on the view.
+    HoleTag,
     /// An image placed on the sheet, such as a logo or a photo.
     SheetImage,
     /// A drawing view's lines.
@@ -174,6 +178,8 @@ impl ObjectKind {
             ObjectKind::RevisionTable => "REVISION_TABLE",
             ObjectKind::FamilyTable => "FAMILY_TABLE",
             ObjectKind::GeneralTable => "GENERAL_TABLE",
+            ObjectKind::HoleTable => "HOLE_TABLE",
+            ObjectKind::HoleTag => "HOLE_TAG",
             ObjectKind::SheetImage => "SHEET_IMAGE",
             ObjectKind::View => "VIEW",
             ObjectKind::Dimension => "DIMENSION",

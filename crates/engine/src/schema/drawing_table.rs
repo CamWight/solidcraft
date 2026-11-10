@@ -8,6 +8,11 @@ use std::borrow::Cow;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use solidcraft_doc::drawing::hole_callout::HoleRef;
+
+use super::drawing_dimension::CornerParam;
+use super::drawing_view::ViewIdParam;
+use super::hole_callout::HoleFeatureParam;
 
 /// A table, by its id as `drawing.inspect` lists it.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -31,7 +36,8 @@ impl JsonSchema for TableIdParam {
     }
 }
 
-/// What a table lists: `revision`, `parts_list`, `family` or `general`.
+/// What a table lists: `revision`, `parts_list`, `family` or `general`, or `{hole: {view, origin,
+/// holes}}`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum KindParam {
@@ -39,6 +45,52 @@ pub enum KindParam {
     PartsList,
     Family,
     General,
+    Hole(HoleKindParam),
+}
+
+/// The holes a new hole table lists, and where they are measured.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct HoleKindParam {
+    /// The view the holes are measured on and their tags stand on.
+    pub view: ViewIdParam,
+    /// The point the places are measured from, picked as `drawing.dimension.add` picks a corner: a
+    /// corner, or with `centre` a circle's centre (another hole's).
+    pub origin: CornerParam,
+    /// Each hole, tagged by size, then in this order.
+    pub holes: Vec<HoleParam>,
+}
+
+/// One hole, by persistent ids, as `drawing.hole_callout` names it.
+#[derive(Clone, Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct HoleParam {
+    pub feature: HoleFeatureParam,
+    /// Its sketch point id, for a hole drilled at sketch points.
+    #[serde(default)]
+    pub point: Option<String>,
+}
+
+impl HoleParam {
+    pub fn hole(&self) -> HoleRef {
+        HoleRef { feature: self.feature.0, point: self.point.clone() }
+    }
+}
+
+/// A hole table's holes: those removed, then those added, each added hole tagged after the tags kept;
+/// with `retag`, every hole is tagged again from its size now.
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(deny_unknown_fields)]
+pub struct HolesSet {
+    #[serde(default)]
+    pub remove: Vec<HoleParam>,
+    #[serde(default)]
+    pub add: Vec<HoleParam>,
+    #[serde(default)]
+    pub retag: bool,
 }
 
 /// A general table's cells: each left out stays as it is.
@@ -115,6 +167,10 @@ pub struct TableSet {
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "GeneralSet")]
     pub general: Option<GeneralSet>,
+    /// A hole table's holes: refused on any other kind.
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "HolesSet")]
+    pub holes: Option<HolesSet>,
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     pub columns: Option<Value>,
     /// `top` or `bottom`.
@@ -222,6 +278,14 @@ pub struct InspectOverride {
     pub replaced: String,
 }
 
+/// A hole table's row with no values, and why.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct InspectMissing {
+    /// Its tag.
+    pub row: String,
+    pub why: String,
+}
+
 /// One cell whose text doesn't fit its column.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct InspectWarning {
@@ -255,6 +319,10 @@ pub struct InspectResult {
     pub overrides: Vec<InspectOverride>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<InspectWarning>,
+    /// A hole table's rows whose holes (or origin) can't be read now: each keeps its tag, with no
+    /// values.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing: Vec<InspectMissing>,
 }
 
 #[cfg(test)]

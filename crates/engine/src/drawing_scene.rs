@@ -3,8 +3,9 @@
 //! same thing. In paint order: the sheet's drawing border ([`SheetLayout::paper`]), then each view
 //! on the sheet by id, its lines as [`paper_group`] makes them, then the dimensions and notes of
 //! those views, by view and id ([`crate::drawing_dimension_paper`], [`crate::drawing_note_paper`]),
-//! then the sheet's parts lists and revision tables, then the notes on the sheet itself (over the
-//! tables, so a note placed on one stays readable), then its title block's logos, lines and
+//! then the sheet's tables, then the tags of the hole tables of its views, each beside its hole,
+//! then the notes on the sheet itself (over the tables, so a note placed on one stays readable),
+//! then its title block's logos, lines and
 //! projection symbol, in the drawing's projection ([`TitleBlockLayout::paper`]), with its labels
 //! and values set on them ([`title_block_text`]). Images placed on the sheet sit between the border
 //! and the views ([`groups`]), so a view's lines draw over a photo. Each table stands where its
@@ -870,9 +871,10 @@ impl Assembly {
         }
     }
 
-    /// Adds the sheet's `tables` after the dimensions, each already where it stands on the sheet, and
-    /// gives each one's state. One that can't be read, or that would take the scene past a paper
-    /// scene's limits, is left out and says why; the rest still draw.
+    /// Adds the sheet's `tables` after the dimensions, each already where it stands on the sheet, then
+    /// the hole tables' tags, each moved to its view's centre, and gives each table's state. One that
+    /// can't be read, or that would take the scene past a paper scene's limits, is left out and says
+    /// why; the rest still draw. Tags left out say why on their table, when it is on this sheet.
     fn add_tables(&mut self, tables: &SheetTables) -> Vec<TableState> {
         let mut states = Vec::with_capacity(tables.tables.len());
         for (table, read) in &tables.tables {
@@ -890,6 +892,25 @@ impl Assembly {
                     Err(LeftOut::Invalid(e)) => state(false, false, Some(e)),
                 },
             });
+        }
+        for tags in &tables.tags {
+            let why = match self.placed.get(&tags.view).copied() {
+                None => Some("its tags: its view isn't drawn".to_string()),
+                Some((frame, centre)) => match tags.group(&frame) {
+                    None => tags.why.clone(),
+                    Some(group) => match self.add(&group, &tags.fonts, centre) {
+                        Ok(bounds_mm) => {
+                            self.objects.push(SheetObject { object: tags.table, kind: ObjectKind::HoleTag, bounds_mm, boundary_mm: None });
+                            tags.why.clone()
+                        }
+                        Err(LeftOut::TooManyRecords) => Some(format!("with its tags the sheet is more than a paper scene's {MAX_RECORDS} records")),
+                        Err(LeftOut::Invalid(e)) => Some(format!("its tags: {e}")),
+                    },
+                },
+            };
+            if let (Some(why), Some(state)) = (why, states.iter_mut().find(|state| state.table == tags.table)) {
+                state.why.get_or_insert(why);
+            }
         }
         states
     }

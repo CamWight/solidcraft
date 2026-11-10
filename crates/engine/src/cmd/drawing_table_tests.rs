@@ -1,5 +1,8 @@
 use serde_json::json;
 use solidcore_record::Vec2;
+use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
+use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
+use solidcraft_geom::drawing_view::NamedView;
 
 use super::*;
 use crate::schema::tests::conforms;
@@ -762,6 +765,175 @@ fn a_parts_list_row_by_hand_is_a_virtual_component() {
     assert_eq!(grease.map(|r| r[1].clone()), Some("3".to_string()), "QTY is the typed quantity");
     let why = refused(&mut s, EDIT, json!({"table": ids::encode(id), "set": {"general": {"rows": [{"name": "Grease"}]}}}));
     assert!(why.contains("virtual component"), "{why}");
+}
+
+/// A plate 100 x 10 x 60 mm along X, Y and Z from the origin, drilled through from its front face:
+/// Ø6 holes Left at (20, 15) and Right at (`x_right`, 15), and a Ø`big` hole Middle at (50, 40), in
+/// X and Z, with the parameters `x_right` 80 mm and `big` 10 mm; and a drawing of it, open, with its
+/// front view at 1:1 centred at (200, 150) on the sheet. The session and the view's id.
+fn drilled_plate() -> (Session, u64) {
+    let mut s = Session::default();
+    s.execute("parameters.add", &json!({"name": "x_right", "expression": "80 mm"})).unwrap();
+    s.execute("parameters.add", &json!({"name": "big", "expression": "10 mm"})).unwrap();
+    s.execute("solid.box", &json!({"length": 100, "width": 10, "height": 60, "body_name": "Plate"})).unwrap();
+    for (name, at, diameter) in
+        [("Left", json!([20, 0, 15]), json!(6)), ("Middle", json!([50, 0, 40]), json!("big")), ("Right", json!(["x_right", 0, 15]), json!(6))]
+    {
+        s.execute("solid.hole", &json!({"position": at, "diameter": diameter, "name": name})).unwrap();
+    }
+    s.execute("drawing.create", &json!({})).unwrap();
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let id = d.allocate_id(&mut ids::IdSource::seeded(13058)).unwrap();
+    let (sheet, source) = (d.sheets[0].id, d.sources[0].id);
+    let kind = ViewKind::Base { source, view: ViewDirection::Named(NamedView::Front) };
+    let settings = ViewOverrides { scale: Some("1:1".parse().unwrap()), ..ViewOverrides::default() };
+    d.add_views([Arc::new(View { id, sheet, kind, place: ViewPlace::At([200.0, 150.0]), settings, reference_shown_percent: 0.0 })]);
+    d.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(d));
+    (s, id)
+}
+
+fn feature(s: &Session, name: &str) -> u64 {
+    s.doc.find_feature(name).map(|f| f.id).unwrap()
+}
+
+/// A hole table on `view` of the plate's holes Left, Middle and Right, in that order, measured from
+/// the centre of Middle's rim on the front face.
+fn hole_table(s: &mut Session, view: u64) -> Value {
+    let holes: Vec<Value> = ["Left", "Middle", "Right"].iter().map(|name| json!({"feature": feature(s, name)})).collect();
+    let origin = json!({"centre": {"point": [55, 0, 40]}});
+    let sheet = sheet_of(s);
+    run(s, ADD, json!({"sheet": sheet, "kind": {"hole": {"view": ids::encode(view), "origin": origin, "holes": holes}}}))
+}
+
+fn tags_of(reply: &Value) -> Vec<String> {
+    reply["record"]["kind"]["hole"]["holes"].as_array().unwrap().iter().map(|h| h["tag"].as_str().unwrap().to_string()).collect()
+}
+
+/// A hole table lists each hole it is given, tagged by size then order: Left and Right, both Ø6, are
+/// A1 and A2, and Middle, Ø10, is B1. Its rows go in tag order, each hole's place from the origin as
+/// the view shows it, signed, with the callout's decimals in the drawing's unit, and its size as its
+/// callout reads (#13056 S5). Adding it is one undo step. A model edit moves a row and changes a size,
+/// and never a tag.
+#[test]
+fn a_hole_table_lists_its_holes_by_size_then_order() {
+    let (mut s, view) = drilled_plate();
+    let steps = s.undo.len();
+    let added = hole_table(&mut s, view);
+    assert_eq!(s.undo.len(), steps + 1);
+    let id = id_of(&added);
+    assert_eq!(tags_of(&added), ["A1", "B1", "A2"], "{added}");
+    assert_eq!(added["record"]["place"]["anchor"]["corner"], json!("top_right"), "{added}");
+    assert_eq!(
+        shown(&s, id),
+        [["A1", "-30.00", "-25.00", "Ø6.00 THRU"], ["A2", "30.00", "-25.00", "Ø6.00 THRU"], ["B1", "0.00", "0.00", "Ø10.00 THRU"],],
+        "a hole on the origin reads 0.00, never -0.00"
+    );
+    assert!(on_sheet(&s, id).0.drawn);
+    let d = s.drawing("test").unwrap().clone();
+    assert_eq!(Drawing::from_json(&d.to_json().unwrap()).unwrap(), *d);
+
+    with_the_drawing_closed(&mut s, |s| {
+        s.execute("parameters.change", &json!({"name": "x_right", "expression": "70 mm"})).unwrap();
+        s.execute("parameters.change", &json!({"name": "big", "expression": "12 mm"})).unwrap();
+    });
+    assert_eq!(
+        shown(&s, id),
+        [["A1", "-30.00", "-25.00", "Ø6.00 THRU"], ["A2", "20.00", "-25.00", "Ø6.00 THRU"], ["B1", "0.00", "0.00", "Ø12.00 THRU"],],
+        "the row follows its hole, and its tag stays"
+    );
+}
+
+/// A hole that is gone keeps its row, with its tag and no values, and inspect says why; the other rows
+/// and the sheet are unchanged. A table of no view, of no holes, from no corner, of a hole the design
+/// never had or has lost, or of one hole twice, is refused.
+#[test]
+fn a_hole_table_keeps_a_lost_holes_row_and_says_why() {
+    let (mut s, view) = drilled_plate();
+    let id = id_of(&hole_table(&mut s, view));
+    let left = feature(&s, "Left");
+    with_the_drawing_closed(&mut s, |s| {
+        s.execute("timeline.delete", &json!({"feature": left.to_string()})).unwrap();
+    });
+    assert_eq!(
+        shown(&s, id),
+        [["A1", "", "", ""], ["A2", "30.00", "-25.00", "Ø6.00 THRU"], ["B1", "0.00", "0.00", "Ø10.00 THRU"]],
+        "never another hole's values"
+    );
+    let inspect = inspected(&mut s, id);
+    assert_eq!(inspect["missing"].as_array().map(Vec::len), Some(1), "{inspect}");
+    assert_eq!(inspect["missing"][0]["row"], json!("A1"), "{inspect}");
+    assert!(inspect["missing"][0]["why"].as_str().unwrap().contains("gone"), "{inspect}");
+    assert!(on_sheet(&s, id).0.drawn, "the table still draws");
+
+    let middle = json!([{"feature": feature(&s, "Middle")}]);
+    let origin = json!({"centre": {"point": [55, 0, 40]}});
+    let view = ids::encode(view);
+    for (kind, words) in [
+        (json!({"hole": {"view": ids::encode(99), "origin": origin, "holes": middle}}), "view"),
+        (json!({"hole": {"view": view, "origin": origin, "holes": []}}), "1 to"),
+        (json!({"hole": {"view": view, "origin": {"corner": [5, 0, 5]}, "holes": middle}}), "corner"),
+        (json!({"hole": {"view": view, "origin": origin, "holes": [{"feature": 999_999}]}}), "feature"),
+        (json!({"hole": {"view": view, "origin": origin, "holes": [{"feature": left}]}}), "gone"),
+        (json!({"hole": {"view": view, "origin": origin, "holes": [middle[0].clone(), middle[0].clone()]}}), "twice"),
+        // Counted before any hole is read: a list past the cap costs no lookups.
+        (json!({"hole": {"view": view, "origin": origin, "holes": vec![middle[0].clone(); 1_001]}}), "1 to"),
+    ] {
+        let sheet = sheet_of(&s);
+        let why = refused(&mut s, ADD, json!({"sheet": sheet, "kind": kind}));
+        assert!(why.contains(words), "{words}: {why}");
+    }
+}
+
+/// Each hole's tag stands on the view beside its hole's centre, 2 mm up and right of it on paper, as
+/// one object of the sheet that moves with the view: a moved view takes the tags along and leaves the
+/// table where it was. A hole added later takes the next tag; retag gives every hole its tag again
+/// from the sizes now; each edit is one undo step.
+#[test]
+fn a_hole_tables_tags_stand_beside_their_holes_and_move_with_the_view() {
+    let (mut s, view) = drilled_plate();
+    let id = id_of(&hole_table(&mut s, view));
+    let tag_runs = |s: &Session| -> Vec<(String, Vec2)> {
+        let d = s.drawing("test").unwrap().clone();
+        let built = crate::drawing_scene::build(s, &d, d.sheets[0].id).unwrap();
+        let group = built.scene.groups.iter().find(|g| g.kind == solidcraft_geom::paper::ObjectKind::HoleTag && g.object == id).cloned();
+        let group = group.unwrap_or_else(|| panic!("no tags in {:?}", built.objects));
+        let text = |item: &solidcraft_geom::paper::Item| match item {
+            solidcraft_geom::paper::Item::Text(run) => Some((run.text.clone(), run.origin)),
+            _ => None,
+        };
+        group.items.iter().filter_map(text).collect()
+    };
+    // The view centres the plate's box (0..100 by 0..60 in X and Z) at (200, 150): a hole at (x, z)
+    // is at (150 + x, 120 + z) on paper, and its tag starts 2 mm up and right of that.
+    let tags = tag_runs(&s);
+    for (tag, x, z) in [("A1", 20.0, 15.0), ("B1", 50.0, 40.0), ("A2", 80.0, 15.0)] {
+        let at = tags.iter().find(|(text, _)| text == tag).map(|(_, at)| *at).unwrap_or_else(|| panic!("{tag}: {tags:?}"));
+        assert!(near(at, Vec2::new(152.0 + x, 122.0 + z)), "{tag} at {at:?}");
+    }
+    let table_before = on_sheet(&s, id).1;
+    s.execute("drawing.view.edit", &json!({"view": ids::encode(view), "set": {"place": {"at": [230.0, 140.0]}}})).unwrap();
+    let moved = tag_runs(&s);
+    assert_eq!(moved.len(), tags.len());
+    for ((tag, before), (_, after)) in tags.iter().zip(&moved) {
+        assert!(near(*after - *before, Vec2::new(30.0, -10.0)), "{tag}: {before:?} to {after:?}");
+    }
+    assert_eq!(on_sheet(&s, id).1, table_before, "the table stays where its record places it");
+
+    let table = ids::encode(id);
+    let middle = feature(&s, "Middle");
+    let steps = s.undo.len();
+    let edited = run(&mut s, EDIT, json!({"table": table, "set": {"holes": {"remove": [{"feature": middle}]}}}));
+    assert_eq!(s.undo.len(), steps + 1);
+    assert_eq!(tags_of(&edited), ["A1", "A2"]);
+    let edited = run(&mut s, EDIT, json!({"table": table, "set": {"holes": {"add": [{"feature": middle}]}}}));
+    assert_eq!(tags_of(&edited), ["A1", "A2", "B1"], "Ø10 is a size no kept tag has: the next letter");
+    let steps = s.undo.len();
+    let retagged = run(&mut s, EDIT, json!({"table": table, "set": {"holes": {"retag": true}}}));
+    assert_eq!(tags_of(&retagged), ["A1", "A2", "B1"]);
+    assert_eq!(s.undo.len(), steps, "a retag that changes no tag is no step");
+    s.execute("edit.undo", &json!({})).unwrap();
+    assert_eq!(shown(&s, id).len(), 2, "undo takes the hole added back out");
 }
 
 /// A table's id is drawn from the ids the drawing shares, and a damaged file's table is refused.

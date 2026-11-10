@@ -12,6 +12,8 @@
 //! - A parts list reads the design open, as `drawing.inspect` does, weighed only when a column shows
 //!   a mass.
 //! - A table that can't be read or laid out says why, and the rest of the sheet still draws.
+//! - A hole table's tags stand on its view, on whichever sheet the view is ([`HoleTags`]): set here
+//!   with the tables, and placed by the scene once it knows where the view's lines are.
 //!
 //! **Cost:** a weighed list costs about 135 ms on a bolted bracket, unweighed 0.2 ms. The sheet scene
 //! reads its tables only when what its text reads changes ([`crate::drawing_scene`]'s
@@ -20,13 +22,14 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use solidcore_record::Vec2;
+use solidcore_record::{Vec2, Vec3};
 use solidcraft_doc::bom::{self, Tree};
-use solidcraft_doc::drawing::table::{Corner, Family, Kind, Place, SheetTable};
+use solidcraft_doc::drawing::table::{Corner, Family, Hole, Kind, Place, SheetTable};
 use solidcraft_doc::drawing::{Drawing, Sheet};
 use solidcraft_geom::Aabb2;
 use solidcraft_geom::cell::{HAlign, Part};
-use solidcraft_geom::paper::text::Font;
+use solidcraft_geom::drawing_view::ViewFrame;
+use solidcraft_geom::paper::text::{Font, TextRun};
 use solidcraft_geom::paper::{Group, Item, ObjectKind};
 use solidcraft_geom::table::{Row, Table, TableLayout};
 use solidcraft_sketch::{Outcome, PaperFonts, PaperLines, TextStyle};
@@ -55,10 +58,43 @@ pub(crate) enum Unplaced {
     Failed(String),
 }
 
+/// From a hole's centre on paper, where its tag's text starts: up and right, clear of the centre mark.
+const TAG_OFFSET_MM: f64 = 2.0;
+
+/// A hole table's tags, for a sheet its view is on: each one's text set at the origin in the table's
+/// lettering, for the scene to stand beside its hole once it knows the view's frame ([`Self::group`]).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HoleTags {
+    pub table: u64,
+    pub view: u64,
+    /// Each hole read: its centre in the design's frame, and its tag set at the origin.
+    tags: Vec<(Vec3, Vec<TextRun>)>,
+    pub fonts: Vec<Font>,
+    /// Why a tag isn't drawn: its table can't be read, or a font can't set it.
+    pub why: Option<String>,
+}
+
+impl HoleTags {
+    /// The tags as one object of the sheet, in `frame`'s paper coordinates: each tag starts
+    /// [`TAG_OFFSET_MM`] up and right of where its hole's centre shows. None with no tag to draw.
+    pub(crate) fn group(&self, frame: &ViewFrame) -> Option<Group> {
+        let offset = Vec2::new(TAG_OFFSET_MM, TAG_OFFSET_MM);
+        let items = self.tags.iter().flat_map(|(centre, runs)| {
+            let by = frame.to_paper(*centre) + offset;
+            runs.iter().map(move |run| Item::Text(TextRun { origin: run.origin + by, ..run.clone() }))
+        });
+        let group = Group { object: self.table, kind: ObjectKind::HoleTag, items: items.collect() };
+        (!group.items.is_empty()).then_some(group)
+    }
+}
+
 /// A sheet's tables as its scene draws them, in id order: each one on paper, or why it isn't drawn.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct SheetTables {
     pub tables: Vec<(u64, std::result::Result<OnPaper, String>)>,
+    /// The tags of each hole table whose view is on the sheet, by table id; the table itself may be
+    /// on another sheet.
+    pub tags: Vec<HoleTags>,
     /// Whether a table waits for a font to fall back to: it is left off until the search answers.
     pub pending: bool,
 }
@@ -74,6 +110,17 @@ pub(crate) fn sheet_tables(s: &Session, d: &Drawing, sheet: &Sheet, lettering: &
             Err(Unplaced::Failed(why)) => out.tables.push((record.id, Err(why))),
         }
     }
+    let here: Vec<u64> = d.views.iter().filter(|view| view.sheet == sheet.id).map(|view| view.id).collect();
+    for record in d.tables.iter() {
+        if let Kind::Hole(hole) = &record.kind
+            && here.contains(&hole.view)
+        {
+            match hole_tags(s, d, record, hole, lettering) {
+                Some(tags) => out.tags.push(tags),
+                None => out.pending = true,
+            }
+        }
+    }
     out
 }
 
@@ -84,7 +131,33 @@ pub(crate) fn kind_of(record: &SheetTable) -> ObjectKind {
         Kind::Revision => ObjectKind::RevisionTable,
         Kind::Family(_) => ObjectKind::FamilyTable,
         Kind::General(_) => ObjectKind::GeneralTable,
+        Kind::Hole(_) => ObjectKind::HoleTable,
     }
+}
+
+/// The tags of `hole`, the hole table `record` of `d`, read from `s`'s design and set in `lettering`
+/// at the table's letter height. None while a tag's font is still being looked for (the window only).
+fn hole_tags(s: &Session, d: &Drawing, record: &SheetTable, hole: &Hole, lettering: &PaperFonts) -> Option<HoleTags> {
+    let mut out = HoleTags { table: record.id, view: hole.view, tags: Vec::new(), fonts: Vec::new(), why: None };
+    let read = match s.doc.read_holes(&s.model, d, hole) {
+        Ok(read) => read,
+        Err(e) => {
+            out.why = Some(format!("its tags: {e}"));
+            return Some(out);
+        }
+    };
+    for (tag, centre) in read.centres {
+        match Outcome::from(lettering.text(&tag, Vec2::ZERO, record.table.cap_mm, 0.0, &TextStyle::default())) {
+            Outcome::Set(Some((runs, fonts))) => {
+                out.tags.push((centre, runs));
+                out.fonts.extend(fonts);
+            }
+            Outcome::Set(None) => {}
+            Outcome::Pending => return None,
+            Outcome::Refused(why) => _ = out.why.get_or_insert_with(|| format!("the drawing's fonts can't set its tag `{tag}`: {why}")),
+        }
+    }
+    Some(out)
 }
 
 /// Where a sheet's tables are anchored: inside its drawing border, or its paper without one.
@@ -207,7 +280,7 @@ fn corner_of(place: Place, sized: Aabb2, space: Aabb2) -> Vec2 {
 
 /// `record`'s rows: a revision table's from the drawing's revisions; a family table's from the
 /// design's configurations; a general table's from its own cells; a parts list's from the design
-/// open; or why it can't be listed.
+/// open; a hole table's from the holes it names on the design open; or why it can't be listed.
 fn rows_of(s: &Session, d: &Drawing, record: &SheetTable) -> std::result::Result<Vec<Row>, String> {
     let list = match &record.kind {
         Kind::Revision => return Ok(d.revisions.table_rows(d.revisions.per_sheet.then_some(record.sheet))),
@@ -217,6 +290,7 @@ fn rows_of(s: &Session, d: &Drawing, record: &SheetTable) -> std::result::Result
         }
         Kind::Family(_) => return Ok(Family::rows(&s.doc, s.doc.drawing_units(d))),
         Kind::General(general) => return Ok(general.rows(&record.table)),
+        Kind::Hole(hole) => return s.doc.read_holes(&s.model, d, hole).map(|read| read.rows).map_err(|e| e.to_string()),
         Kind::PartsList(list) => list,
     };
     let state = s.model.state();
