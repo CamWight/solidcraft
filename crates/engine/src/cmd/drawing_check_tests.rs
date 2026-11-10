@@ -347,7 +347,7 @@ fn a_dimension_off_the_paper_is_listed() {
     run(&mut s, "drawing.dimension.edit", json!({"dimension": dimension, "set": {"offset_mm": 1000}}));
     let reply = checked(&mut s, json!({}));
     assert_eq!(of_kind(&reply, "outside_sheet"), [named("dimension", &dimension)], "{reply}");
-    for kind in ["parts_list", "revision", "family"] {
+    for kind in ["parts_list", "revision", "family", "general"] {
         let set = json!({"place": {"at": [-500, 100]}});
         let table = run(&mut s, "drawing.table.add", json!({"sheet": ids::encode(sheet), "kind": kind, "set": set}))["table"].clone();
         let reply = checked(&mut s, json!({}));
