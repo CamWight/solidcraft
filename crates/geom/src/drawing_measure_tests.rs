@@ -39,6 +39,21 @@ fn refused<T: std::fmt::Debug>(result: Result<T>, says: &str) {
 
 /// From (0, 0, 0) to (30, 0, 40) in the front view: 30 across, 40 up, 50 aligned, 70/√2 along
 /// (1, 1), 30 along (-2, 0); none foreshortened, and the true length is 50 too.
+/// A model vector on a view is signed, right and up positive, and its depth along the view's normal
+/// is no part of it: on the front view, X is paper x and Z paper y. A linear dimension reads its size,
+/// and a tilted view gives the same numbers both ways.
+#[test]
+fn a_vector_on_a_view_reads_signed_and_flat() {
+    let d = Vec3::new(-30.0, 7.0, -25.0);
+    assert_eq!(on_view(&front(), d), Vec2::new(-30.0, -25.0));
+    assert_eq!(on_view(&front(), Vec3::new(0.0, 9.0, 0.0)), Vec2::ZERO, "seen end-on, a vector is nothing on the view");
+    let (a, b) = (Vec3::new(1.0, 2.0, 3.0), Vec3::new(-4.0, 6.0, 2.0));
+    let shown = on_view(&iso(), b - a);
+    assert!(close(reads(linear(&iso(), a, b, Horizontal, Projected)).0, shown.x.abs()));
+    assert!(close(reads(linear(&iso(), a, b, Vertical, Projected)).0, shown.y.abs()));
+    assert_eq!(on_view(&iso(), a - b), -shown, "the other way round, the other sign");
+}
+
 #[test]
 fn a_segment_in_the_views_plane_reads_its_lengths() {
     let (a, b) = (Vec3::ZERO, Vec3::new(30.0, 0.0, 40.0));

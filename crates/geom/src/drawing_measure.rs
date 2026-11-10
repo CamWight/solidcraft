@@ -69,7 +69,7 @@ pub struct Measured {
 /// [`LinearDirection::Aligned`] only: a true horizontal has no one meaning in a tilted view.
 pub fn linear(basis: &Plane, a: Vec3, b: Vec3, direction: LinearDirection, reading: Reading) -> Result<Measured> {
     let d = segment(basis, a, b)?;
-    let shown = Vec2::new(d.dot(basis.x), d.dot(basis.y));
+    let shown = on_view(basis, d);
     let value = match (direction, reading) {
         (LinearDirection::Aligned, Reading::True) => d.len(),
         (_, Reading::True) => return Err(Invalid("a true length is along the segment: measure it aligned")),
@@ -103,7 +103,7 @@ pub fn chain(basis: &Plane, points: &[Vec3], direction: LinearDirection) -> Resu
     let (Some(first), Some(last)) = (points.first(), points.last()) else { return Err(Invalid("a chain has no points")) };
     require(points.len() >= 3, "a chain is at least 3 points: 2 make one linear dimension")?;
     let whole = segment(basis, *first, *last)?;
-    let shown = |d: Vec3| Vec2::new(d.dot(basis.x), d.dot(basis.y));
+    let shown = |d: Vec3| on_view(basis, d);
     let line = match direction {
         LinearDirection::Horizontal => Vec2::new(1.0, 0.0),
         LinearDirection::Vertical => Vec2::new(0.0, 1.0),
@@ -296,7 +296,7 @@ fn crossing(basis: &Plane, toward: Vec3, across: f64, direction: LinearDirection
         LinearDirection::Vertical => Vec2::Y,
         LinearDirection::Along(v) => v.normalized().ok_or(Invalid("the direction to measure along is zero or not finite"))?,
     };
-    let slant = Vec2::new(toward.dot(basis.x), toward.dot(basis.y)).dot(along);
+    let slant = on_view(basis, toward).dot(along);
     require(slant.abs() > PARALLEL, runs_along)?;
     Ok((across / slant).abs())
 }
@@ -316,7 +316,7 @@ pub fn angle(basis: &Plane, edge: (Vec3, Vec3), from: AngleFrom, reading: Readin
     let value = match reading {
         Reading::True if model_line => between(d, reference)?,
         Reading::True => return Err(Invalid("a true angle is between two model lines, not from the view's horizontal or vertical")),
-        Reading::Projected => between(on_view(basis, d)?, on_view(basis, reference)?)?,
+        Reading::Projected => between(direction_on_view(basis, d)?, direction_on_view(basis, reference)?)?,
     };
     Ok(Measured { value, foreshortened: out_of_plane(basis, d) || (model_line && out_of_plane(basis, reference)) })
 }
@@ -341,11 +341,19 @@ fn model_point(p: Vec3) -> bool {
     p.is_finite() && [p.x, p.y, p.z].iter().all(|v| v.abs() <= MAX_NUMBER)
 }
 
-/// `d` as the view shows it, in its plane's coordinates: refused when the view sees it end-on.
-fn on_view(basis: &Plane, d: Vec3) -> Result<Vec3> {
-    let shown = Vec3::new(d.dot(basis.x), d.dot(basis.y), 0.0);
+/// The model vector `d` as the view through `basis` shows it, in its plane's coordinates: how far
+/// along the view's horizontal and up its vertical, signed (paper x and y at 1:1). The one projection
+/// every measurement on a view reads, and a hole table's places from its origin.
+pub fn on_view(basis: &Plane, d: Vec3) -> Vec2 {
+    Vec2::new(d.dot(basis.x), d.dot(basis.y))
+}
+
+/// The direction `d` as the view shows it ([`on_view`]), in the plane `z = 0`: refused when the view
+/// sees it end-on.
+fn direction_on_view(basis: &Plane, d: Vec3) -> Result<Vec3> {
+    let shown = on_view(basis, d);
     require(shown.len() > PARALLEL * d.len(), "a line is seen end-on in this view: it has no direction there")?;
-    Ok(shown)
+    Ok(Vec3::new(shown.x, shown.y, 0.0))
 }
 
 /// The angle between `u` and `v`, from 0 to π: refused when they are parallel either way.
