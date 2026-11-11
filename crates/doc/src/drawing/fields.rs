@@ -85,6 +85,22 @@ pub enum FieldState {
     Unknown,
 }
 
+/// A field that reads no value ([`Values::empty_fields`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Unfilled {
+    pub source: Source,
+    pub key: String,
+    /// Empty, lost or unknown: never shown.
+    pub state: FieldState,
+}
+
+impl Unfilled {
+    /// Its name as a reply gives it: `source.key` (`component.part_number`).
+    pub fn name(&self) -> String {
+        format!("{}.{}", source_name(self.source), self.key)
+    }
+}
+
 /// Whether `source` has the field `key`.
 pub fn has_key(source: Source, key: &str) -> bool {
     let property = key.strip_prefix(PROPERTIES).is_some_and(|name| !name.is_empty());
@@ -169,17 +185,18 @@ impl Values<'_> {
         }
     }
 
-    /// The fields of `content` that read no value ([`state`](Values::state): empty, lost or unknown),
-    /// each as `source.key` (`component.part_number`): what [`text`](Values::text) shows as [`MISSING`].
-    /// A revision field before the sheet's first revision row reads empty but isn't one: the drawing
-    /// has no revision to show yet.
-    pub fn empty_fields(&self, content: &Content) -> Vec<String> {
+    /// The fields of `content` that read no value, each with what it reads ([`state`](Values::state):
+    /// empty, lost or unknown): what [`text`](Values::text) shows as [`MISSING`]. A revision field
+    /// before the sheet's first revision row reads empty but isn't one: the drawing has no revision
+    /// to show yet.
+    pub fn empty_fields(&self, content: &Content) -> Vec<Unfilled> {
         let unrevised = self.newest().is_none();
         let empty = |part: &Part| match part {
             Part::Field { source: Source::Revision, .. } if unrevised => None,
-            Part::Field { source, key, .. } => {
-                (!matches!(self.state(*source, key), FieldState::Shown(_))).then(|| format!("{}.{key}", source_name(*source)))
-            }
+            Part::Field { source, key, .. } => match self.state(*source, key) {
+                FieldState::Shown(_) => None,
+                state => Some(Unfilled { source: *source, key: key.clone(), state }),
+            },
             Part::Text(_) => None,
         };
         content.0.iter().filter_map(empty).collect()

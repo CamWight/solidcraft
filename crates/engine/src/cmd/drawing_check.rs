@@ -8,7 +8,7 @@
 //! or note points at a face it made, by the saved names ([`Timeline::covers`]), and whether a view
 //! draws one. Nothing is changed.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -17,7 +17,7 @@ use solidcraft_doc::bom::Tree;
 use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::coverage;
 use solidcraft_doc::drawing::dimension::Status;
-use solidcraft_doc::drawing::fields::Values;
+use solidcraft_doc::drawing::fields::{FieldState, Unfilled, Values, no_field};
 use solidcraft_doc::drawing::note::Anchor;
 use solidcraft_doc::{ModelState, ids};
 use solidcraft_geom::cell::Content;
@@ -45,7 +45,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CHECK, "Check Drawing",
     .doc_only()
     .contract(&CONTRACT)
     .output(output_schema_for::<CheckResult>)
-    .params("sheet?: id or name (default: every sheet) → {sheet?, findings: [{kind, sheet, object: {kind: view|dimension|balloon|note|symbol|table|image|title_block, id}, cell?, field?, item?, why}], counts: [{kind, count}], coverage: [{feature, name, state, by?: [{kind: dimension|note, id}], why?}], coverage_counts: [{state, count}]}: what makes the drawing wrong or incomplete, in sheet order, then by the record each names. kind is one of a closed list: lost, ambiguous, unmeasurable, suppressed, failed (a dimension, balloon, note or placed symbol whose reference isn't found as one thing, can't be measured, or depends on a suppressed or failed feature; failed is also a view that can't be drawn), overridden (a dimension whose text is typed over its value, or a title block cell whose typed text hides a value), out_of_date (a view or dimension a deferred drawing shows as it last was), nothing_shown (a view with nothing to measure), empty_field (a title block's field with no value, as source.key; a revision field only once the drawing has a revision row; a cell whose typed text fills it is none; or a note's or a placed symbol's, each once per note or placement, a prompt a placement doesn't answer as prompt.key), not_ballooned (a row of a parts list on the sheet that no balloon points at, by item), outside_sheet (a view outside its sheet's drawing space or over its title block; a dimension, image or table off the paper). coverage lists each feature of the design in timeline order, apart from the findings: covered (a dimension or note points at a face it made: an edge covers the latest feature among the faces it separates, a corner the latest among its edges' faces, a pattern's copy the pattern; by lists them), not_covered (a view draws a face it made, named from exact history, and nothing points at it), unknown (the faces a view draws of it aren't named from exact history), not_applicable (it is suppressed or rolled back, only reference parts draw it, or no view draws a face it made: a sketch, a plane). Coverage says a dimension or a note points at a feature, not that it is fully dimensioned. With sheet, the findings and the coverage are of that sheet only, and sheet echoes its id. The sheet is read as an export reads it: a deferred drawing is checked as it shows the model, with what it shows as it last was listed. Read-only: nothing is drawn or saved, and the same drawing always gives the same answer.")];
+    .params("sheet?: id or name (default: every sheet) → {sheet?, findings: [{kind, sheet, object: {kind: view|dimension|balloon|note|symbol|table|image|title_block, id}, cell?, field?, item?, why}], counts: [{kind, count}], coverage: [{feature, name, state, by?: [{kind: dimension|note, id}], why?}], coverage_counts: [{state, count}]}: what makes the drawing wrong or incomplete, in sheet order, then by the record each names. kind is one of a closed list: lost, ambiguous, unmeasurable, suppressed, failed (a dimension, balloon, note or placed symbol whose reference isn't found as one thing, can't be measured, or depends on a suppressed or failed feature; failed is also a view that can't be drawn; lost is also a field, as empty_field names it, whose sheet documents a component the design no longer has), overridden (a dimension whose text is typed over its value, or a title block cell whose typed text hides a value), out_of_date (a view or dimension a deferred drawing shows as it last was), nothing_shown (a view with nothing to measure), empty_field (a title block's field with no value, as source.key; a revision field only once the drawing has a revision row; a cell whose typed text fills it is none; or a note's or a placed symbol's, each once per note or placement, a prompt a placement doesn't answer as prompt.key; a field its source doesn't have is one too, and its why says so), not_ballooned (a row of a parts list on the sheet that no balloon points at, by item), outside_sheet (a view outside its sheet's drawing space or over its title block; a dimension, image or table off the paper). coverage lists each feature of the design in timeline order, apart from the findings: covered (a dimension or note points at a face it made: an edge covers the latest feature among the faces it separates, a corner the latest among its edges' faces, a pattern's copy the pattern; by lists them), not_covered (a view draws a face it made, named from exact history, and nothing points at it), unknown (the faces a view draws of it aren't named from exact history), not_applicable (it is suppressed or rolled back, only reference parts draw it, or no view draws a face it made: a sketch, a plane). Coverage says a dimension or a note points at a feature, not that it is fully dimensioned. With sheet, the findings and the coverage are of that sheet only, and sheet echoes its id. The sheet is read as an export reads it: a deferred drawing is checked as it shows the model, with what it shows as it last was listed. Read-only: nothing is drawn or saved, and the same drawing always gives the same answer.")];
 
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let request: CheckParams = crate::schema::read(CHECK, p)?;
@@ -224,10 +224,10 @@ fn fields_and_rows(s: &Session, d: &Drawing, sheets: &[u64]) -> Vec<Finding> {
                 }
                 Some(_) => {}
                 // Read only here: the sheet itself never needs them.
-                None => out.extend(values.empty_fields(content).into_iter().map(|field| {
-                    let why = format!("{field} has no value");
-                    Finding { cell: Some(cell.name.clone()), field: Some(field), ..finding(FindingKind::EmptyField, sheet.id, block.clone(), why) }
-                })),
+                None => {
+                    let of_cell = |field: &Unfilled| Finding { cell: Some(cell.name.clone()), ..field_finding(sheet.id, block.clone(), field) };
+                    out.extend(values.empty_fields(content).iter().map(of_cell));
+                }
             }
         });
     }
@@ -255,15 +255,13 @@ fn fields_and_rows(s: &Session, d: &Drawing, sheets: &[u64]) -> Vec<Finding> {
         let empty = title_block_text::with_values(&s.doc, &mut tree, d, at, contents, |values| {
             let fields_of = |reader: &Reader| {
                 let values = Values { answers: reader.answers, ..*values };
-                reader.texts.iter().flat_map(|content| values.empty_fields(content)).collect::<BTreeSet<_>>()
+                let fields = reader.texts.iter().flat_map(|content| values.empty_fields(content));
+                fields.map(|field| (field.name(), field)).collect::<BTreeMap<_, _>>()
             };
             one_sheet.iter().map(fields_of).collect::<Vec<_>>()
         });
         for (reader, fields) in one_sheet.iter().zip(empty) {
-            for field in fields {
-                let why = format!("{field} has no value");
-                out.push(Finding { field: Some(field), ..finding(FindingKind::EmptyField, reader.sheet, reader.object.clone(), why) });
-            }
+            out.extend(fields.values().map(|field| field_finding(reader.sheet, reader.object.clone(), field)));
         }
     }
     // A parts list that can't be made has no rows to count.
@@ -275,6 +273,19 @@ fn fields_and_rows(s: &Session, d: &Drawing, sheets: &[u64]) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// The finding for `field` of `object`, which reads no value: lost when its sheet documents a
+/// component the design no longer has (what it reads isn't found, as a lost reference's), else an
+/// empty field, saying whether its source has no value for it or no such field.
+fn field_finding(sheet: u64, object: CheckedObject, field: &Unfilled) -> Finding {
+    let name = field.name();
+    let (kind, why) = match field.state {
+        FieldState::Lost => (FindingKind::Lost, format!("{name} is lost: the sheet documents a component the design no longer has")),
+        FieldState::Unknown => (FindingKind::EmptyField, no_field(field.source, &field.key).unwrap_or_else(|| format!("{name} has no value"))),
+        FieldState::Empty | FieldState::Shown(_) => (FindingKind::EmptyField, format!("{name} has no value")),
+    };
+    Finding { field: Some(name), ..finding(kind, sheet, object, why) }
 }
 
 /// A note or a placed symbol on a checked sheet, as [`fields_and_rows`] reads its fields: its sheet's

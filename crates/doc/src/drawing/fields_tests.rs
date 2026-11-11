@@ -93,12 +93,15 @@ fn revision_fields_read_the_newest_row() {
     assert_eq!(shown(&d, 0, None, date()), "2 2026-10-30");
 }
 
-/// The fields a cell shows nothing for, by source and key: a component's empty part number and a
-/// prompt nobody answered, not its name, the sheet's number or literal text. A revision field is
-/// one only once the drawing has a revision row, and then only while that row lacks it. A field
-/// that reads lost or unknown has no value either.
+/// The fields a cell shows nothing for, by source and key, each with what it reads: a component's
+/// empty part number and a prompt nobody answered, not its name, the sheet's number or literal
+/// text. A revision field is one only once the drawing has a revision row, and then only while that
+/// row lacks it. A field that reads lost or unknown has no value either, and says which.
 #[test]
 fn empty_fields_are_named_by_source_and_key() {
+    use FieldState::{Empty, Lost, Unknown};
+    let named = |fields: Vec<Unfilled>| fields.into_iter().map(|f| (f.name(), f.state)).collect::<Vec<_>>();
+    let of = |pairs: &[(&str, FieldState)]| pairs.iter().map(|(name, state)| (name.to_string(), state.clone())).collect::<Vec<_>>();
     let mut d = drawing();
     let metadata = Metadata::default();
     let bracket = Component { name: "Bracket", metadata: &metadata, properties: None, material: None, mass: None };
@@ -110,17 +113,18 @@ fn empty_fields_are_named_by_source_and_key() {
         field(Source::Prompt, "checked_by"),
         field(Source::Revision, "date"),
     ]);
-    let empty = |d: &Drawing| Values { drawing: d, sheet: 0, component: Documented::Present(bracket), answers: None }.empty_fields(&content);
-    assert_eq!(empty(&d), ["component.part_number", "prompt.checked_by"]);
+    let empty = |d: &Drawing| named(Values { drawing: d, sheet: 0, component: Documented::Present(bracket), answers: None }.empty_fields(&content));
+    assert_eq!(empty(&d), of(&[("component.part_number", Empty), ("prompt.checked_by", Empty)]));
     Arc::make_mut(&mut d.revisions).add(None, 901).unwrap();
-    assert_eq!(empty(&d), ["component.part_number", "prompt.checked_by", "revision.date"]);
+    assert_eq!(empty(&d), of(&[("component.part_number", Empty), ("prompt.checked_by", Empty), ("revision.date", Empty)]));
     Arc::make_mut(&mut d.revisions).set(901, Field::Date, "2026-11-07").unwrap();
-    assert_eq!(empty(&d), ["component.part_number", "prompt.checked_by"]);
-    let lost = Values { drawing: &d, sheet: 0, component: Documented::Gone, answers: None }.empty_fields(&content);
-    assert_eq!(lost, ["component.name", "component.part_number", "prompt.checked_by"], "a component since deleted");
+    assert_eq!(empty(&d), of(&[("component.part_number", Empty), ("prompt.checked_by", Empty)]));
+    let lost = named(Values { drawing: &d, sheet: 0, component: Documented::Gone, answers: None }.empty_fields(&content));
+    assert_eq!(lost, of(&[("component.name", Lost), ("component.part_number", Lost), ("prompt.checked_by", Empty)]), "a component since deleted");
     let unknown = Content(vec![field(Source::Component, "weight"), field(Source::Sheet, "page")]);
     let present = Values { drawing: &d, sheet: 0, component: Documented::Present(bracket), answers: None };
-    assert_eq!(present.empty_fields(&unknown), ["component.weight", "sheet.page"], "a drawing saved with fields its sources lack");
+    let unknown = named(present.empty_fields(&unknown));
+    assert_eq!(unknown, of(&[("component.weight", Unknown), ("sheet.page", Unknown)]), "a drawing saved with fields its sources lack");
 }
 
 /// A component's fields: its name and part properties, its free-text properties, and the material
@@ -291,8 +295,8 @@ fn a_placed_symbols_answers_fill_its_prompts() {
     assert_eq!(values.text(&content), "Rev C2", "the sheet's own fields read as before");
     assert_eq!(values.state(Source::Prompt, "rev"), FieldState::Shown("C".into()));
     assert_eq!(values.state(Source::Prompt, "date"), FieldState::Empty, "a key it doesn't answer");
-    assert_eq!(values.empty_fields(&content), ["prompt.by"]);
+    assert_eq!(values.empty_fields(&content).iter().map(Unfilled::name).collect::<Vec<_>>(), ["prompt.by"]);
     let elsewhere = Values { answers: None, ..values };
     assert_eq!(elsewhere.text(&content), format!("Rev {MISSING}{MISSING}2"));
-    assert_eq!(elsewhere.empty_fields(&content), ["prompt.rev", "prompt.by"]);
+    assert_eq!(elsewhere.empty_fields(&content).iter().map(Unfilled::name).collect::<Vec<_>>(), ["prompt.rev", "prompt.by"]);
 }
