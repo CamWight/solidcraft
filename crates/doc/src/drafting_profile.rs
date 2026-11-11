@@ -90,20 +90,30 @@ impl DraftingProfile {
         Ok(())
     }
 
+    /// The built-in with this id, as this build has it.
+    pub fn built_in(id: &str) -> Option<DraftingProfile> {
+        DraftingProfile::library().into_iter().find(|p| p.id == id)
+    }
+
+    /// The decimals a new number of `kind` gets: none for a number with no unit.
+    pub fn decimals(&self, kind: Kind) -> Option<u8> {
+        match kind {
+            Kind::Length => Some(self.length_decimals),
+            Kind::Angle => Some(self.angle_decimals),
+            Kind::Unitless => None,
+        }
+    }
+
     /// What one dimension of `kind`, shown in `unit`, takes from the profile.
     pub fn style(&self, kind: Kind, unit: &str) -> Result<DimensionStyle> {
-        let decimals = match kind {
-            Kind::Length => self.length_decimals,
-            Kind::Angle => self.angle_decimals,
-            Kind::Unitless => return Err(invalid("a dimension is a length or an angle")),
-        };
+        let decimals = self.decimals(kind).ok_or_else(|| invalid("a dimension is a length or an angle"))?;
         Ok(DimensionStyle { unit: unit.into(), number: self.number, decimals, tolerance_decimals: self.tolerance_decimals, repeat: self.repeat })
     }
 
     /// The built-in this copy came from, when it isn't the same any more: this copy's version
     /// and the library's. Reported (the drawing check), never applied.
     pub fn differs_from_library(&self) -> Option<(u32, u32)> {
-        let current = DraftingProfile::library().into_iter().find(|p| p.id == self.id)?;
+        let current = DraftingProfile::built_in(&self.id)?;
         (current != *self).then_some((self.version, current.version))
     }
 }

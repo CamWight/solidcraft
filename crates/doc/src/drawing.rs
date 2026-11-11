@@ -19,6 +19,9 @@
 //!   interface's is. **Properties** follow [`Metadata`]'s rules.
 //! - The **font** its text is set in: a font family's name, never a file, so the drawing travels
 //!   (none: the built-in font; [`solidcraft_sketch::check_family`]).
+//! - The **drafting profile** its numbers follow: a whole copy, never a name, so a later built-in
+//!   never changes a saved drawing ([`DraftingProfile`]); at most [`dimension::MAX_DECIMALS`]
+//!   decimals, as its dimensions show.
 //! - **Views** of its designs on its sheets, base and projected ([`view`]), and the **projection**
 //!   (first or third angle) every projected view follows.
 //! - **Dimensions** on its views, each measuring named corners or edges of the view's model
@@ -61,6 +64,7 @@ use solidcraft_geom::paper::line::LineGroup;
 use solidcraft_geom::revision::RevisionRecord;
 use solidcraft_geom::title_block::{TitleBlock, TitleBlockLayout};
 
+use crate::drafting_profile::DraftingProfile;
 use crate::format::DRAWING;
 use crate::ids::{self, IdSource};
 use crate::{DocError, Metadata, Result, expr};
@@ -151,6 +155,12 @@ pub struct Drawing {
     /// ([`Drawing::resolve_view`]). Always written, so a later default can't change an old drawing.
     #[serde(default)]
     pub line_group: LineGroup,
+    /// The decimals new dimensions get and, later, how its numbers are written. Always written, so
+    /// a later built-in can't change an old drawing; an older drawing, which saved none, reads the
+    /// default built-in. A change to that default needs a format step that writes this one into the
+    /// drawings saved before profiles.
+    #[serde(default)]
+    pub profile: DraftingProfile,
     /// In order, each behind its own `Arc`, so an undo step shares every sheet it didn't change.
     pub sheets: Vec<Arc<Sheet>>,
     /// By id ([`Drawing::add_views`]), each behind its own `Arc`, as the sheets are.
@@ -361,6 +371,7 @@ impl Drawing {
             language: language.into(),
             font: String::new(),
             line_group: LineGroup::DEFAULT,
+            profile: DraftingProfile::default(),
             sheets: vec![Arc::new(first)],
             views: Vec::new(),
             dimensions: Vec::new(),
@@ -520,6 +531,11 @@ impl Drawing {
             format!("the language is not a BCP 47 tag of 2 to {MAX_LANGUAGE_CHARS} characters (such as `en` or `en-GB`)")
         })?;
         solidcraft_sketch::check_family(&self.font).map_err(|e| DocError::Invalid(format!("the drawing's font: {e}")))?;
+        self.profile.validate()?;
+        let p = &self.profile;
+        require([p.length_decimals, p.angle_decimals, p.tolerance_decimals].iter().all(|d| *d <= dimension::MAX_DECIMALS), || {
+            format!("a drawing's profile gives at most {} decimals, as its dimensions show", dimension::MAX_DECIMALS)
+        })?;
         if let Units::Fixed { unit } = &self.units {
             // A length unit of the expression unit table, written as the table writes it.
             let length = unit.trim() == unit.as_str() && expr::unit_info(unit).is_some_and(|(kind, _)| kind == expr::Kind::Length);

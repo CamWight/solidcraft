@@ -44,8 +44,6 @@ const DEFAULT_OFFSET_MM: f64 = 10.0;
 const LOOK_PAST_MM: f64 = 0.5;
 /// How near the middle of a view's model box, in model mm, a line's middle is on it.
 const ON_CENTRE_MM: f64 = 1e-6;
-/// How many decimals a new dimension shows unless told.
-const DEFAULT_DECIMALS: u8 = 2;
 
 pub static COMMANDS: &[CommandSpec] = &[
     CommandSpec::new(ADD, "Add Drawing Dimension", crate::checked!("drawing.dimension.add", add))
@@ -69,7 +67,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              corner a point, {point}, {edges: [2 to 16 edges]} or {centre: an edge that is a circle or an arc}, and a face a point on \
              it, {point} or {body, index}, each with path?: the \
              occurrences its body is placed through, from the top; offset_mm?: the dimension line's distance on paper (default 10;              a linear, length or chain one's on the side away from what it measures); \
-             text?: centred (default) or {at: [x, y]} from the view's centre; decimals?: 0..6 (default 2); override_text? (not a \
+             text?: centred (default) or {at: [x, y]} from the view's centre; decimals?: 0..6 (default: what the drawing's profile gives a length or an angle); override_text? (not a \
              chain's) → what drawing.dimension.inspect answers for it. Saved by the edges' names, never the points picked; one the \
              view can't measure, or on a part it doesn't draw, is refused. One undo step; no model is evaluated.",
         ),
@@ -209,7 +207,7 @@ impl Refused {
 
 /// `new` as `drawing.dimension.add` places it on `record`, with how it reads, and nothing added: an
 /// error when its view draws its parts apart ([`crate::drawing_view::refuse_apart`]); refused
-/// when its view doesn't draw what it measures or can't measure it; a new id; a radial one
+/// when its view doesn't draw what it measures or can't measure it; a new id; the decimals its drawing's profile gives what it reads, unless told; a radial one
 /// a diameter when it is a whole circle, if left to the default; a linear, length or chain one,
 /// with no offset given, on the side away from what it measures. It is read on `record` itself,
 /// which is left as it was. One rule for every command that adds a dimension.
@@ -224,13 +222,14 @@ pub(crate) fn placed(
         return Ok(Err(Refused::NotDrawn(e)));
     }
     let id = record.allocate_id(&mut s.ids).map_err(|e| bad(cmd, e.to_string()))?;
+    let decimals = new.decimals.unwrap_or_else(|| new.kind.decimals(&record.profile));
     let mut dimension = Dimension {
         id,
         view: new.view,
         kind: new.kind,
         offset_mm: new.offset_mm.unwrap_or(DEFAULT_OFFSET_MM),
         text: new.text.unwrap_or(TextPlace::Centred),
-        decimals: new.decimals.unwrap_or(DEFAULT_DECIMALS),
+        decimals,
         override_text: new.override_text,
         last_good: None,
         from_model: None,

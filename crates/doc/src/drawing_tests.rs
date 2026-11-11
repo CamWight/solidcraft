@@ -341,6 +341,45 @@ fn a_sheets_line_group_is_saved_only_when_it_sets_one() {
     }
 }
 
+/// A drawing always saves a whole copy of its drafting profile, never a name, and an older drawing,
+/// which saved none, reads the default built-in. A copy that differs from this build's built-in
+/// reads back and saves again as it was, so a later built-in never changes an old drawing, and the
+/// difference is reported, never applied. A profile its dimensions can't show is refused.
+#[test]
+fn a_drawings_profile_is_a_saved_copy_and_an_older_one_reads_the_default() {
+    let d = bare();
+    let v = file(&d);
+    assert_eq!(v["profile"], serde_json::to_value(DraftingProfile::default()).unwrap());
+    let mut older = v.clone();
+    older.as_object_mut().unwrap().remove("profile");
+    assert_eq!(read(&older).unwrap().profile, DraftingProfile::default());
+    // An old drawing's own copy: the built-in's id and version, with rules this build's doesn't have.
+    let mut kept = DraftingProfile::default();
+    kept.number.marker = crate::display_units::DecimalMarker::Comma;
+    kept.length_decimals = 3;
+    let mut changed = v.clone();
+    changed["profile"] = serde_json::to_value(&kept).unwrap();
+    let opened = read(&changed).unwrap();
+    assert_eq!(opened.profile, kept, "read back as saved");
+    assert_eq!(file(&opened)["profile"], changed["profile"], "and saved as it was");
+    assert_eq!(opened.profile.differs_from_library(), Some((1, 1)), "reported");
+    assert!(refused(&d, |v| v["profile"]["length_decimals"] = json!(7)).contains("a drawing's profile gives at most 6 decimals"));
+    assert!(refused(&d, |v| v["profile"]["tolerance_decimals"] = json!(7)).contains("at most 6 decimals"));
+    let hostile: [fn(&mut Value); 8] = [
+        |v: &mut Value| v["profile"] = json!("iso_decimal_point"),
+        |v: &mut Value| v["profile"] = json!(null),
+        |v: &mut Value| v["profile"] = json!({}),
+        |v: &mut Value| v["profile"]["colour"] = json!("red"),
+        |v: &mut Value| v["profile"]["angle_decimals"] = json!(300),
+        |v: &mut Value| v["profile"]["length_decimals"] = json!(-1),
+        |v: &mut Value| v["profile"]["id"] = json!("Not an id"),
+        |v: &mut Value| v["profile"]["version"] = json!(0),
+    ];
+    for (n, edit) in hostile.into_iter().enumerate() {
+        assert_ne!(refused(&d, edit), "read", "hostile {n}");
+    }
+}
+
 /// A sheet's border is saved as a copy of its profile, field by field, and read back as saved, so
 /// a later built-in never changes it; a profile's name in its place is refused.
 #[test]
