@@ -512,7 +512,7 @@ pub struct DimensionResult {
     pub record: Value,
     /// `ok`, `overridden`, `ambiguous`, `suppressed`, `failed`, `lost` or `unmeasurable`.
     pub status: String,
-    /// Why it failed, is lost or is unmeasurable.
+    /// Why it failed, is lost, is unmeasurable, is ambiguous or is suppressed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// What it reads: model millimetres, or degrees for an angle; a chain's overall.

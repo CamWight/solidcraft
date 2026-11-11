@@ -182,7 +182,7 @@ pub struct NoteResult {
     pub record: Value,
     /// `ok`, `ambiguous`, `suppressed` or `lost`. A note that points at nothing is always `ok`.
     pub status: String,
-    /// Why it is lost.
+    /// Why it is lost, is ambiguous or is suppressed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// Where its leader ends, in the design's frame.
@@ -213,7 +213,7 @@ pub struct NoteResult {
 pub struct BranchResult {
     /// `ok`, `ambiguous`, `suppressed` or `lost`.
     pub status: String,
-    /// Why it is lost.
+    /// Why it is lost, is ambiguous or is suppressed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// Where its leader ends, in the design's frame.
