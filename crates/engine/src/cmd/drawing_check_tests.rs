@@ -341,6 +341,55 @@ fn a_notes_empty_fields_are_listed_once_each() {
     assert_eq!(finding["field"], json!("component.name"), "{finding}");
 }
 
+/// A sheet that documents a component the design no longer has: each field that reads it is lost,
+/// as a reference whose model is gone is, in its title block and its notes, and says so. A field its
+/// source doesn't have, in a drawing saved with one, is an empty field whose why says so.
+#[test]
+fn a_deleted_components_fields_are_lost_and_an_unknown_field_is_empty() {
+    let (mut s, _) = plate();
+    let bracket = run(&mut s, "component.create", json!({"name": "Bracket"}))["component"].as_u64().unwrap();
+    run(&mut s, "solid.box", json!({"length": 10, "width": 10, "height": 10, "corner": [0, 0, 20], "body_name": "Cube"}));
+    run(&mut s, "component.activate", json!({"component": "root"}));
+    let (sheet, _) = drawn(&mut s);
+    let design = ids::encode(s.drawing("test").unwrap().sources[0].id);
+    run(&mut s, "drawing.sheet.set", json!({"sheet": ids::encode(sheet), "documents": {"source": design, "component": bracket}}));
+    let content = json!([{"field": {"source": "component", "key": "name"}}]);
+    let note = run(&mut s, "drawing.note.add", json!({"anchor": {"sheet": ids::encode(sheet)}, "at": [20, 20], "content": content}))["note"].clone();
+    let block = ("title_block".to_string(), ids::encode(sheet));
+    let reply = checked(&mut s, json!({}));
+    assert_eq!((of_kind(&reply, "empty_field"), of_kind(&reply, "lost")), (vec![block.clone()], vec![]), "{reply}");
+    with_model_changed(&mut s, |s| {
+        run(s, "component.delete", json!({"component": bracket}));
+    });
+    let documents = s.drawing("test").unwrap().sheets[0].documents.map(|d| d.component);
+    assert_eq!(documents, Some(bracket), "the sheet still documents the component deleted");
+    let reply = checked(&mut s, json!({}));
+    assert!(of_kind(&reply, "empty_field").is_empty(), "{reply}");
+    let lost = reply["findings"].as_array().unwrap().iter().filter(|f| f["kind"] == "lost");
+    let mut lost: Vec<_> = lost.map(|f| (f["object"].clone(), f["field"].clone(), f.get("cell").is_some(), f["why"].clone())).collect();
+    // In field order, then by the record each names.
+    let key = |entry: &(Value, Value, bool, Value)| (entry.1.to_string(), entry.0.to_string());
+    lost.sort_by_key(key);
+    let why = |field: &str| json!(format!("{field} is lost: the sheet documents a component the design no longer has"));
+    let (block, note_object) = (json!({"kind": "title_block", "id": ids::encode(sheet)}), json!({"kind": "note", "id": note}));
+    let mut expected = vec![
+        (block.clone(), json!("component.name"), true, why("component.name")),
+        (note_object, json!("component.name"), false, why("component.name")),
+        (block, json!("component.part_number"), true, why("component.part_number")),
+    ];
+    expected.sort_by_key(key);
+    assert_eq!(lost, expected, "{reply}");
+    // A field the component can't have, as a drawing saved by hand might hold: the commands refuse it.
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    let weight = Content(vec![Part::Field { source: Source::Component, key: "weight".into(), format: Format::default() }]);
+    Arc::make_mut(d.notes.iter_mut().find(|n| n.id == id(&note)).unwrap()).content = weight;
+    s.doc_mut().put_drawing(Arc::new(d));
+    let reply = checked(&mut s, json!({}));
+    let finding = reply["findings"].as_array().unwrap().iter().find(|f| f["object"]["kind"] == "note").unwrap();
+    let expected = (json!("empty_field"), json!("component.weight"), json!("the component has no field `weight`"));
+    assert_eq!((finding["kind"].clone(), finding["field"].clone(), finding["why"].clone()), expected, "{finding}");
+}
+
 /// A component, Bolt, of a 10 x 10 x 40 mm box called Shank, placed once; a drawing of the design,
 /// open, with a front view at 1:1 and a parts list on its sheet. The view, the list and the Bolt's
 /// occurrence.
