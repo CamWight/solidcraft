@@ -74,7 +74,8 @@ pub struct SnapshotParams {
     #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub units: Option<String>,
-    /// The decimals of the labels, 0 to 6 (2 when not given).
+    /// The decimals of the labels, 0 to 6 (the default drafting profile's for a length or an angle when
+    /// not given).
     #[serde(deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u8")]
     pub decimals: Option<u8>,

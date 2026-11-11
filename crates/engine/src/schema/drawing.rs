@@ -5,6 +5,7 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use solidcraft_doc::drafting_profile::DraftingProfile;
 use solidcraft_doc::drawing::{Units, Updates};
 use solidcraft_geom::cell::Projection;
 use solidcraft_geom::paper::line::LineGroup;
@@ -46,6 +47,10 @@ pub struct DrawingCreateParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub font: Option<String>,
+    /// The drafting profile its numbers follow: a built-in's id, copied whole into the drawing (the template's when not given).
+    #[serde(default, deserialize_with = "profile", skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "profile_schema")]
+    pub profile: Option<DraftingProfile>,
 }
 
 /// Change the open drawing's own settings: one undo step.
@@ -78,6 +83,11 @@ pub struct DrawingSetParams {
     #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub font: Option<String>,
+    /// The drafting profile its numbers follow: a built-in's id, copied whole into the drawing in place of its own.
+    /// The dimensions already there keep their decimals.
+    #[serde(default, deserialize_with = "profile", skip_serializing_if = "Option::is_none")]
+    #[schemars(schema_with = "profile_schema")]
+    pub profile: Option<DraftingProfile>,
     #[serde(default, deserialize_with = "revision_numbering", skip_serializing_if = "Option::is_none")]
     #[schemars(schema_with = "revision_numbering_schema")]
     pub revision_numbering: Option<Numbering>,
@@ -99,6 +109,23 @@ fn units_schema(_: &mut SchemaGenerator) -> Schema {
 /// A `line_group` as given, in the words a sheet's is refused with.
 fn line_group<'de, D: Deserializer<'de>>(d: D) -> Result<Option<LineGroup>, D::Error> {
     crate::cmd::line_group_of(&Value::deserialize(d)?).map(Some).map_err(|e| D::Error::custom(whole(e)))
+}
+
+/// `profile` as given: a built-in's id, as this build has it.
+fn profile<'de, D: Deserializer<'de>>(d: D) -> Result<Option<DraftingProfile>, D::Error> {
+    let refused = || D::Error::custom(whole(format!("`profile` is one of {}", profile_ids().join(", "))));
+    match Value::deserialize(d)? {
+        Value::String(id) => DraftingProfile::built_in(&id).map(Some).ok_or_else(refused),
+        _ => Err(refused()),
+    }
+}
+
+fn profile_ids() -> Vec<String> {
+    DraftingProfile::library().into_iter().map(|p| p.id).collect()
+}
+
+fn profile_schema(_: &mut SchemaGenerator) -> Schema {
+    json_schema!({"description": "A built-in drafting profile, by id.", "type": "string", "enum": profile_ids()})
 }
 
 /// `projection` as given: first or third angle.

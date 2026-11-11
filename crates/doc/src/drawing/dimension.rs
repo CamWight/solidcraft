@@ -76,6 +76,8 @@ use super::{Drawing, Units, add_by_id, in_id_order, require};
 use crate::config::MAX_REFERENCE_NAME_BYTES;
 use crate::construct::{MAX_VERTEX_EDGES, as_circle, as_line, point_tolerance, shared_ends};
 use crate::display_units::length_number;
+use crate::drafting_profile::DraftingProfile;
+use crate::expr::Kind;
 use crate::format::MAX_REAL;
 use solidcraft_kernel::{FaceSurface, PointClass, edge_circle, face_surface};
 
@@ -98,6 +100,19 @@ pub enum LabelKind {
     SphericalRadius,
     /// A sphere's diameter, SØ (ISO 129-1).
     SphericalDiameter,
+}
+
+impl LabelKind {
+    /// What the number is: an angle's, or a length's (a radius, a diameter and a sphere's too).
+    pub fn number_kind(self) -> Kind {
+        if self == LabelKind::Angle { Kind::Angle } else { Kind::Length }
+    }
+
+    /// The decimals `profile` gives a new number of this kind. It is a length or an angle, never
+    /// unitless, so the length decimals are only the type's fallback.
+    pub fn decimals(self, profile: &DraftingProfile) -> u8 {
+        profile.decimals(self.number_kind()).unwrap_or(profile.length_decimals)
+    }
 }
 
 /// What a reading says: `value`, in model millimetres or radians for an angle, in `units` with
@@ -220,6 +235,12 @@ pub enum DimensionKind {
 }
 
 impl DimensionKind {
+    /// The decimals `profile` gives a new dimension of this kind (a chain's members and a sphere's
+    /// are lengths).
+    pub fn decimals(&self, profile: &DraftingProfile) -> u8 {
+        label_of(self).unwrap_or(LabelKind::Length).decimals(profile)
+    }
+
     /// Each model reference it measures, in its order: the one list of them that what reads a
     /// dimension's references goes through.
     pub fn references(&self) -> Vec<Reference<'_>> {

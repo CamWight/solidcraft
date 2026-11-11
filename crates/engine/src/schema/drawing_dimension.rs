@@ -399,7 +399,7 @@ pub struct AddParams {
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Value")]
     pub text: Option<TextPlace>,
-    /// 0 to 6.
+    /// 0 to 6 (what the drawing's profile gives a length or an angle when not given).
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "u8")]
     pub decimals: Option<u8>,

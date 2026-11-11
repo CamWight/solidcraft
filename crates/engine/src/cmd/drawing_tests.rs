@@ -1,6 +1,7 @@
 use super::*;
 use crate::cmd::{Part, command_specs, find_command};
 use crate::tests::Folder;
+use solidcraft_doc::drafting_profile::DraftingProfile;
 use solidcraft_doc::drawing::{Units, Updates, template};
 use solidcraft_geom::cell::Projection;
 
@@ -432,6 +433,40 @@ fn a_drawings_line_group_is_set_as_one_undo_step_and_saved() {
     assert_eq!(run(&mut design(), "drawing.create", json!({"line_group": "1.4"}))["line_group"], "1.4");
 }
 
+/// A drawing's drafting profile is a built-in copied whole: the default one unless `drawing.create`
+/// names another, changed by `drawing.set` as one undo step, shown by `drawing.inspect`, saved with
+/// the design and kept by a template made from the drawing. Anything but a built-in's id is refused.
+#[test]
+fn a_drawings_profile_is_a_built_in_copied_whole_and_saved() {
+    let folder = Folder::new("drawing-profile");
+    let mut s = design();
+    let made = run(&mut s, "drawing.create", json!({}));
+    assert_eq!(made["profile"], serde_json::to_value(DraftingProfile::default()).unwrap());
+    let steps = s.undo.len();
+    let set = run(&mut s, "drawing.set", json!({"profile": "iso_129_1"}));
+    assert_eq!(set["profile"], serde_json::to_value(DraftingProfile::built_in("iso_129_1").unwrap()).unwrap());
+    assert_eq!(s.undo.len(), steps + 1);
+    run(&mut s, "file.save", json!({"path": folder.path("plate.solidcraft")}));
+    let mut opened = Session::default();
+    run(&mut opened, "doc.open", json!({"path": folder.path("plate.solidcraft")}));
+    assert_eq!(opened.doc.drawings[0].profile.id, "iso_129_1");
+    let template = folder.path("asme.json");
+    run(&mut s, "drawing.set", json!({"profile": "asme_y14_5"}));
+    run(&mut s, "drawing.template.save", json!({"path": template}));
+    run(&mut s, "edit.undo", json!({}));
+    assert_eq!(run(&mut s, "drawing.inspect", json!({}))["profile"]["id"], "iso_129_1");
+    run(&mut s, "drawing.close", json!({}));
+    assert_eq!(run(&mut s, "drawing.create", json!({"template": template}))["profile"]["id"], "asme_y14_5", "the template's");
+    let named = run(&mut design(), "drawing.create", json!({"template": template, "profile": "iso_decimal_point"}));
+    assert_eq!(named["profile"]["id"], "iso_decimal_point", "a profile named wins over the template's");
+    for bad in [json!("iso"), json!("ISO_129_1"), json!(3), json!(null), json!({"id": "iso_129_1"})] {
+        assert!(
+            refused(&mut s, "drawing.set", json!({"profile": bad})).contains("`profile` is one of iso_decimal_point, iso_129_1, asme_y14_5"),
+            "{bad}"
+        );
+    }
+}
+
 /// A drawing's font is a family named by `drawing.create` or `drawing.set` (one undo step), saved
 /// with the design; the built-in font when none is named. A family this computer lacks is named in
 /// `font_note`, and a font file or anything but text is refused.
@@ -688,7 +723,7 @@ fn hostile_drawing_params_never_panic() {
     assert_eq!(s.scratch().open_drawing, s.open_drawing, "each copy has the drawing open");
     let keys = ["name", "language", "units", "drawing", "key", "value", "values", "keys", "checkpoint", "id"];
     // `drawing.create`'s and `drawing.set`'s other keys.
-    let keys = [&keys[..], &["template", "projection", "updates", "line_group", "font", "revision_numbering"]].concat();
+    let keys = [&keys[..], &["template", "projection", "updates", "line_group", "profile", "font", "revision_numbering"]].concat();
     let skipped = |id: &str| matches!(id, "doc.open" | "file.save" | "file.save_as") || id.starts_with("doc.recover");
     let mut internal = Vec::new();
     for spec in command_specs().iter().filter(|spec| spec.part != Part::Model && !skipped(spec.id)) {

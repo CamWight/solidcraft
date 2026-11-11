@@ -2,6 +2,7 @@ use std::collections::BTreeSet;
 
 use serde_json::json;
 use solidcore_record::Vec3;
+use solidcraft_doc::drafting_profile::DraftingProfile;
 use solidcraft_doc::drawing::view::{View, ViewKind, ViewPlace};
 use solidcraft_doc::drawing_view::{ViewDirection, ViewOverrides};
 use solidcraft_geom::drawing_view::NamedView;
@@ -114,6 +115,26 @@ fn a_dimension_is_added_by_points_or_edges_and_saved_by_name() {
     added.sort_unstable();
     let listed = run(&mut s, "drawing.view.inspect", json!({"view": ids::encode(view)}))["dimensions"].clone();
     assert_eq!(listed, json!(added.into_iter().map(ids::encode).collect::<Vec<_>>()));
+}
+
+/// A new dimension takes the decimals its drawing's profile gives what it reads, a length's or an
+/// angle's, unless told: a profile of 3 and 0 decimals shows the box's top edge as 80.000 and its
+/// square corner as 90°. A dimension already there keeps its own decimals.
+#[test]
+fn a_new_dimension_takes_its_drawings_profile_decimals() {
+    let (mut s, view) = front_view();
+    let before = add(&mut s, view, json!({"length": {"edge": [40, 0, 30]}}));
+    let mut d = (**s.drawing("test").unwrap()).clone();
+    d.profile = DraftingProfile { length_decimals: 3, angle_decimals: 0, ..DraftingProfile::default() };
+    d.validate().unwrap();
+    s.doc_mut().put_drawing(Arc::new(d));
+    let length = add(&mut s, view, json!({"length": {"edge": [40, 0, 30]}}));
+    reads(&length, 80.0, "80.000");
+    assert_eq!(length["record"]["decimals"], json!(3));
+    let square = json!({"angle": {"a": [40, 0, 30], "b": [0, 0, 15]}});
+    reads(&add(&mut s, view, square.clone()), 90.0, "90°");
+    reads(&run(&mut s, ADD, json!({"view": ids::encode(view), "kind": square, "decimals": 1})), 90.0, "90.0°");
+    reads(&run(&mut s, INSPECT, json!({"dimension": before["dimension"]})), 80.0, "80.00");
 }
 
 /// Placing reads the new dimension on the caller's drawing and takes it out again: `add` and
