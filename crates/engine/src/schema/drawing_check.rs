@@ -42,6 +42,9 @@ pub enum FindingKind {
     /// A view outside its sheet's drawing space or over its title block, or another object off the
     /// paper.
     OutsideSheet,
+    /// A drawing whose copy of a built-in drafting profile isn't this build's: a finding of the whole
+    /// drawing.
+    ProfileDiffers,
 }
 
 impl FindingKind {
@@ -58,6 +61,7 @@ impl FindingKind {
         FindingKind::EmptyField,
         FindingKind::NotBallooned,
         FindingKind::OutsideSheet,
+        FindingKind::ProfileDiffers,
     ];
 }
 
@@ -73,6 +77,8 @@ pub enum CheckedKind {
     Image,
     /// A sheet's title block: its id is the sheet's.
     TitleBlock,
+    /// The drawing itself: its id is the drawing's.
+    Drawing,
 }
 
 /// The record a finding names.
@@ -86,8 +92,9 @@ pub struct CheckedObject {
 #[derive(Clone, Debug, PartialEq, Serialize, JsonSchema)]
 pub struct Finding {
     pub kind: FindingKind,
-    /// The sheet it is on, by id.
-    pub sheet: String,
+    /// The sheet it is on, by id: none for a finding of the whole drawing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<String>,
     pub object: CheckedObject,
     /// A title block finding's cell, by name.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -157,7 +164,7 @@ pub struct CheckResult {
     /// The sheet checked, by id, when the request named one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sheet: Option<String>,
-    /// In sheet order, then by the record each names.
+    /// The whole drawing's first, then in sheet order, then by the record each names.
     pub findings: Vec<Finding>,
     /// Each kind found, with how many, in the schema's order.
     pub counts: Vec<KindCount>,
