@@ -292,6 +292,62 @@ fn a_placement_goes_with_its_view_as_a_note_does() {
     assert!(s.drawing("test").unwrap().placed_symbols.is_empty());
 }
 
+fn inspect_placed(s: &mut Session, placement: &Value) -> Value {
+    let reply = s.execute(PLACED_INSPECT, &json!({"placement": placement})).unwrap_or_else(|e| panic!("{PLACED_INSPECT}: {e}"));
+    let schema = output_schema_for::<PlacedInspectResult>();
+    assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
+    reply
+}
+
+/// Inspect gives where a placement's anchor stands with the model and what each of its texts says:
+/// its prompts answered by the placement, unanswered ones empty, and a leader's end on the edge's
+/// middle. It changes nothing.
+#[test]
+fn inspect_says_where_a_placement_stands_and_what_it_says() {
+    let (mut s, view, part, mark) = viewed();
+    let on_sheet = place_one(&mut s, json!({"symbol": mark, "anchor": {"sheet": "Sheet 1"}, "at": [40, 25], "answers": {"rev": "C"}}));
+    let before = saved(&s);
+    let reply = inspect_placed(&mut s, &on_sheet["placement"]);
+    assert_eq!((&reply["status"], &reply["exact"], reply.get("point")), (&json!("ok"), &json!(true), None), "{reply}");
+    assert_eq!(reply["record"], on_sheet["record"]);
+    assert_eq!(reply["texts"], json!(["Rev C"]));
+    assert_eq!(reply["fields"], json!([{"source": "prompt", "key": "rev", "state": "shown", "value": "C"}]));
+    assert_eq!(saved(&s), before, "inspect changes nothing");
+
+    let edge = json!({"edge": {"view": ids::encode(view), "edge": {"point": [40, 0, 0], "path": [part]}}});
+    let on_edge = place_one(&mut s, json!({"symbol": mark, "anchor": edge, "at": [60, 40]}));
+    let reply = inspect_placed(&mut s, &on_edge["placement"]);
+    assert_eq!(reply["status"], json!("ok"), "{reply}");
+    let point: Vec<f64> = reply["point"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(point.iter().zip([40.0, 0.0, 0.0]).all(|(a, b)| (a - b).abs() < 1e-6), "the edge's middle: {point:?}");
+    assert_eq!(reply["texts"], json!(["Rev "]), "an unanswered prompt shows nothing");
+    assert_eq!(reply["fields"][0]["state"], json!("empty"), "{reply}");
+
+    let unknown = refused(&mut s, PLACED_INSPECT, json!({"placement": ids::encode(9_999_999)}));
+    assert!(unknown.contains("the drawing has no placed symbol"), "{unknown}");
+}
+
+/// A symbol placed on a part of a view that draws an exploded view reads the part where that view
+/// draws it, as a balloon does (#13048): on [`two_cubes`](crate::drawing_scene::tests::two_cubes) with
+/// the second moved 30 mm further along x, the second's bottom front edge, (30..40, 0, 0) assembled,
+/// has its middle at (35 + 30, 0, 0), not the design's (35, 0, 0).
+#[test]
+fn a_placed_symbol_on_an_exploded_view_reads_the_moved_part() {
+    let (mut s, [_, second]) = crate::drawing_scene::tests::two_cubes();
+    run(&mut s, "explode.create", json!({"name": "Apart", "moves": [{"occurrence": second, "translate": [30, 0, 0]}]}));
+    run(&mut s, "drawing.create", json!({}));
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    let p = json!({"sheet": sheet, "view": "front", "scale": "1:1", "position_mm": [150, 150], "exploded": "Apart"});
+    let view = run(&mut s, "drawing.view.base", p)["view"].clone();
+    let mark = run(&mut s, DEFINE, json!({"name": "Mark", "pieces": mark()}))["symbol"].clone();
+    let edge = json!({"edge": {"view": view, "edge": {"point": [35, 0, 0], "path": [second]}}});
+    let placed = place_one(&mut s, json!({"symbol": mark, "anchor": edge, "at": [60, 40]}));
+    let reply = inspect_placed(&mut s, &placed["placement"]);
+    assert_eq!(reply["status"], json!("ok"), "{reply}");
+    let point: Vec<f64> = reply["point"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert!(point.iter().zip([65.0, 0.0, 0.0]).all(|(a, b)| (a - b).abs() < 1e-6), "where the view draws the edge: {point:?}");
+}
+
 /// A placed symbol's delete is refused, naming its placements, unless they go too: then both go in
 /// one undo step.
 #[test]
