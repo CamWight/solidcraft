@@ -35,6 +35,7 @@ use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::drawing::dimension::{Dimension, LabelKind, MAX_DECIMALS, reading_label};
 use solidcraft_doc::drawing::note::Note;
+use solidcraft_doc::drawing::symbol::PlacedSymbol;
 use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace, check_occurrence_paths};
 use solidcraft_doc::drawing_view::{Exploded, Looking, OccurrencePaths, TangentEdges, ViewDirection, ViewOverrides};
 use solidcraft_doc::ids;
@@ -677,13 +678,15 @@ fn exploded_of(s: &Session, chosen: &ExplodedParam, cmd: &str) -> Result<Explode
 }
 
 /// Refuses a drawing in which one of `views` draws an exploded view it can't draw yet: shaded
-/// ([`crate::drawing_view::not_drawable_exploded`]), or with dimensions, balloons or notes on its
-/// model ([`crate::drawing_view::draws_exploded`]), which would measure its parts assembled.
+/// ([`crate::drawing_view::not_drawable_exploded`]), or with dimensions, balloons, notes or placed
+/// symbols on its model ([`crate::drawing_view::draws_exploded`]), which would measure its parts
+/// assembled.
 fn check_exploded(d: &Drawing, views: impl Iterator<Item = u64>, cmd: &str) -> Result<()> {
     let on_model = |view: u64| {
         d.dimensions.iter().any(|record| record.view == view)
             || d.balloons.iter().any(|balloon| balloon.view == view)
             || d.notes.iter().any(|note| note.anchor.view() == Some(view) && note.on_model())
+            || d.placed_symbols.iter().any(|placed| placed.anchor.view() == Some(view) && placed.anchor.reference().is_some())
     };
     for view in views {
         if let Some(why) = d.resolve_view(view).ok().as_ref().and_then(crate::drawing_view::not_drawable_exploded) {
@@ -777,17 +780,20 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
         }
     };
     let originals: Vec<u64> = std::iter::once(id).chain(linked.into_iter().filter(|_| with_linked)).collect();
-    // Each view's dimensions, balloons and notes are part of what it shows, so they are copied with it.
+    // Each view's dimensions, balloons, notes and placed symbols are part of what it shows, so they
+    // are copied with it.
     let measured: Vec<u64> = record.dimensions.iter().filter(|d| originals.contains(&d.view)).map(|d| d.id).collect();
     let ballooned: Vec<u64> = record.balloons.iter().filter(|b| originals.contains(&b.view)).map(|b| b.id).collect();
     let noted: Vec<u64> = record.notes.iter().filter(|n| n.anchor.view().is_some_and(|v| originals.contains(&v))).map(|n| n.id).collect();
-    let mut copies = (0..originals.len() + measured.len() + ballooned.len() + noted.len())
+    let placed: Vec<u64> = record.placed_symbols.iter().filter(|p| p.anchor.view().is_some_and(|v| originals.contains(&v))).map(|p| p.id).collect();
+    let mut copies = (0..originals.len() + measured.len() + ballooned.len() + noted.len() + placed.len())
         .map(|_| record.allocate_id(&mut s.ids))
         .collect::<solidcraft_doc::Result<Vec<u64>>>()
         .map_err(|e| bad(COPY, e.to_string()))?;
     let mut dimension_copies = copies.split_off(originals.len());
     let mut balloon_copies = dimension_copies.split_off(measured.len());
-    let note_copies = balloon_copies.split_off(ballooned.len());
+    let mut note_copies = balloon_copies.split_off(ballooned.len());
+    let placed_copies = note_copies.split_off(noted.len());
     let copy_of = |old: u64| originals.iter().position(|o| *o == old).and_then(|i| copies.get(i)).copied();
     let sheet = s.edit_drawing(COPY, |d| {
         let (sheet, middle) = sheet_named(d, &request.sheet, COPY)?;
@@ -853,6 +859,15 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             })
             .collect();
         d.notes.add(copied);
+        let copied: Vec<Arc<PlacedSymbol>> = placed
+            .iter()
+            .zip(&placed_copies)
+            .filter_map(|(old, new)| {
+                let original = d.placed_symbols.by_id(*old)?;
+                Some(Arc::new(PlacedSymbol { id: *new, anchor: original.anchor.on_view(copy_of(original.anchor.view()?)?), ..original.clone() }))
+            })
+            .collect();
+        d.placed_symbols.add(copied);
         Ok(sheet)
     })?;
     let first = copies.first().copied().unwrap_or_default();
