@@ -5,8 +5,10 @@
 //! sheet shows it ([`title_block_text::shown`]), and each parts list's balloon counts as
 //! `drawing.inspect` gives them. Beside the findings, each feature's coverage: whether a dimension
 //! or note points at a face it made, by the saved names ([`Timeline::covers`]), and whether a view
-//! draws one. Nothing is changed.
+//! draws one. And whether the drawing's copy of a built-in drafting profile is this build's
+//! (`DraftingProfile::differs_from_library`), a finding of the whole drawing. Nothing is changed.
 
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::sync::Arc;
 
@@ -41,7 +43,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CHECK, "Check Drawing",
     .doc_only()
     .contract(&CONTRACT)
     .output(output_schema_for::<CheckResult>)
-    .params("sheet?: id or name (default: every sheet) → {sheet?, findings: [{kind, sheet, object: {kind: view|dimension|balloon|note|table|image|title_block, id}, cell?, field?, item?, why}], counts: [{kind, count}], coverage: [{feature, name, state, by?: [{kind: dimension|note, id}], why?}], coverage_counts: [{state, count}]}: what makes the drawing wrong or incomplete, in sheet order, then by the record each names. kind is one of a closed list: lost, ambiguous, unmeasurable, suppressed, failed (a dimension, balloon or note whose reference isn't found as one thing, can't be measured, or depends on a suppressed or failed feature; failed is also a view that can't be drawn), overridden (a dimension whose text is typed over its value, or a title block cell whose typed text hides a value), out_of_date (a view or dimension a deferred drawing shows as it last was), nothing_shown (a view with nothing to measure), empty_field (a title block field with no value, as source.key; a revision field only once the drawing has a revision row; a cell whose typed text fills it is none), not_ballooned (a row of a parts list on the sheet that no balloon points at, by item), outside_sheet (a view outside its sheet's drawing space or over its title block; a dimension, image or table off the paper). coverage lists each feature of the design in timeline order, apart from the findings: covered (a dimension or note points at a face it made: an edge covers the latest feature among the faces it separates, a corner the latest among its edges' faces, a pattern's copy the pattern; by lists them), not_covered (a view draws a face it made, named from exact history, and nothing points at it), unknown (the faces a view draws of it aren't named from exact history), not_applicable (it is suppressed or rolled back, only reference parts draw it, or no view draws a face it made: a sketch, a plane). Coverage says a dimension or a note points at a feature, not that it is fully dimensioned. With sheet, the findings and the coverage are of that sheet only, and sheet echoes its id. The sheet is read as an export reads it: a deferred drawing is checked as it shows the model, with what it shows as it last was listed. Read-only: nothing is drawn or saved, and the same drawing always gives the same answer.")];
+    .params("sheet?: id or name (default: every sheet) → {sheet?, findings: [{kind, sheet?, object: {kind: view|dimension|balloon|note|table|image|title_block|drawing, id}, cell?, field?, item?, why}], counts: [{kind, count}], coverage: [{feature, name, state, by?: [{kind: dimension|note, id}], why?}], coverage_counts: [{state, count}]}: what makes the drawing wrong or incomplete: the whole drawing's first, then in sheet order, then by the record each names. kind is one of a closed list: lost, ambiguous, unmeasurable, suppressed, failed (a dimension, balloon or note whose reference isn't found as one thing, can't be measured, or depends on a suppressed or failed feature; failed is also a view that can't be drawn), overridden (a dimension whose text is typed over its value, or a title block cell whose typed text hides a value), out_of_date (a view or dimension a deferred drawing shows as it last was), nothing_shown (a view with nothing to measure), empty_field (a title block field with no value, as source.key; a revision field only once the drawing has a revision row; a cell whose typed text fills it is none), not_ballooned (a row of a parts list on the sheet that no balloon points at, by item), outside_sheet (a view outside its sheet's drawing space or over its title block; a dimension, image or table off the paper), profile_differs (the drawing's copy of a built-in drafting profile isn't this build's: an older or a newer version, or the same version with other contents; drawing.set with profile takes this build's; a finding of the whole drawing, with no sheet). coverage lists each feature of the design in timeline order, apart from the findings: covered (a dimension or note points at a face it made: an edge covers the latest feature among the faces it separates, a corner the latest among its edges' faces, a pattern's copy the pattern; by lists them), not_covered (a view draws a face it made, named from exact history, and nothing points at it), unknown (the faces a view draws of it aren't named from exact history), not_applicable (it is suppressed or rolled back, only reference parts draw it, or no view draws a face it made: a sketch, a plane). Coverage says a dimension or a note points at a feature, not that it is fully dimensioned. With sheet, the findings and the coverage are of that sheet only, and sheet echoes its id; a finding of the whole drawing is in every run. The sheet is read as an export reads it: a deferred drawing is checked as it shows the model, with what it shows as it last was listed. Read-only: nothing is drawn or saved, and the same drawing always gives the same answer.")];
 
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let request: CheckParams = crate::schema::read(CHECK, p)?;
@@ -50,8 +52,9 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
         Some(named) => vec![crate::drawing_scene::sheet_id(&d, named, CHECK)?],
         None => d.sheets.iter().map(|sheet| sheet.id).collect(),
     };
-    // Each sheet read once, as it shows the model: for its findings and for what its views draw.
-    let mut findings = Vec::new();
+    // The whole drawing's, then each sheet read once, as it shows the model: for its findings and for
+    // what its views draw.
+    let mut findings: Vec<Finding> = profile_finding(&d).into_iter().collect();
     let (mut drawn, mut seen) = (coverage::Drawn::default(), Vec::new());
     for &sheet in &sheets {
         let shown = crate::drawing_scene::as_shown(s, &d, sheet)?;
@@ -60,9 +63,10 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
     }
     findings.extend(references(s, &d, &sheets)?);
     findings.extend(fields_and_rows(s, &d, &sheets));
-    // In sheet order, then by the record each names: ids decode, as every finding's came from one.
+    // The whole drawing's first (no sheet), then in sheet order, then by the record each names: ids
+    // decode, as every finding's came from one.
     let at = |id: &str| ids::decode(id).and_then(|id| d.sheets.iter().position(|sheet| sheet.id == id));
-    let key = |f: &Finding| (at(&f.sheet), ids::decode(&f.object.id), f.kind, f.cell.clone(), f.field.clone(), f.item.clone());
+    let key = |f: &Finding| (f.sheet.as_deref().and_then(at), ids::decode(&f.object.id), f.kind, f.cell.clone(), f.field.clone(), f.item.clone());
     findings.sort_by_cached_key(key);
     let counts = FindingKind::ALL
         .iter()
@@ -82,7 +86,27 @@ fn check(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 fn finding(kind: FindingKind, sheet: u64, object: CheckedObject, why: String) -> Finding {
-    Finding { kind, sheet: ids::encode(sheet), object, cell: None, field: None, item: None, why }
+    Finding { kind, sheet: Some(ids::encode(sheet)), object, cell: None, field: None, item: None, why }
+}
+
+/// The drawing's copy of a built-in profile when it isn't this build's: a finding of the whole drawing,
+/// on no sheet.
+fn profile_finding(d: &Drawing) -> Option<Finding> {
+    let why = profile_why(&d.profile.id, d.profile.differs_from_library()?);
+    let object = object(CheckedKind::Drawing, d.id);
+    Some(Finding { kind: FindingKind::ProfileDiffers, sheet: None, object, cell: None, field: None, item: None, why })
+}
+
+/// Why a copy of built-in `id` at `version` isn't this build's at `current`. Only an older or an edited
+/// copy is told to take this build's: a newer one may follow rules this build doesn't know.
+fn profile_why(id: &str, (version, current): (u32, u32)) -> String {
+    let profile = format!("its drafting profile `{id}`");
+    let take = "drawing.set with profile takes this build's";
+    match version.cmp(&current) {
+        Ordering::Less => format!("{profile} is version {version}; this build's is version {current}: {take}"),
+        Ordering::Greater => format!("{profile} is version {version}, newer than this build's version {current}"),
+        Ordering::Equal => format!("{profile} isn't this build's version {current}, though it has the same version: {take}"),
+    }
 }
 
 fn object(kind: CheckedKind, id: u64) -> CheckedObject {

@@ -2,6 +2,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use serde_json::json;
+use solidcraft_doc::drafting_profile::DraftingProfile;
 use solidcraft_doc::naming;
 use solidcraft_geom::cell::{Content, Format, Part, Source};
 use solidcraft_geom::title_block::{CellKind, default_block};
@@ -13,14 +14,15 @@ fn run(s: &mut Session, id: &str, p: Value) -> Value {
     s.execute(id, &p).unwrap_or_else(|e| panic!("{id}: {e}"))
 }
 
-/// `drawing.check`'s reply, held to its schema, its findings in sheet order, then by the id of the
-/// record each names.
+/// `drawing.check`'s reply, held to its schema, its findings of the whole drawing first, then in sheet
+/// order, then by the id of the record each names.
 fn checked(s: &mut Session, p: Value) -> Value {
     let reply = run(s, CHECK, p);
     let schema = output_schema_for::<CheckResult>();
     assert!(conforms(schema.as_value(), schema.as_value(), &reply), "{reply}");
     let sheets: Vec<String> = s.drawing("test").unwrap().sheets.iter().map(|sheet| ids::encode(sheet.id)).collect();
-    let key = |f: &Value| (sheets.iter().position(|id| f["sheet"] == json!(id)).unwrap(), id(&f["object"]["id"]));
+    let at = |sheet: &Value| sheets.iter().position(|id| sheet == &json!(id)).unwrap();
+    let key = |f: &Value| (f.get("sheet").map(at), id(&f["object"]["id"]));
     let keys: Vec<_> = reply["findings"].as_array().unwrap().iter().map(key).collect();
     assert!(keys.is_sorted(), "{reply}");
     reply
@@ -241,7 +243,7 @@ fn each_status_gives_its_kind() {
     for (status, kind) in cases {
         let finding = status_finding(7, dimension.clone(), status.clone());
         assert_eq!(finding.as_ref().map(|f| f.kind), kind, "{status:?}");
-        assert!(finding.is_none_or(|f| !f.why.is_empty() && f.sheet == ids::encode(7) && f.object == dimension), "{status:?}");
+        assert!(finding.is_none_or(|f| !f.why.is_empty() && f.sheet == Some(ids::encode(7)) && f.object == dimension), "{status:?}");
     }
     let failed = ViewState { view: 9, status: ViewStatus::Failed("too many lines".into()), stats: None, why: None };
     let finding = view_finding(7, &failed).unwrap();
@@ -761,4 +763,54 @@ fn a_note_an_exploded_view_holds_back_is_a_note_out_of_date_and_covers_nothing()
     let why = "its view draws an exploded view: not supported yet, so it isn't drawn".to_string();
     assert_eq!(whys(&reply, "out_of_date"), [("note".to_string(), note.as_str().unwrap().to_string(), why)], "{reply}");
     assert_eq!(coverage_of(&reply, plate)["state"], json!("not_covered"), "{reply}");
+}
+
+/// A drawing whose copy of a built-in drafting profile isn't this build's is a finding of the whole
+/// drawing: it has no sheet, names the drawing, comes first, and is in every run, a run of one sheet
+/// too. A profile of the drawing's own (an id no built-in has) is none, and `drawing.set` with the
+/// built-in takes this build's again.
+#[test]
+fn a_profile_that_isnt_this_builds_is_a_finding_of_the_whole_drawing() {
+    let (mut s, _) = plate();
+    drawn(&mut s);
+    let other = run(&mut s, "drawing.sheet.add", json!({"name": "Other"}))["sheet"].clone();
+    let whys = |s: &mut Session, p: Value| whys(&checked(s, p), "profile_differs").into_iter().map(|(.., why)| why).collect::<Vec<_>>();
+    assert!(whys(&mut s, json!({})).is_empty(), "a new drawing's copy is this build's");
+    let with_profile = |s: &mut Session, change: &dyn Fn(&mut DraftingProfile)| {
+        let mut d = (**s.drawing("test").unwrap()).clone();
+        change(&mut d.profile);
+        s.doc_mut().put_drawing(Arc::new(d));
+    };
+    with_profile(&mut s, &|p| p.length_decimals = 3);
+    let reply = checked(&mut s, json!({}));
+    let drawing = json!(ids::encode(s.open_drawing.unwrap()));
+    let first = &reply["findings"][0];
+    assert_eq!((&first["kind"], &first["object"]), (&json!("profile_differs"), &json!({"kind": "drawing", "id": drawing})), "{reply}");
+    assert!(first.get("sheet").is_none(), "{reply}");
+    let edited = "its drafting profile `iso_decimal_point` isn't this build's version 1, though it has the same version: drawing.set with profile takes this build's";
+    assert_eq!(first["why"], json!(edited), "{reply}");
+    assert!(reply["counts"].as_array().unwrap().contains(&json!({"kind": "profile_differs", "count": 1})), "{reply}");
+    assert_eq!(whys(&mut s, json!({"sheet": other})), [edited], "in a run of one sheet too");
+    with_profile(&mut s, &|p| *p = DraftingProfile { version: 2, ..DraftingProfile::default() });
+    assert_eq!(whys(&mut s, json!({})), ["its drafting profile `iso_decimal_point` is version 2, newer than this build's version 1"]);
+    with_profile(&mut s, &|p| *p = DraftingProfile { id: "house_a".into(), length_decimals: 3, ..DraftingProfile::default() });
+    assert!(whys(&mut s, json!({})).is_empty(), "a profile of the drawing's own");
+    with_profile(&mut s, &|p| p.id = "iso_decimal_point".into());
+    assert_eq!(whys(&mut s, json!({})).len(), 1);
+    run(&mut s, "drawing.set", json!({"profile": "iso_decimal_point"}));
+    assert!(whys(&mut s, json!({})).is_empty(), "drawing.set takes this build's");
+}
+
+/// An older copy, a newer one, and the same version with other contents each say why. No built-in
+/// is past version 1 yet, so the older case is made here.
+#[test]
+fn each_profile_case_says_why() {
+    let why = |versions| profile_why("iso_129_1", versions);
+    let profile = "its drafting profile `iso_129_1`";
+    assert_eq!(why((1, 2)), format!("{profile} is version 1; this build's is version 2: drawing.set with profile takes this build's"));
+    assert_eq!(why((3, 2)), format!("{profile} is version 3, newer than this build's version 2"));
+    assert_eq!(
+        why((2, 2)),
+        format!("{profile} isn't this build's version 2, though it has the same version: drawing.set with profile takes this build's")
+    );
 }
