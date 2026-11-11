@@ -81,8 +81,8 @@ use balloon::Balloon;
 use by_id::ById;
 use dimension::Dimension;
 use image::{ImageFile, SheetImage};
-use note::{Anchor, Note};
-use symbol::Symbol;
+use note::Note;
+use symbol::{PlacedSymbol, Symbol};
 use table::SheetTable;
 use view::View;
 
@@ -178,6 +178,9 @@ pub struct Drawing {
     /// The symbols of its own it places: each made once, however many places it sits.
     #[serde(default, skip_serializing_if = "ById::is_empty")]
     pub symbols: ById<Symbol>,
+    /// Where its symbols sit: each on a sheet, a view or a view's model, as a note is.
+    #[serde(default, skip_serializing_if = "ById::is_empty")]
+    pub placed_symbols: ById<PlacedSymbol>,
     /// Behind an `Arc` as the sheets are, so an undo step shares it while it doesn't change.
     #[serde(default, skip_serializing_if = "no_revisions")]
     pub revisions: Arc<RevisionRecord>,
@@ -209,6 +212,7 @@ const RECORD_FIELDS: &[&str] = &[
     "tables",
     "notes",
     "symbols",
+    "placed_symbols",
     "revisions",
 ];
 
@@ -389,6 +393,8 @@ pub struct OnSheet {
     pub tables: Vec<u64>,
     /// The notes on it and in its views.
     pub notes: Vec<u64>,
+    /// The symbols placed on it and in its views.
+    pub placed_symbols: Vec<u64>,
 }
 
 impl OnSheet {
@@ -401,6 +407,7 @@ impl OnSheet {
             && self.tags.is_empty()
             && self.tables.is_empty()
             && self.notes.is_empty()
+            && self.placed_symbols.is_empty()
     }
 }
 
@@ -457,6 +464,7 @@ impl Drawing {
             tables: ById::default(),
             notes: ById::default(),
             symbols: ById::default(),
+            placed_symbols: ById::default(),
             revisions: Arc::default(),
             newer_file: None,
         };
@@ -498,6 +506,7 @@ impl Drawing {
         d.tables.put_in_order();
         d.notes.put_in_order();
         d.symbols.put_in_order();
+        d.placed_symbols.put_in_order();
         d.validate().map_err(damaged)?;
         d.check_image_files().map_err(damaged)?;
         Ok(d)
@@ -586,9 +595,14 @@ impl Drawing {
         }
     }
 
-    /// Whether `id` names an object a sheet shows: a view, a dimension or a balloon.
+    /// Whether `id` names an object a sheet shows: a view, a dimension, a balloon, a note or a placed
+    /// symbol.
     pub fn has_object(&self, id: u64) -> bool {
-        self.view(id).is_some() || self.dimension(id).is_some() || self.balloons.by_id(id).is_some() || self.notes.by_id(id).is_some()
+        self.view(id).is_some()
+            || self.dimension(id).is_some()
+            || self.balloons.by_id(id).is_some()
+            || self.notes.by_id(id).is_some()
+            || self.placed_symbols.by_id(id).is_some()
     }
 
     /// What is on sheet `id`: its views and the dimensions and balloons in them, and the images placed on it.
@@ -600,8 +614,8 @@ impl Drawing {
         on.images = self.sheet_images.iter().filter(|i| i.sheet == id).map(|i| i.id).collect();
         on.tags = self.revisions.tags().iter().filter(|t| t.sheet == id).map(|t| t.id).collect();
         on.tables = self.tables.iter().filter(|t| t.sheet == id).map(|t| t.id).collect();
-        let in_views = |n: &Note| n.anchor.view().is_some_and(|v| on.views.binary_search(&v).is_ok());
-        on.notes = self.notes.iter().filter(|n| n.anchor == Anchor::Sheet(id) || in_views(n)).map(|n| n.id).collect();
+        on.notes = self.notes.iter().filter(|n| n.anchor.within(Some(id), &on.views)).map(|n| n.id).collect();
+        on.placed_symbols = self.placed_symbols.iter().filter(|p| p.anchor.within(Some(id), &on.views)).map(|p| p.id).collect();
         on
     }
 
@@ -610,8 +624,9 @@ impl Drawing {
     pub fn with_contents(&self, views: Vec<u64>) -> OnSheet {
         let dimensions = self.dimensions.iter().filter(|d| views.binary_search(&d.view).is_ok()).map(|d| d.id).collect();
         let balloons = self.balloons.iter().filter(|b| views.binary_search(&b.view).is_ok()).map(|b| b.id).collect();
-        let notes = self.notes.iter().filter(|n| n.anchor.view().is_some_and(|v| views.binary_search(&v).is_ok())).map(|n| n.id).collect();
-        OnSheet { views, dimensions, balloons, images: Vec::new(), tags: Vec::new(), tables: Vec::new(), notes }
+        let notes = self.notes.iter().filter(|n| n.anchor.within(None, &views)).map(|n| n.id).collect();
+        let placed_symbols = self.placed_symbols.iter().filter(|p| p.anchor.within(None, &views)).map(|p| p.id).collect();
+        OnSheet { views, dimensions, balloons, images: Vec::new(), tags: Vec::new(), tables: Vec::new(), notes, placed_symbols }
     }
 
     /// Takes sheet `id` out with everything on it ([`Drawing::on_sheet`]), and answers what that
@@ -635,6 +650,7 @@ impl Drawing {
         self.drop_unused_images();
         self.tables.retain(|t| objects.tables.binary_search(&t.id).is_err());
         self.notes.retain(|n| objects.notes.binary_search(&n.id).is_err());
+        self.placed_symbols.retain(|p| objects.placed_symbols.binary_search(&p.id).is_err());
         // A balloon outlives the list it named, and goes back to the lists it could read.
         for balloon in self.balloons.iter_mut() {
             if balloon.parts_list.is_some_and(|list| objects.tables.binary_search(&list).is_ok()) {
@@ -660,6 +676,7 @@ impl Drawing {
             .chain(self.tables.iter().map(|t| t.id))
             .chain(self.notes.iter().map(|n| n.id))
             .chain(self.symbols.iter().map(|s| s.id))
+            .chain(self.placed_symbols.iter().map(|p| p.id))
             .chain(self.revisions.ids())
     }
 
@@ -698,7 +715,8 @@ impl Drawing {
         self.check_balloons()?;
         self.check_images()?;
         self.check_notes()?;
-        self.check_symbols()
+        self.check_symbols()?;
+        self.check_placed_symbols()
     }
 
     /// A sheet's own rules, and that the source it documents is one of the drawing's.
