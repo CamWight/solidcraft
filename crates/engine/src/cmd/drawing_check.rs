@@ -2,13 +2,13 @@
 //! or a script acts on. Each finding comes from the rule that already says it: each sheet as an
 //! export reads it ([`crate::drawing_scene::as_shown`]), each view's place there ([`crate::drawing_view::Room`]),
 //! the balloons', notes' and placed symbols' references as the model has them now, the title blocks'
-//! text as the sheet shows it ([`title_block_text::shown`]) and the placed symbols' as their answers
-//! fill it, and each parts list's balloon counts as
+//! text as the sheet shows it ([`title_block_text::shown`]), the notes' and placed symbols' text as
+//! their sheet and a placement's answers fill it, and each parts list's balloon counts as
 //! `drawing.inspect` gives them. Beside the findings, each feature's coverage: whether a dimension
 //! or note points at a face it made, by the saved names ([`Timeline::covers`]), and whether a view
 //! draws one. Nothing is changed.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
 
 use serde_json::Value;
@@ -18,7 +18,9 @@ use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::coverage;
 use solidcraft_doc::drawing::dimension::Status;
 use solidcraft_doc::drawing::fields::Values;
+use solidcraft_doc::drawing::note::Anchor;
 use solidcraft_doc::{ModelState, ids};
+use solidcraft_geom::cell::Content;
 use solidcraft_geom::paper::{Item, ObjectKind};
 use solidcraft_geom::{Aabb2, EPS};
 
@@ -43,7 +45,7 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CHECK, "Check Drawing",
     .doc_only()
     .contract(&CONTRACT)
     .output(output_schema_for::<CheckResult>)
-    .params("sheet?: id or name (default: every sheet) → {sheet?, findings: [{kind, sheet, object: {kind: view|dimension|balloon|note|symbol|table|image|title_block, id}, cell?, field?, item?, why}], counts: [{kind, count}], coverage: [{feature, name, state, by?: [{kind: dimension|note, id}], why?}], coverage_counts: [{state, count}]}: what makes the drawing wrong or incomplete, in sheet order, then by the record each names. kind is one of a closed list: lost, ambiguous, unmeasurable, suppressed, failed (a dimension, balloon, note or placed symbol whose reference isn't found as one thing, can't be measured, or depends on a suppressed or failed feature; failed is also a view that can't be drawn), overridden (a dimension whose text is typed over its value, or a title block cell whose typed text hides a value), out_of_date (a view or dimension a deferred drawing shows as it last was), nothing_shown (a view with nothing to measure), empty_field (a title block's field with no value, as source.key; a revision field only once the drawing has a revision row; a cell whose typed text fills it is none; or a placed symbol's, each once, a prompt it doesn't answer as prompt.key), not_ballooned (a row of a parts list on the sheet that no balloon points at, by item), outside_sheet (a view outside its sheet's drawing space or over its title block; a dimension, image or table off the paper). coverage lists each feature of the design in timeline order, apart from the findings: covered (a dimension or note points at a face it made: an edge covers the latest feature among the faces it separates, a corner the latest among its edges' faces, a pattern's copy the pattern; by lists them), not_covered (a view draws a face it made, named from exact history, and nothing points at it), unknown (the faces a view draws of it aren't named from exact history), not_applicable (it is suppressed or rolled back, only reference parts draw it, or no view draws a face it made: a sketch, a plane). Coverage says a dimension or a note points at a feature, not that it is fully dimensioned. With sheet, the findings and the coverage are of that sheet only, and sheet echoes its id. The sheet is read as an export reads it: a deferred drawing is checked as it shows the model, with what it shows as it last was listed. Read-only: nothing is drawn or saved, and the same drawing always gives the same answer.")];
+    .params("sheet?: id or name (default: every sheet) → {sheet?, findings: [{kind, sheet, object: {kind: view|dimension|balloon|note|symbol|table|image|title_block, id}, cell?, field?, item?, why}], counts: [{kind, count}], coverage: [{feature, name, state, by?: [{kind: dimension|note, id}], why?}], coverage_counts: [{state, count}]}: what makes the drawing wrong or incomplete, in sheet order, then by the record each names. kind is one of a closed list: lost, ambiguous, unmeasurable, suppressed, failed (a dimension, balloon, note or placed symbol whose reference isn't found as one thing, can't be measured, or depends on a suppressed or failed feature; failed is also a view that can't be drawn), overridden (a dimension whose text is typed over its value, or a title block cell whose typed text hides a value), out_of_date (a view or dimension a deferred drawing shows as it last was), nothing_shown (a view with nothing to measure), empty_field (a title block's field with no value, as source.key; a revision field only once the drawing has a revision row; a cell whose typed text fills it is none; or a note's or a placed symbol's, each once per note or placement, a prompt a placement doesn't answer as prompt.key), not_ballooned (a row of a parts list on the sheet that no balloon points at, by item), outside_sheet (a view outside its sheet's drawing space or over its title block; a dimension, image or table off the paper). coverage lists each feature of the design in timeline order, apart from the findings: covered (a dimension or note points at a face it made: an edge covers the latest feature among the faces it separates, a corner the latest among its edges' faces, a pattern's copy the pattern; by lists them), not_covered (a view draws a face it made, named from exact history, and nothing points at it), unknown (the faces a view draws of it aren't named from exact history), not_applicable (it is suppressed or rolled back, only reference parts draw it, or no view draws a face it made: a sketch, a plane). Coverage says a dimension or a note points at a feature, not that it is fully dimensioned. With sheet, the findings and the coverage are of that sheet only, and sheet echoes its id. The sheet is read as an export reads it: a deferred drawing is checked as it shows the model, with what it shows as it last was listed. Read-only: nothing is drawn or saved, and the same drawing always gives the same answer.")];
 
 fn check(s: &mut Session, p: &Value) -> Result<Value> {
     let request: CheckParams = crate::schema::read(CHECK, p)?;
@@ -205,8 +207,8 @@ fn references(s: &Session, d: &Drawing, sheets: &[u64]) -> Result<Vec<Finding>> 
 }
 
 /// The title block fields on `sheets` with no value, the cells whose typed text hides one, the
-/// placed symbols' fields with no value, and the rows of their parts lists that no balloon points
-/// at: one tree for the drawing, so each component is weighed and listed once.
+/// notes' and placed symbols' fields with no value, and the rows of their parts lists that no balloon
+/// points at: one tree for the drawing, so each component is weighed and listed once.
 fn fields_and_rows(s: &Session, d: &Drawing, sheets: &[u64]) -> Vec<Finding> {
     let state = s.model.state();
     let mut tree = Tree::new(&s.doc, &state);
@@ -229,19 +231,39 @@ fn fields_and_rows(s: &Session, d: &Drawing, sheets: &[u64]) -> Vec<Finding> {
             }
         });
     }
-    // A placement's texts read their sheet's fields as a note's do, and its prompts from its answers:
-    // each field with no value once, however many of its texts read it.
-    for placed in d.placed_symbols.iter() {
-        let Some(at) = d.sheet_of(&placed.anchor) else { continue };
-        let Some(sheet) = d.sheets.get(at).map(|sheet| sheet.id).filter(|sheet| sheets.contains(sheet)) else { continue };
-        let Some(symbol) = d.symbols.by_id(placed.symbol) else { continue };
-        let empty = title_block_text::with_values(&s.doc, &mut tree, d, at, symbol.texts(), |values| {
-            let values = Values { answers: Some(&placed.answers), ..*values };
-            symbol.texts().flat_map(|content| values.empty_fields(content)).collect::<BTreeSet<_>>()
+    // A note's and a placement's texts read their sheet's fields as a title block's do, and a
+    // placement's prompts its answers: one read for each sheet, as the sheet draws its notes, and each
+    // field with no value once per object, however many of its texts read it.
+    let on = |anchor: &Anchor| {
+        let at = d.sheet_of(anchor)?;
+        Some((at, d.sheets.get(at).map(|sheet| sheet.id).filter(|sheet| sheets.contains(sheet))?))
+    };
+    let notes = d.notes.iter().filter_map(|note| {
+        let (at, sheet) = on(&note.anchor)?;
+        Some(Reader { at, sheet, object: object(CheckedKind::Note, note.id), texts: vec![&note.content], answers: None })
+    });
+    let placed = d.placed_symbols.iter().filter_map(|placed| {
+        let (at, sheet) = on(&placed.anchor)?;
+        let texts = d.symbols.by_id(placed.symbol)?.texts().collect();
+        Some(Reader { at, sheet, object: object(CheckedKind::Symbol, placed.id), texts, answers: Some(&placed.answers) })
+    });
+    let mut readers: Vec<Reader> = notes.chain(placed).collect();
+    readers.sort_by_key(|reader| reader.at);
+    for one_sheet in readers.chunk_by(|a, b| a.at == b.at) {
+        let Some(at) = one_sheet.first().map(|reader| reader.at) else { continue };
+        let contents = one_sheet.iter().flat_map(|reader| reader.texts.iter().copied());
+        let empty = title_block_text::with_values(&s.doc, &mut tree, d, at, contents, |values| {
+            let fields_of = |reader: &Reader| {
+                let values = Values { answers: reader.answers, ..*values };
+                reader.texts.iter().flat_map(|content| values.empty_fields(content)).collect::<BTreeSet<_>>()
+            };
+            one_sheet.iter().map(fields_of).collect::<Vec<_>>()
         });
-        for field in empty {
-            let why = format!("{field} has no value");
-            out.push(Finding { field: Some(field), ..finding(FindingKind::EmptyField, sheet, object(CheckedKind::Symbol, placed.id), why) });
+        for (reader, fields) in one_sheet.iter().zip(empty) {
+            for field in fields {
+                let why = format!("{field} has no value");
+                out.push(Finding { field: Some(field), ..finding(FindingKind::EmptyField, reader.sheet, reader.object.clone(), why) });
+            }
         }
     }
     // A parts list that can't be made has no rows to count.
@@ -253,6 +275,16 @@ fn fields_and_rows(s: &Session, d: &Drawing, sheets: &[u64]) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// A note or a placed symbol on a checked sheet, as [`fields_and_rows`] reads its fields: its sheet's
+/// index (`at`) and id, the texts it prints, and a placement's answers to its prompts.
+struct Reader<'a> {
+    at: usize,
+    sheet: u64,
+    object: CheckedObject,
+    texts: Vec<&'a Content>,
+    answers: Option<&'a BTreeMap<String, String>>,
 }
 
 /// Each feature of the design, in timeline order, and whether the dimensions and notes on `sheets`

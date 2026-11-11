@@ -301,6 +301,46 @@ fn a_lost_placement_and_its_unanswered_prompt_are_listed() {
     assert_eq!(of_kind(&checked(&mut s, json!({})), "lost"), [named("symbol", &on_edge)]);
 }
 
+/// A note's fields with no value are listed as a placed symbol's are: each once per note, however
+/// often its text reads it, and with no cell. A note reads its own sheet's fields, and a revision
+/// field before the drawing's first revision row is none.
+#[test]
+fn a_notes_empty_fields_are_listed_once_each() {
+    let (mut s, _) = plate();
+    let (sheet, view) = drawn(&mut s);
+    // A new sheet documents nothing, so its note has no component's name to read.
+    let other = run(&mut s, "drawing.sheet.add", json!({"name": "Other"}))["sheet"].clone();
+    let field = |source: &str, key: &str| json!({"field": {"source": source, "key": key}});
+    let mut add = |anchor: Value, content: Value| {
+        run(&mut s, "drawing.note.add", json!({"anchor": anchor, "at": [20, 20], "content": content}))["note"].clone()
+    };
+    let on_sheet = json!({"sheet": ids::encode(sheet)});
+    let part_number = field("component", "part_number");
+    let first =
+        add(on_sheet.clone(), json!([part_number, {"text": " "}, part_number, {"text": " "}, field("component", "name"), field("sheet", "number")]));
+    let second = add(on_sheet, json!([part_number]));
+    add(json!({"edge": {"view": ids::encode(view), "edge": [50, 0, 0]}}), json!([{"text": "Rev "}, field("revision", "date")]));
+    let unnamed = add(json!({"sheet": other}), json!([field("component", "name")]));
+    let notes = |reply: &Value| of_kind(reply, "empty_field").into_iter().filter(|(kind, _)| kind == "note").collect::<Vec<_>>();
+    let sorted = |mut all: Vec<(String, String)>| {
+        all.sort();
+        all
+    };
+    let all = checked(&mut s, json!({}));
+    assert_eq!(notes(&all), sorted(vec![named("note", &first), named("note", &second), named("note", &unnamed)]), "{all}");
+    let first_sheet = checked(&mut s, json!({"sheet": ids::encode(sheet)}));
+    let expected = sorted(vec![named("note", &first), named("note", &second), ("title_block".to_string(), ids::encode(sheet))]);
+    assert_eq!(of_kind(&first_sheet, "empty_field"), expected, "{first_sheet}");
+    for f in first_sheet["findings"].as_array().unwrap().iter().filter(|f| f["object"]["kind"] == "note") {
+        assert_eq!((&f["field"], &f["why"]), (&json!("component.part_number"), &json!("component.part_number has no value")), "{f}");
+        assert!(f.get("cell").is_none(), "{f}");
+    }
+    let others = checked(&mut s, json!({"sheet": "Other"}));
+    assert_eq!(notes(&others), [named("note", &unnamed)], "{others}");
+    let finding = others["findings"].as_array().unwrap().iter().find(|f| f["object"]["kind"] == "note").unwrap();
+    assert_eq!(finding["field"], json!("component.name"), "{finding}");
+}
+
 /// A component, Bolt, of a 10 x 10 x 40 mm box called Shank, placed once; a drawing of the design,
 /// open, with a front view at 1:1 and a parts list on its sheet. The view, the list and the Bolt's
 /// occurrence.
@@ -798,4 +838,18 @@ fn a_note_an_exploded_view_holds_back_is_a_note_out_of_date_and_covers_nothing()
     let why = "its view draws an exploded view: not supported yet, so it isn't drawn".to_string();
     assert_eq!(whys(&reply, "out_of_date"), [("note".to_string(), note.as_str().unwrap().to_string(), why)], "{reply}");
     assert_eq!(coverage_of(&reply, plate)["state"], json!("not_covered"), "{reply}");
+}
+
+/// A note that a view drawing an exploded view holds back still reads its sheet's fields, as it does
+/// once the view is drawn assembled again: one with no value is listed.
+#[test]
+fn a_note_an_exploded_view_holds_back_still_lists_its_empty_fields() {
+    let mut note = Value::Null;
+    let (mut s, ..) = exploded(|s, view| {
+        let edge = json!({"edge": {"view": ids::encode(view), "edge": [50, 0, 0]}});
+        let content = json!([{"field": {"source": "component", "key": "part_number"}}]);
+        note = run(s, "drawing.note.add", json!({"anchor": edge, "at": [60, 40], "content": content}))["note"].clone();
+    });
+    let reply = checked(&mut s, json!({}));
+    assert!(of_kind(&reply, "empty_field").contains(&named("note", &note)), "{reply}");
 }

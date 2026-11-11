@@ -35,7 +35,7 @@ pub enum FindingKind {
     OutOfDate,
     /// A view with nothing to measure.
     NothingShown,
-    /// A title block's field with no value, or a placed symbol's.
+    /// A field with no value: a title block's, a note's or a placed symbol's.
     EmptyField,
     /// A parts list row no balloon points at.
     NotBallooned,
