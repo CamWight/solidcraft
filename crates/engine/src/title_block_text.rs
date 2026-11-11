@@ -111,7 +111,8 @@ pub fn read<'c>(doc: &Document, tree: &mut Tree<'_>, d: &Drawing, at: usize, con
 
 /// `answer` given what sheet `at` of `d` reads its fields from ([`Values`]), for `contents`: the
 /// component the sheet documents is weighed in `tree` only when one of them reads its material or
-/// mass. [`read`] and a note's inspect read through this one rule.
+/// mass. [`read`] and a note's inspect read through this one rule; a placed symbol's answers its
+/// prompts as well ([`Values::answers`]).
 pub fn with_values<'c, R>(
     doc: &Document,
     tree: &mut Tree<'_>,
@@ -132,7 +133,7 @@ pub fn with_values<'c, R>(
         None => Documented::Nothing,
         Some(id) => documented(doc, id, material.as_deref(), mass.as_deref()).map_or(Documented::Gone, Documented::Present),
     };
-    answer(&Values { drawing: d, sheet: at, component })
+    answer(&Values { drawing: d, sheet: at, component, answers: None })
 }
 
 /// Component `id` of the design (0: the design itself) as a title block's fields read it, with
