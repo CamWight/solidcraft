@@ -116,7 +116,7 @@ pub struct BalloonResult {
     pub occurrence: Vec<u64>,
     /// `ok`, `ambiguous`, `suppressed`, `failed` or `lost`.
     pub status: String,
-    /// Why it failed or is lost.
+    /// Why it failed, is lost, is ambiguous or is suppressed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// Where its arrow ends, the middle of its edge, in the design's frame.

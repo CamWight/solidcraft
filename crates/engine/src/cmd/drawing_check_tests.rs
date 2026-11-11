@@ -160,6 +160,11 @@ fn overrides_and_suppressed_references_are_listed() {
     assert_eq!(of_kind(&reply, "overridden"), [named("dimension", &width), named("title_block", &json!(ids::encode(sheet)))], "{reply}");
     assert_eq!(of_kind(&reply, "suppressed"), [named("dimension", &on_chamfer)], "{reply}");
     assert_eq!(found(&reply).len(), 3, "nothing else: {reply}");
+    let why = |kind: &str| {
+        reply["findings"].as_array().unwrap().iter().find(|f| f["kind"] == kind && f["object"]["kind"] == "dimension").unwrap()["why"].clone()
+    };
+    assert_eq!(why("overridden"), "its text is typed over its measured value", "{reply}");
+    assert_eq!(why("suppressed"), "a feature it depends on is suppressed or rolled back", "{reply}");
     let cell = reply["findings"].as_array().unwrap().iter().find(|f| f["object"]["kind"] == "title_block").unwrap()["cell"].clone();
     assert_eq!(cell, json!(name));
 }

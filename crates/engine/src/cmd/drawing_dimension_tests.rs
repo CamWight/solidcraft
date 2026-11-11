@@ -255,6 +255,7 @@ fn an_edit_names_what_it_changed_and_the_same_again_changes_nothing() {
     assert_eq!(s.undo.len(), steps + 1, "one undo step");
     let read = run(&mut s, INSPECT, json!({"dimension": id}));
     assert_eq!((read["status"].as_str(), read["text"].as_str()), (Some("overridden"), Some("SEE NOTE")), "{read}");
+    assert!(read.get("why").is_none(), "an overridden dimension stands: {read}");
     assert_eq!(read["record"]["kind"]["length"]["edge"], added["record"]["kind"]["length"]["edge"], "what it measures stays");
     let bytes = s.drawing("test").unwrap().to_json().unwrap();
     assert_eq!(edit(&mut s, &id, set)["changed"], json!([]));
@@ -705,7 +706,8 @@ fn two_flat_faces_read_the_distance_between_them() {
     assert_eq!(s.drawing("test").unwrap().to_json().unwrap(), before);
 }
 
-/// A dimension says its feature failed, with why, and that it is suppressed: the words a script reads.
+/// A dimension says its feature failed, and that it is suppressed, each with why: the words a script
+/// reads. One that reads again says no why.
 #[test]
 fn a_dimension_says_its_feature_failed_or_is_suppressed() {
     let (mut s, view) = front_view();
@@ -722,9 +724,10 @@ fn a_dimension_says_its_feature_failed_or_is_suppressed() {
         run(s, INSPECT, json!({"dimension": id}))
     };
     let read = status(&mut s, "timeline.suppress", json!({"feature": "Round", "suppressed": true}));
-    assert_eq!(read["status"], "suppressed", "{read}");
+    assert_eq!((&read["status"], &read["why"]), (&json!("suppressed"), &json!("a feature it depends on is suppressed or rolled back")), "{read}");
     let read = status(&mut s, "timeline.suppress", json!({"feature": "Round", "suppressed": false}));
     assert_eq!(read["status"], "ok", "{read}");
+    assert!(read.get("why").is_none(), "{read}");
     let read = status(&mut s, "timeline.reorder", json!({"feature": "Round", "position": 0, "allow_errors": true}));
     assert_eq!(read["status"], "failed", "{read}");
     assert!(read["why"].as_str().is_some_and(|why| !why.is_empty()), "{read}");
@@ -1134,6 +1137,7 @@ fn an_ambiguous_length_is_repaired_to_one_piece() {
     run(&mut s, "drawing.open", json!({"drawing": ids::encode(drawing)}));
     let split = inspect_of(&mut s, dimension);
     assert_eq!(split["status"], "ambiguous", "{split}");
+    assert_eq!(split["why"], "its reference finds more than one thing, and none is chosen", "{split}");
     let left = json!({"edge": {"body": "Box", "index": edge_index(&s, [0.0, 0.0, 30.0], [35.0, 0.0, 30.0])}});
     assert!(split["candidates"].as_array().is_some_and(|c| c.contains(&left)), "{split}");
     let steps = s.undo.len();

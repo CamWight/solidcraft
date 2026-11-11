@@ -587,8 +587,11 @@ pub(super) fn status_words(status: Status) -> (&'static str, Option<String>, Vec
     match status {
         Status::Ok => ("ok", None, Vec::new()),
         Status::Overridden => ("overridden", None, Vec::new()),
-        Status::Ambiguous(found) => ("ambiguous", None, found.into_iter().map(candidate).collect()),
-        Status::Suppressed => ("suppressed", None, Vec::new()),
+        Status::Ambiguous(found) => {
+            let why = "its reference finds more than one thing, and none is chosen";
+            ("ambiguous", Some(why.into()), found.into_iter().map(candidate).collect())
+        }
+        Status::Suppressed => ("suppressed", Some("a feature it depends on is suppressed or rolled back".into()), Vec::new()),
         Status::Failed(why) => ("failed", Some(why), Vec::new()),
         Status::Lost(why, leads) => ("lost", Some(why), leads.into_iter().map(candidate).collect()),
         Status::Unmeasurable(why) => ("unmeasurable", Some(why), Vec::new()),

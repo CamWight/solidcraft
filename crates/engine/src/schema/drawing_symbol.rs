@@ -258,7 +258,7 @@ pub struct PlacedInspectResult {
     pub record: Value,
     /// `ok`, `ambiguous`, `suppressed` or `lost`. A placement that points at nothing is always `ok`.
     pub status: String,
-    /// Why it is lost.
+    /// Why it is lost, is ambiguous or is suppressed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub why: Option<String>,
     /// Where its leader ends, in the design's frame.

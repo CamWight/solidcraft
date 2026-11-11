@@ -166,14 +166,20 @@ fn view_finding(sheet: u64, view: &ViewState) -> Option<Finding> {
 
 /// A reference's finding, by where it stands with the model: none when it is found and measured.
 fn status_finding(sheet: u64, object: CheckedObject, status: Status) -> Option<Finding> {
-    let (kind, why) = match status {
+    let kind = match status {
         Status::Ok => return None,
-        Status::Overridden => (FindingKind::Overridden, "its text is typed over its measured value".into()),
-        Status::Ambiguous(_) => (FindingKind::Ambiguous, "its reference finds more than one thing, and none is chosen".into()),
-        Status::Suppressed => (FindingKind::Suppressed, "a feature it depends on is suppressed or rolled back".into()),
-        Status::Failed(why) => (FindingKind::Failed, why),
-        Status::Lost(why, _) => (FindingKind::Lost, why),
-        Status::Unmeasurable(why) => (FindingKind::Unmeasurable, why),
+        Status::Overridden => FindingKind::Overridden,
+        Status::Ambiguous(_) => FindingKind::Ambiguous,
+        Status::Suppressed => FindingKind::Suppressed,
+        Status::Failed(_) => FindingKind::Failed,
+        Status::Lost(..) => FindingKind::Lost,
+        Status::Unmeasurable(_) => FindingKind::Unmeasurable,
+    };
+    // The replies' own why for a reference that doesn't stand; an overridden one stands, and the
+    // finding says what it hides.
+    let why = match status {
+        Status::Overridden => "its text is typed over its measured value".into(),
+        status => super::drawing_dimension::status_words(status).1.unwrap_or_default(),
     };
     Some(finding(kind, sheet, object, why))
 }
