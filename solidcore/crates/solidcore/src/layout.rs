@@ -29,11 +29,47 @@ pub const MAX_ITEMS: usize = crate::prism::profile::MAX_SEGMENTS;
 /// `InvalidInput` for a pitch not finite or below zero, more than [`MAX_ITEMS`] places, a place
 /// not finite, `ideal` not in order, or a result not finite.
 pub fn spread_along(ideal: &[f64], pitch: f64) -> Result<Vec<f64>> {
-    let _ = (ideal, pitch);
-    Err(SolidError::Unsupported {
+    let refuse = |reason| SolidError::InvalidInput {
         operation: OP,
-        reason: "not built yet",
-    })
+        reason,
+    };
+    if !(pitch.is_finite() && pitch >= 0.0) {
+        return Err(refuse("a pitch not finite or below zero"));
+    }
+    if ideal.len() > MAX_ITEMS {
+        return Err(refuse("more than 8192 places: at most 8192 fit"));
+    }
+    if !ideal.iter().all(|x| x.is_finite()) {
+        return Err(refuse("a place not finite"));
+    }
+    if ideal.windows(2).any(|w| matches!(w, [a, b] if b < a)) {
+        return Err(refuse("places not in order"));
+    }
+    // Each block: the sum of its members' targets (places less their spacing), and their count.
+    let mut blocks: Vec<(f64, usize)> = Vec::new();
+    for (i, x) in ideal.iter().enumerate() {
+        blocks.push((x - pitch * i as f64, 1));
+        // Pool the last two blocks while the earlier one's mean is above the later one's.
+        while let [.., (a, m), (b, k)] = *blocks.as_slice() {
+            if a / m as f64 <= b / k as f64 {
+                break;
+            }
+            blocks.truncate(blocks.len().saturating_sub(2));
+            blocks.push((a + b, m + k));
+        }
+    }
+    let means = blocks
+        .into_iter()
+        .flat_map(|(sum, k)| std::iter::repeat_n(sum / k as f64, k));
+    let places: Vec<f64> = means
+        .enumerate()
+        .map(|(i, mean)| mean + pitch * i as f64)
+        .collect();
+    if places.iter().all(|x| x.is_finite()) {
+        Ok(places)
+    } else {
+        Err(refuse("a place not finite"))
+    }
 }
 
 #[cfg(test)]
