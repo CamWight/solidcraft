@@ -1,10 +1,15 @@
-use solidcraft_geom::cell::{Content, Projection};
+use solidcore_record::{Seg2, Vec2};
+use solidcraft_geom::cell::{Content, HAlign, Projection, Source as FieldSource};
 use solidcraft_geom::drawing_sheet::SheetSize;
+use solidcraft_geom::paper::line::LineKind;
 use solidcraft_geom::title_block;
 
 use super::*;
 use crate::drawing::Sheet;
+use crate::drawing::by_id::ById;
+use crate::drawing::dimension::ModelEdge;
 use crate::drawing::note::{Anchor, Note};
+use crate::drawing::symbol::{MAX_SYMBOLS, Piece, PlacedSymbol, Symbol};
 use crate::drawing::table::{Kind, SheetTable};
 use crate::drawing::tests::plate;
 
@@ -113,8 +118,12 @@ fn a_template_applied_gives_each_sheet_its_format() {
     for (cell, text) in [("material", "See note 3"), ("finish", "Black oxide")] {
         Arc::make_mut(&mut d.sheets[0]).title_block_overrides.insert(cell.into(), text.into());
     }
-    assert_eq!(apply(&d, &made("iso-a3-part"), &mut IdSource::seeded(1)).unwrap(), (d.clone(), Vec::new()), "the same template changes nothing");
-    let (applied, changed) = apply(&d, &shop("iso-a2-part", "ISO 13920-B"), &mut IdSource::seeded(1)).unwrap();
+    assert_eq!(
+        apply(&d, &made("iso-a3-part"), &mut IdSource::seeded(1)).unwrap(),
+        (d.clone(), Vec::new(), Vec::new()),
+        "the same template changes nothing"
+    );
+    let (applied, changed, _) = apply(&d, &shop("iso-a2-part", "ISO 13920-B"), &mut IdSource::seeded(1)).unwrap();
     let ids: Vec<u64> = d.sheets.iter().map(|s| s.id).collect();
     let restyled = |sheet| Restyled { sheet, paper: true, border: false, title_block: true, lost: Vec::new() };
     assert_eq!(changed, ids.iter().map(|id| restyled(*id)).collect::<Vec<_>>());
@@ -128,7 +137,7 @@ fn a_template_applied_gives_each_sheet_its_format() {
     let mut renamed = made("iso-a3-part");
     let block = Arc::make_mut(&mut renamed.sheets[0]).title_block.as_mut().unwrap();
     block.cells.iter_mut().find(|cell| cell.name == "finish").unwrap().name = "surface".into();
-    let (applied, changed) = apply(&d, &renamed, &mut IdSource::seeded(1)).unwrap();
+    let (applied, changed, _) = apply(&d, &renamed, &mut IdSource::seeded(1)).unwrap();
     assert_eq!(changed[0], Restyled { sheet: ids[0], paper: false, border: false, title_block: true, lost: vec!["finish".into()] });
     let kept: Vec<&str> = applied.sheets[0].title_block_overrides.keys().map(String::as_str).collect();
     assert_eq!(kept, ["general_tolerances", "material"], "the template's note is typed text too, and its cell is still there");
@@ -165,10 +174,10 @@ fn a_drawing_saved_as_a_template_keeps_only_its_format() {
 }
 
 /// A damaged template file, cut short or with a byte changed anywhere, is read or refused, never
-/// a panic: a built-in, and a template with a note and a table on its sheet.
+/// a panic: a built-in, and a template with a note, a table and a symbol on its sheet.
 #[test]
 fn a_damaged_template_file_never_panics() {
-    for template in [made("iso-a3-part"), from_drawing(&noted()).unwrap()] {
+    for template in [made("iso-a3-part"), from_drawing(&marked().0).unwrap()] {
         let text = template.to_json().unwrap();
         let mut read_back = 0;
         for at in (0..text.len()).step_by(7) {
@@ -264,4 +273,115 @@ fn a_template_keeps_what_sits_on_its_sheets() {
         assert_eq!((drawn.notes.len(), drawn.tables.len()), (1, 1));
         check(&drawn).unwrap();
     }
+}
+
+// Symbols in templates (#13063 Y3).
+
+/// A company mark: a square, and the revision each placement gives.
+fn mark(id: u64) -> Symbol {
+    let rev = Content(vec![Part::Text("Rev ".into()), Part::Field { source: FieldSource::Prompt, key: "rev".into(), format: Default::default() }]);
+    let corners = [[-5.0, -5.0], [5.0, -5.0], [5.0, 5.0], [-5.0, 5.0], [-5.0, -5.0]];
+    let path = corners.windows(2).map(|w| Seg2::Line { a: Vec2::new(w[0][0], w[0][1]), b: Vec2::new(w[1][0], w[1][1]) }).collect();
+    let pieces = vec![
+        Piece::Stroke { path, closed: true, line: LineKind::Visible },
+        Piece::Text { at: [-4.0, -8.0], content: rev, cap_mm: None, align: HAlign::Left },
+    ];
+    Symbol { id, name: "Mark".into(), pieces }
+}
+
+/// [`noted`] with `Mark` placed three times: on its first sheet (answering its prompt), on a view of
+/// that sheet and on an edge of the view's model. The symbol's id and the placements', in that order.
+fn marked() -> (Drawing, u64, [u64; 3]) {
+    let mut d = noted();
+    let mut id_source = IdSource::seeded(13064);
+    let sheet = d.sheets[0].id;
+    let view = d.views.iter().find(|v| v.sheet == sheet).unwrap().id;
+    let symbol = d.allocate_id(&mut id_source).unwrap();
+    d.symbols.add([Arc::new(mark(symbol))]);
+    let edge = ModelEdge { body: "Plate".into(), origin_feature: 1, name: "F1:front|F1:bottom".into(), path: vec![3, 7] };
+    let mut placed = [0; 3];
+    for (i, (anchor, id)) in [Anchor::Sheet(sheet), Anchor::View(view), Anchor::Edge { view, edge }].into_iter().zip(&mut placed).enumerate() {
+        *id = d.allocate_id(&mut id_source).unwrap();
+        let answers = if i == 0 { BTreeMap::from([("rev".to_string(), "C".to_string())]) } else { BTreeMap::new() };
+        d.placed_symbols.add([Arc::new(PlacedSymbol { id: *id, symbol, anchor, at: [380.0, 20.0], scale: 1.0, angle: 0.0, answers })]);
+    }
+    d.validate().unwrap();
+    (d, symbol, placed)
+}
+
+/// A drawing saved as a template keeps its symbols and the placement on its sheet, with its
+/// answer; the placements on a view and on the view's model go with the view. Every drawing made
+/// from the template has them, its symbol and placement with ids of their own (none of the
+/// template's, and not another drawing's), the placement naming the new symbol and the new sheet.
+#[test]
+fn a_template_gives_its_symbols_to_every_new_drawing() {
+    let (d, symbol, [on_sheet, ..]) = marked();
+    let template = from_drawing(&d).unwrap();
+    assert_eq!(template.symbols, d.symbols, "every definition stays");
+    assert_eq!(template.placed_symbols.iter().map(|p| p.id).collect::<Vec<_>>(), [on_sheet], "the sheet's placement stays");
+    let template = read(&template.to_json().unwrap()).unwrap();
+    let taken = BTreeSet::from([d.id]);
+    let first = instantiate(&template, "First", &taken, &mut IdSource::seeded(1)).unwrap();
+    let second = instantiate(&template, "Second", &taken, &mut IdSource::seeded(2)).unwrap();
+    for drawn in [&first, &second] {
+        check(drawn).unwrap();
+        let (sheet, mark) = (drawn.sheets[0].id, drawn.symbols[0].id);
+        let same: Vec<Symbol> = drawn.symbols.iter().map(|s| Symbol { id: symbol, ..(**s).clone() }).collect();
+        assert_eq!(same, [(*d.symbols[0]).clone()], "{}: the same mark", drawn.name);
+        let placed = &drawn.placed_symbols[0];
+        let answers = &d.placed_symbols.by_id(on_sheet).unwrap().answers;
+        assert_eq!((drawn.placed_symbols.len(), placed.symbol, &placed.anchor, &placed.answers), (1, mark, &Anchor::Sheet(sheet), answers));
+        assert!([mark, placed.id].iter().all(|id| !template.ids().any(|old| old == *id)), "{}: ids of its own", drawn.name);
+    }
+    assert_ne!((first.symbols[0].id, first.placed_symbols[0].id), (second.symbols[0].id, second.placed_symbols[0].id));
+    let again = instantiate(&template, "First", &taken, &mut IdSource::seeded(1)).unwrap();
+    assert_eq!(again, first, "the same ids again from the same seed");
+}
+
+/// Applying a template brings its symbols in: a name the drawing hasn't got comes with an id of its
+/// own; one it has is replaced where it stands, so its placements show the template's mark, and an
+/// answer to a prompt the new mark doesn't ask for is dropped and said so. The same marks again change
+/// nothing, and no placement comes with them. At the cap of symbols, a replace is taken and one more
+/// is refused, the drawing unchanged.
+#[test]
+fn a_template_applied_brings_its_symbols() {
+    let (d, symbol, [on_sheet, ..]) = marked();
+    // The company's template: a new mark with no revision, a logo, and the mark placed on its sheet.
+    let mut template = made("iso-a3-part");
+    let new_mark = Symbol { pieces: mark(0).pieces[..1].to_vec(), ..mark(77) };
+    let logo = Symbol { name: "Logo".into(), ..mark(78) };
+    template.symbols.add([Arc::new(new_mark.clone()), Arc::new(logo.clone())]);
+    let anchor = Anchor::Sheet(template.sheets[0].id);
+    let placed = PlacedSymbol { id: 79, symbol: 77, anchor, at: [10.0, 10.0], scale: 1.0, angle: 0.0, answers: BTreeMap::new() };
+    template.placed_symbols.add([Arc::new(placed)]);
+    check(&template).unwrap();
+    let (applied, _, brought) = apply(&d, &template, &mut IdSource::seeded(5)).unwrap();
+    let logo_id = applied.symbols.iter().find(|s| s.name == "Logo").unwrap().id;
+    let mark_brought = Brought { symbol, name: "Mark".into(), replaced: true, lost: vec!["rev".into()] };
+    assert_eq!(brought, [mark_brought, Brought { symbol: logo_id, name: "Logo".into(), replaced: false, lost: Vec::new() }]);
+    assert_eq!(applied.symbols.by_id(symbol).unwrap().pieces, new_mark.pieces, "replaced where it stands");
+    assert_eq!(applied.symbols.by_id(logo_id).unwrap().pieces, logo.pieces);
+    assert!(!d.ids().any(|id| id == logo_id), "an id of its own");
+    assert_eq!(
+        applied.placed_symbols.iter().map(|p| p.id).collect::<Vec<_>>(),
+        d.placed_symbols.iter().map(|p| p.id).collect::<Vec<_>>(),
+        "none comes"
+    );
+    assert!(applied.placed_symbols.by_id(on_sheet).unwrap().answers.is_empty(), "the answer to `rev` is dropped");
+    let (again, changed, brought) = apply(&applied, &template, &mut IdSource::seeded(6)).unwrap();
+    assert_eq!((&again, changed, brought), (&applied, Vec::new(), Vec::new()), "the same marks change nothing");
+    // The cap: 1000 symbols take a replace, and refuse a 1001st.
+    let mut full = d.clone();
+    let mut id_source = IdSource::seeded(7);
+    for i in 1..MAX_SYMBOLS {
+        let id = full.allocate_id(&mut id_source).unwrap();
+        full.symbols.add([Arc::new(Symbol { name: format!("Extra {i}"), ..mark(id) })]);
+    }
+    full.validate().unwrap();
+    let mut only_mark = Drawing { symbols: ById::default(), placed_symbols: ById::default(), ..template.clone() };
+    only_mark.symbols.add([Arc::new(new_mark)]);
+    let (kept, ..) = apply(&full, &only_mark, &mut IdSource::seeded(8)).unwrap();
+    assert_eq!(kept.symbols.len(), MAX_SYMBOLS);
+    let refusal = apply(&full, &template, &mut IdSource::seeded(8)).unwrap_err().to_string();
+    assert!(refusal.contains("at most 1000 symbols"), "{refusal}");
 }

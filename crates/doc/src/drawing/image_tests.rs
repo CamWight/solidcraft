@@ -325,7 +325,7 @@ fn a_logo_goes_with_the_block_a_template_replaces() {
     // A template whose sheet has the built-in block, with no logo.
     let mut chosen = crate::drawing::template::built_in(crate::drawing::template::default_for(false)).unwrap().unwrap();
     Arc::make_mut(&mut chosen.sheets[0]).title_block = Some(solidcraft_geom::title_block::default_block());
-    let (applied, _) = crate::drawing::template::apply(&d, &chosen, &mut id_source).unwrap();
+    let (applied, ..) = crate::drawing::template::apply(&d, &chosen, &mut id_source).unwrap();
     assert!(applied.images.is_empty() && logo_of(&applied, 0).is_none());
 }
 
@@ -366,14 +366,14 @@ fn a_template_carries_its_logos_file() {
         });
     }
     template::check(&clash).unwrap();
-    let (applied, changed) = template::apply(&other, &clash, &mut seeded).unwrap();
+    let (applied, changed, _) = template::apply(&other, &clash, &mut seeded).unwrap();
     assert_eq!(changed.len(), 1);
     let shown = logo_of(&applied, 0).unwrap();
     assert_ne!(shown, taken);
     assert_eq!(base64_decode(&applied.images.by_id(shown).unwrap().data).unwrap(), logo);
     assert_eq!(base64_decode(&applied.images.by_id(taken).unwrap().data).unwrap(), png(99, 99), "the placed image keeps its own");
     assert!(applied.sheet_images.by_id(placement).is_some());
-    let (again, changed) = template::apply(&applied, &clash, &mut seeded).unwrap();
+    let (again, changed, _) = template::apply(&applied, &clash, &mut seeded).unwrap();
     assert_eq!((changed.len(), again.images.iter().count()), (0, 2), "the same bytes are the same file");
 
     let mut placed_in_it = read;
@@ -393,7 +393,7 @@ fn a_template_brings_each_logo_file_in_once() {
     let saved = template::from_drawing(&d).unwrap();
     let (target, _) = with_blocks();
     let (mut seeded, mut once) = (IdSource::seeded(7), IdSource::seeded(7));
-    let (applied, _) = template::apply(&target, &saved, &mut seeded).unwrap();
+    let (applied, ..) = template::apply(&target, &saved, &mut seeded).unwrap();
     let first = target.allocate_id(&mut once).unwrap();
     assert_eq!((logo_of(&applied, 0), logo_of(&applied, 1), applied.images.iter().count()), (Some(first), Some(first), 1));
     assert_eq!(applied.allocate_id(&mut seeded).unwrap(), applied.allocate_id(&mut once).unwrap(), "one id was taken");
