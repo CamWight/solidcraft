@@ -324,7 +324,11 @@ pub fn write_atomic_no_follow(path: &Path, bytes: &[u8]) -> std::io::Result<()> 
 }
 
 /// Publish a complete new file without replacing an existing destination, even if another
-/// writer creates it after this call starts. Unsupported filesystems return an error.
+/// writer creates it after this call starts. The whole file is written beside it, then moved to
+/// the name in one step that fails if anything has the name, so the name only ever holds the whole
+/// file. A drive that refuses that step too gets the file written in place with `create_new`: it
+/// still never replaces or follows anything at the name, but a crash part way can leave a short
+/// file there.
 pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if cfg!(target_arch = "wasm32") {
         let name = path.to_string_lossy();
@@ -334,27 +338,62 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         return crate::vfs::write(&name, bytes);
     }
     let tmp = temp_beside(path, "create");
-    // Only remove a temporary file that this invocation successfully created.
-    // The file closes at the end of this block, before it is linked into place.
-    let result = {
+    // The file closes at the end of this block, before it is moved into place.
+    let written = {
         let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes).and_then(|_| flush(&file))
     };
-    let result = result.and_then(|_| rename_no_replace(&tmp, path));
-    let _ = fs::remove_file(&tmp);
+    if let Err(e) = written {
+        // Only a temporary file this call made.
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
+    }
+    // From here the temporary file is the rename's: moved to the name, or removed when refused.
+    let result = match rename_no_replace(&tmp, path) {
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => write_in_place(path, bytes),
+        renamed => renamed,
+    };
     if result.is_ok() {
         sync_dir(path);
     }
     result
 }
 
-/// Give `tmp` the name `path` without replacing anything there.
+/// Give `tmp` the name `path` in one step that fails if anything has the name: tempfile's
+/// no-replace rename (`MoveFileExW` without replacing on Windows, `renameat2(RENAME_NOREPLACE)` on
+/// Linux and Android, `renameatx_np(RENAME_EXCL)` on Apple systems, a hard link where those are
+/// missing). A rename needs no hard link, so exFAT, FAT32 and ReFS drives take it (#16243). The
+/// temporary file is moved, or removed when the rename is refused (the error's `TempPath` is
+/// dropped).
+#[cfg(not(target_arch = "wasm32"))]
 fn rename_no_replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    let tmp = tempfile::TempPath::from_path(tmp);
     #[cfg(test)]
     if tests::NO_REPLACE_REFUSED.with(std::cell::Cell::get) {
         return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "this drive refuses a no-replace rename"));
     }
-    fs::hard_link(tmp, path)
+    tmp.persist_noclobber(path).map_err(|e| e.error)
+}
+
+/// The browser's host stores files itself; [`create_atomic`] never gets here.
+#[cfg(target_arch = "wasm32")]
+fn rename_no_replace(tmp: &Path, _: &Path) -> std::io::Result<()> {
+    let _ = fs::remove_file(tmp);
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
+/// Write a new file at `path` itself, for a drive that takes no no-replace rename: `create_new`
+/// refuses a file, folder or link already there. A failed write removes the file this call made.
+fn write_in_place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    // The file closes at the end of this block, before a failed one is removed.
+    let written = {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+        file.write_all(bytes).and_then(|_| flush(&file))
+    };
+    if written.is_err() {
+        let _ = fs::remove_file(path);
+    }
+    written
 }
 
 /// Leftover temporary files of saves that never finished (a crash part way), next to `path`
