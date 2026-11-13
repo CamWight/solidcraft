@@ -373,8 +373,8 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 fn rename_no_replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
     let tmp = tempfile::TempPath::from_path(tmp);
     #[cfg(test)]
-    if tests::NO_REPLACE_REFUSED.with(std::cell::Cell::get) {
-        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "this drive refuses a no-replace rename"));
+    if let Some(e) = tests::no_replace_fails() {
+        return Err(e);
     }
     tmp.persist_noclobber(path).map_err(|e| e.error)
 }
@@ -414,9 +414,32 @@ mod tests {
         /// This thread's saves find hard links refused ([`link_backup`]), as on a FAT drive: the
         /// backup is copied, exactly as it is there.
         pub(super) static LINKS_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-        /// This thread's new files find a no-replace rename refused too ([`create_atomic`]), as on a
-        /// drive that takes neither it nor a hard link.
-        pub(super) static NO_REPLACE_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// This thread's no-replace renames ([`create_atomic`]) fail this many times in a row, with
+        /// this error, before the drive is asked: as on a drive that takes neither the rename nor a
+        /// hard link, or while another program holds the new file. Set with [`fail_no_replace`].
+        static NO_REPLACE_FAILS: std::cell::Cell<(u32, fn() -> std::io::Error)> =
+            const { std::cell::Cell::new((0, drive_refuses as fn() -> std::io::Error)) };
+    }
+
+    /// The next `times` no-replace renames on this thread fail with `error` (`u32::MAX`: all of them).
+    fn fail_no_replace(times: u32, error: fn() -> std::io::Error) {
+        NO_REPLACE_FAILS.with(|f| f.set((times, error)));
+    }
+
+    /// The hook's next failure, while any are left.
+    pub(super) fn no_replace_fails() -> Option<std::io::Error> {
+        NO_REPLACE_FAILS.with(|f| {
+            let (times, error) = f.get();
+            (times > 0).then(|| {
+                f.set((times - 1, error));
+                error()
+            })
+        })
+    }
+
+    /// What a drive that takes neither a no-replace rename nor a hard link answers.
+    fn drive_refuses() -> std::io::Error {
+        std::io::Error::new(std::io::ErrorKind::Unsupported, "this drive refuses a no-replace rename")
     }
 
     /// A new, empty folder of its own for one test (nothing in it is removed).
@@ -650,7 +673,7 @@ mod tests {
                     let gate = gate.clone();
                     let p = p.clone();
                     std::thread::spawn(move || {
-                        NO_REPLACE_REFUSED.with(|r| r.set(refused));
+                        fail_no_replace(if refused { u32::MAX } else { 0 }, drive_refuses);
                         gate.wait();
                         create_atomic(&p, bytes)
                     })
@@ -669,30 +692,96 @@ mod tests {
     /// #16243: a drive that takes neither a hard link nor a no-replace rename (exFAT or FAT32 where
     /// the rename is refused too) still gets the new file, written in place: whole, with no
     /// temporary file left, and never in place of a file, a folder or a link already at the name.
+    /// It is told so in each of the ways such a drive says it: the system's "not supported" by kind
+    /// (ENOSYS) or by number (EOPNOTSUPP, ENOTSUP, ERROR_NOT_SUPPORTED), and os error 1 (EPERM from
+    /// Linux's `link` on a file system without links, ERROR_INVALID_FUNCTION on Windows).
     #[test]
     fn create_works_where_the_drive_refuses_links_and_no_replace_renames() {
-        NO_REPLACE_REFUSED.with(|r| r.set(true));
-        let d = dir("create-in-place");
-        let p = d.join("library.json");
-        create_atomic(&p, b"whole library").unwrap();
-        assert_eq!(fs::read(&p).unwrap(), b"whole library");
-        assert_eq!(create_atomic(&p, b"replacement").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
-        assert_eq!(fs::read(&p).unwrap(), b"whole library");
-        let folder = d.join("folder.json");
-        fs::create_dir(&folder).unwrap();
-        assert!(create_atomic(&folder, b"x").is_err());
-        assert!(folder.is_dir() && fs::read_dir(&folder).unwrap().next().is_none(), "the folder is as it was");
-        #[cfg(unix)]
-        {
-            let theirs = d.join("elsewhere.json");
-            fs::write(&theirs, b"theirs").unwrap();
-            let link = d.join("link.json");
-            std::os::unix::fs::symlink(&theirs, &link).unwrap();
-            assert!(create_atomic(&link, b"ours").is_err());
-            assert_eq!(fs::read(&theirs).unwrap(), b"theirs", "the file a link names is never written");
+        const NOT_SUPPORTED: i32 = if cfg!(windows) {
+            50
+        } else if cfg!(any(target_os = "linux", target_os = "android")) {
+            95
+        } else {
+            45
+        };
+        let refusals: [fn() -> std::io::Error; 3] =
+            [drive_refuses, || std::io::Error::from_raw_os_error(NOT_SUPPORTED), || std::io::Error::from_raw_os_error(1)];
+        for (i, refusal) in refusals.into_iter().enumerate() {
+            fail_no_replace(u32::MAX, refusal);
+            let d = dir(&format!("create-in-place-{i}"));
+            let p = d.join("library.json");
+            create_atomic(&p, b"whole library").unwrap();
+            assert_eq!(fs::read(&p).unwrap(), b"whole library", "refusal {i}");
+            assert_eq!(create_atomic(&p, b"replacement").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists, "refusal {i}");
+            assert_eq!(fs::read(&p).unwrap(), b"whole library", "refusal {i}");
+            let folder = d.join("folder.json");
+            fs::create_dir(&folder).unwrap();
+            assert!(create_atomic(&folder, b"x").is_err(), "refusal {i}");
+            assert!(folder.is_dir() && fs::read_dir(&folder).unwrap().next().is_none(), "the folder is as it was, refusal {i}");
+            #[cfg(unix)]
+            {
+                let theirs = d.join("elsewhere.json");
+                fs::write(&theirs, b"theirs").unwrap();
+                let link = d.join("link.json");
+                std::os::unix::fs::symlink(&theirs, &link).unwrap();
+                assert!(create_atomic(&link, b"ours").is_err(), "refusal {i}");
+                assert_eq!(fs::read(&theirs).unwrap(), b"theirs", "the file a link names is never written, refusal {i}");
+            }
+            assert!(stale_temps(&p).is_empty() && stale_temps(&folder).is_empty(), "no temporary file is left, refusal {i}");
+            fs::remove_dir_all(d).unwrap();
         }
-        assert!(stale_temps(&p).is_empty() && stale_temps(&folder).is_empty(), "no temporary file is left");
-        NO_REPLACE_REFUSED.with(|r| r.set(false));
+        fail_no_replace(0, drive_refuses);
+    }
+
+    /// A rename Windows refuses while another program holds the new file for a moment (an antivirus
+    /// or indexer, #8104) is tried again, as a save's is, and the file is published whole in one
+    /// step: never written in place, which would give up the crash safety on a drive that has it.
+    /// Held for good, it is reported in a save's words. Elsewhere the same numbers are other errors
+    /// (EIO, EPIPE), reported as they are.
+    #[test]
+    fn create_tries_a_held_rename_again_and_never_writes_it_in_place() {
+        let held: [fn() -> std::io::Error; 2] = [|| std::io::Error::from_raw_os_error(5), || std::io::Error::from_raw_os_error(32)];
+        for (code, error) in [5, 32].into_iter().zip(held) {
+            let d = dir(&format!("create-held-{code}"));
+            let p = d.join("render.exr");
+            fail_no_replace(2, error);
+            let result = create_atomic(&p, b"whole image");
+            let left = NO_REPLACE_FAILS.with(|f| f.get().0);
+            if cfg!(windows) {
+                assert!(result.is_ok() && left == 0, "os error {code}: {result:?}, {left} refusals not tried again");
+                assert_eq!(fs::read(&p).unwrap(), b"whole image");
+            } else {
+                assert_eq!(result.map_err(|e| e.raw_os_error()), Err(Some(code)));
+                assert!(!p.exists(), "nothing written in place, os error {code}");
+            }
+            assert!(stale_temps(&p).is_empty(), "no temporary file is left, os error {code}");
+            fs::remove_dir_all(d).unwrap();
+        }
+        #[cfg(windows)]
+        {
+            let d = dir("create-held-for-good");
+            let p = d.join("render.exr");
+            fail_no_replace(u32::MAX, held[1]);
+            let result = create_atomic(&p, b"whole image");
+            assert!(result.as_ref().is_err_and(|e| e.to_string().contains("another program may have it open")), "{result:?}");
+            assert!(!p.exists() && stale_temps(&p).is_empty(), "nothing at the name, no temporary file");
+            fs::remove_dir_all(d).unwrap();
+        }
+        fail_no_replace(0, drive_refuses);
+    }
+
+    /// Any other refused rename (here the temporary file gone, os error 2 on every system) is
+    /// reported as it is: the file is not written in place instead.
+    #[test]
+    fn create_reports_any_other_refused_rename() {
+        let d = dir("create-other-error");
+        let p = d.join("library.json");
+        fail_no_replace(1, || std::io::Error::from_raw_os_error(2));
+        let result = create_atomic(&p, b"whole library");
+        fail_no_replace(0, drive_refuses);
+        assert_eq!(result.map_err(|e| e.kind()), Err(std::io::ErrorKind::NotFound));
+        assert!(!p.exists(), "nothing written in place");
+        assert!(stale_temps(&p).is_empty(), "no temporary file is left");
         fs::remove_dir_all(d).unwrap();
     }
 
