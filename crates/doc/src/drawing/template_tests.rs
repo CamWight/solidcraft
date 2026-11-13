@@ -337,3 +337,51 @@ fn a_template_gives_its_symbols_to_every_new_drawing() {
     let again = instantiate(&template, "First", &taken, &mut IdSource::seeded(1)).unwrap();
     assert_eq!(again, first, "the same ids again from the same seed");
 }
+
+/// Applying a template brings its symbols in: a name the drawing hasn't got comes with an id of its
+/// own; one it has is replaced where it stands, so its placements show the template's mark, and an
+/// answer to a prompt the new mark doesn't ask for is dropped and said so. The same marks again change
+/// nothing, and no placement comes with them. At the cap of symbols, a replace is taken and one more
+/// is refused, the drawing unchanged.
+#[test]
+fn a_template_applied_brings_its_symbols() {
+    let (d, symbol, [on_sheet, ..]) = marked();
+    // The company's template: a new mark with no revision, a logo, and the mark placed on its sheet.
+    let mut template = made("iso-a3-part");
+    let new_mark = Symbol { pieces: mark(0).pieces[..1].to_vec(), ..mark(77) };
+    let logo = Symbol { name: "Logo".into(), ..mark(78) };
+    template.symbols.add([Arc::new(new_mark.clone()), Arc::new(logo.clone())]);
+    let anchor = Anchor::Sheet(template.sheets[0].id);
+    let placed = PlacedSymbol { id: 79, symbol: 77, anchor, at: [10.0, 10.0], scale: 1.0, angle: 0.0, answers: BTreeMap::new() };
+    template.placed_symbols.add([Arc::new(placed)]);
+    check(&template).unwrap();
+    let (applied, _, brought) = apply(&d, &template, &mut IdSource::seeded(5)).unwrap();
+    let logo_id = applied.symbols.iter().find(|s| s.name == "Logo").unwrap().id;
+    let mark_brought = Brought { symbol, name: "Mark".into(), replaced: true, lost: vec!["rev".into()] };
+    assert_eq!(brought, [mark_brought, Brought { symbol: logo_id, name: "Logo".into(), replaced: false, lost: Vec::new() }]);
+    assert_eq!(applied.symbols.by_id(symbol).unwrap().pieces, new_mark.pieces, "replaced where it stands");
+    assert_eq!(applied.symbols.by_id(logo_id).unwrap().pieces, logo.pieces);
+    assert!(!d.ids().any(|id| id == logo_id), "an id of its own");
+    assert_eq!(
+        applied.placed_symbols.iter().map(|p| p.id).collect::<Vec<_>>(),
+        d.placed_symbols.iter().map(|p| p.id).collect::<Vec<_>>(),
+        "none comes"
+    );
+    assert!(applied.placed_symbols.by_id(on_sheet).unwrap().answers.is_empty(), "the answer to `rev` is dropped");
+    let (again, changed, brought) = apply(&applied, &template, &mut IdSource::seeded(6)).unwrap();
+    assert_eq!((&again, changed, brought), (&applied, Vec::new(), Vec::new()), "the same marks change nothing");
+    // The cap: 1000 symbols take a replace, and refuse a 1001st.
+    let mut full = d.clone();
+    let mut id_source = IdSource::seeded(7);
+    for i in 1..MAX_SYMBOLS {
+        let id = full.allocate_id(&mut id_source).unwrap();
+        full.symbols.add([Arc::new(Symbol { name: format!("Extra {i}"), ..mark(id) })]);
+    }
+    full.validate().unwrap();
+    let mut only_mark = Drawing { symbols: ById::default(), placed_symbols: ById::default(), ..template.clone() };
+    only_mark.symbols.add([Arc::new(new_mark)]);
+    let (kept, ..) = apply(&full, &only_mark, &mut IdSource::seeded(8)).unwrap();
+    assert_eq!(kept.symbols.len(), MAX_SYMBOLS);
+    let refusal = apply(&full, &template, &mut IdSource::seeded(8)).unwrap_err().to_string();
+    assert!(refusal.contains("at most 1000 symbols"), "{refusal}");
+}
