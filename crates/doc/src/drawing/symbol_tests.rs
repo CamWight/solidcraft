@@ -99,6 +99,19 @@ fn symbols_save_what_they_are_and_read_back_as_saved() {
     assert!(Drawing::from_json(&older.to_string()).unwrap().symbols.is_empty());
 }
 
+/// A drawing a newer build saved, with a field this build can't read, opens with its symbols: they
+/// are one of the record's fields, never set aside as a newer build's.
+#[test]
+fn a_newer_builds_drawing_opens_with_its_symbols() {
+    let (d, _) = with_symbols();
+    let mut v = file(&d);
+    v["format"] = json!(DRAWING.format_string(DRAWING.current() + 1));
+    v["future_views"] = json!([{"id": "a"}]);
+    let opened = Drawing::from_json(&v.to_string()).unwrap();
+    assert_eq!(opened.newer_file.as_ref().unwrap().not_understood, ["field `future_views`"]);
+    assert_eq!(opened.symbols, d.symbols);
+}
+
 /// A symbol's prompts are its texts' prompt keys, each once and sorted; a symbol without texts has
 /// none.
 #[test]
