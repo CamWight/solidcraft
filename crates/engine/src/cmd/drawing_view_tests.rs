@@ -4,7 +4,7 @@ use serde_json::json;
 use solidcraft_doc::MAX_PLACEMENT_DEPTH;
 use solidcraft_doc::drawing::DEFAULT_DPI;
 use solidcraft_geom::cell::Projection;
-use solidcraft_geom::drawing_view::ProjectedSide;
+use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
 use solidcraft_geom::paper::NoPictures;
 use solidcraft_geom::paper::line::{LineGroup, LineKind};
 

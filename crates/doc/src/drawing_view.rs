@@ -69,6 +69,21 @@ impl ViewDirection {
     }
 }
 
+/// The named view that is exactly `basis`, if one is.
+pub fn named(basis: &Plane) -> Option<NamedView> {
+    NamedView::ALL.iter().copied().find(|v| v.basis() == *basis)
+}
+
+/// `basis` as a base view saves it ([`ViewDirection::basis`] gives it back): by name when it is
+/// exactly a named view's, so nothing rounds; else its line of sight and up, which give the same
+/// basis back to within rounding.
+pub fn looking(basis: &Plane) -> ViewDirection {
+    named(basis).map_or_else(
+        || ViewDirection::Looking(Looking { direction: basis.y.cross(basis.x).into(), up: basis.y.into(), origin: basis.origin.into() }),
+        ViewDirection::Named,
+    )
+}
+
 /// Tangent edges, where faces meet smoothly: left out (the default) or drawn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
