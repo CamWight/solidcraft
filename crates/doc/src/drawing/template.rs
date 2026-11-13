@@ -7,6 +7,9 @@
 //! A drawing saved as a template ([`from_drawing`]) keeps its format and leaves its model behind; a
 //! template file reads as a drawing does, then is held to the template rules ([`read`]).
 //!
+//! A template keeps what sits on its sheets, such as a note or a revision table; what sits on a view
+//! goes with the view. A new drawing has them on its sheets' new ids.
+//!
 //! A template applied to a drawing ([`apply`]) gives each sheet its paper, drawing border and title
 //! block, and moves nothing on it. A logo in a block travels with it, its file brought into the drawing.
 //!
@@ -30,6 +33,7 @@ use solidcraft_geom::title_block::{self, CellKind, TitleBlock};
 
 use super::Drawing;
 use super::image::ImageFile;
+use super::note::Anchor;
 use crate::format::DRAWING;
 use crate::ids::{self, IdSource};
 use crate::{DocError, Document, Result};
@@ -93,21 +97,43 @@ pub fn check(template: &Drawing) -> Result<()> {
 
 /// A new drawing named `name` from `template`: a copy with the format this build writes, an id
 /// none of `taken` has (its design's drawings'), and each sheet an id of its own, all from
-/// `id_source`.
+/// `id_source` and none of the template's. What sits on a sheet names the sheet's new id.
 pub fn instantiate(template: &Drawing, name: &str, taken: &BTreeSet<u64>, id_source: &mut IdSource) -> Result<Drawing> {
     check(template)?;
-    let id = id_source.next(taken)?;
-    let mut in_use = BTreeSet::from([id]);
-    let mut sheets = Vec::with_capacity(template.sheets.len());
-    for sheet in &template.sheets {
-        let sheet_id = id_source.next(&in_use)?;
-        in_use.insert(sheet_id);
-        sheets.push(Arc::new(super::Sheet { id: sheet_id, ..(**sheet).clone() }));
-    }
+    let mut in_use: BTreeSet<u64> = template.ids().chain(taken.iter().copied()).collect();
+    let mut fresh = || -> Result<u64> {
+        let id = id_source.next(&in_use)?;
+        in_use.insert(id);
+        Ok(id)
+    };
+    let id = fresh()?;
+    let sheets: BTreeMap<u64, u64> = template.sheets.iter().map(|sheet| Ok((sheet.id, fresh()?))).collect::<Result<_>>()?;
     let format = DRAWING.format_string(DRAWING.current());
-    let drawing = Drawing { format, format_pending: DRAWING.pending_names(), id, name: name.into(), sheets, ..template.clone() };
-    drawing.validate()?;
-    Ok(drawing)
+    let mut d = Drawing { format, format_pending: DRAWING.pending_names(), id, name: name.into(), ..template.clone() };
+    d.sheets = template.sheets.iter().map(|sheet| Arc::new(super::Sheet { id: new_id(&sheets, sheet.id), ..(**sheet).clone() })).collect();
+    // A template holds nothing else on a sheet ([`check`]): no views, placed images or revision tags.
+    for note in d.notes.iter_mut() {
+        Arc::make_mut(note).anchor = on_new_sheet(&note.anchor, &sheets);
+    }
+    for table in d.tables.iter_mut() {
+        Arc::make_mut(table).sheet = new_id(&sheets, table.sheet);
+    }
+    d.validate()?;
+    Ok(d)
+}
+
+/// `old`'s new id in `ids` (old to new), which has every id of its kind the template has.
+fn new_id(ids: &BTreeMap<u64, u64>, old: u64) -> u64 {
+    ids.get(&old).copied().unwrap_or(old)
+}
+
+/// `anchor` on its sheet's new id (`sheets`, old to new), when it is on a sheet: a template's anchors
+/// all are, since it has no views.
+fn on_new_sheet(anchor: &Anchor, sheets: &BTreeMap<u64, u64>) -> Anchor {
+    match anchor {
+        Anchor::Sheet(old) => Anchor::Sheet(new_id(sheets, *old)),
+        other => other.clone(),
+    }
 }
 
 /// `drawing` as a template: its format, and nothing it draws or documents (its sources, views,
@@ -115,10 +141,12 @@ pub fn instantiate(template: &Drawing, name: &str, taken: &BTreeSet<u64>, id_sou
 /// nor its number, which drawings made from it get their own of. Its other properties, its revision
 /// numbering, its logos and the text typed over its cells of plain text stay; text typed over a cell
 /// that shows a field (a parameter, a value or a reference) goes with the design that field reads.
+/// The notes on its sheets stay; those on a view, or on a view's model, go with the views.
 pub fn from_drawing(drawing: &Drawing) -> Result<Drawing> {
     let mut template = drawing.clone();
     template.sources.clear();
     template.views.clear();
+    template.notes.retain(|note| note.anchor.view().is_none());
     template.dimensions.clear();
     template.balloons.clear();
     template.sheet_images.clear();
