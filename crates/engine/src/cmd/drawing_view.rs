@@ -38,15 +38,16 @@ use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::drawing::dimension::{Dimension, LabelKind, MAX_DECIMALS, reading_label};
 use solidcraft_doc::drawing::note::Note;
-use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, Shows, View, ViewKind, ViewPlace, check_occurrence_paths, check_pose};
+use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, Shows, View, ViewKind, ViewPlace, check_occurrence_paths, check_pose, shifted};
 use solidcraft_doc::drawing_view::{
-    Exploded, JointPose, Looking, MAX_POSE_JOINTS, OccurrencePaths, Pose, StudyStep, TangentEdges, ViewConfiguration, ViewDirection, ViewOverrides,
+    Exploded, JointPose, MAX_POSE_JOINTS, OccurrencePaths, Pose, StudyStep, TangentEdges, ViewConfiguration, ViewDirection, ViewOverrides, looking,
+    named,
 };
 use solidcraft_doc::ids;
 use solidcraft_geom::Aabb2;
 use solidcraft_geom::drawing_measure::{self, AngleFrom, LinearDirection, Measured, Reading};
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
-use solidcraft_geom::drawing_view::{Invalid, NamedView, PRESETS, ProjectedSide, Scale};
+use solidcraft_geom::drawing_view::{Invalid, PRESETS, ProjectedSide, Scale};
 use solidcraft_geom::hlr::Visibility;
 use solidcraft_geom::paper::{MAX_COORDINATE_MM, Picture};
 use solidcraft_geom::prelude::*;
@@ -849,16 +850,6 @@ fn lined_up(d: &Drawing, id: u64) -> Vec<u64> {
     descendants(d, id, |v| matches!(v.place, ViewPlace::Aligned(_)))
 }
 
-/// `view`'s place moved by `by`: a point moves, and a place lined up with a parent moves along
-/// its free axis, so the views lined up with a moved view stay where they were beside it.
-fn shifted(view: &View, by: Vec2) -> ViewPlace {
-    match (view.place, view.kind) {
-        (ViewPlace::At([x, y]), _) => ViewPlace::At([x + by.x, y + by.y]),
-        (ViewPlace::Aligned(along), ViewKind::Projected { side, .. }) => ViewPlace::Aligned(along + side.along(by)),
-        (ViewPlace::Aligned(along), ViewKind::Base { .. }) => ViewPlace::Aligned(along + by.y),
-    }
-}
-
 /// The sheet `named` names in `d` (its id or its one name), and its centre.
 fn sheet_named(d: &Drawing, named: &str, cmd: &str) -> Result<(u64, Vec2)> {
     let at = d.sheet_index(named).map_err(|e| bad(cmd, e.to_string()))?;
@@ -1121,20 +1112,6 @@ fn to_sheet_answer(view: u64, sheet: u64, views: &[u64], outside: Vec<(u64, OnSh
         param_warnings: Vec::new(),
     };
     serde_json::to_value(reply).map_err(|e| crate::EngineError::Other(e.to_string()))
-}
-
-/// The named view that is exactly `basis`, if one is.
-fn named(basis: &Plane) -> Option<NamedView> {
-    NamedView::ALL.iter().copied().find(|v| v.basis() == *basis)
-}
-
-/// `basis` as a base view saves it: by name when it is exactly a named view's, so nothing rounds;
-/// else its line of sight and up, which give the same basis back to within rounding.
-fn looking(basis: &Plane) -> ViewDirection {
-    named(basis).map_or_else(
-        || ViewDirection::Looking(Looking { direction: basis.y.cross(basis.x).into(), up: basis.y.into(), origin: basis.origin.into() }),
-        ViewDirection::Named,
-    )
 }
 
 /// A basis as the replies give it: its name when it is exactly a named view's.

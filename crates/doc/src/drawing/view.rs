@@ -31,7 +31,7 @@ use solidcraft_render::VisualStyle;
 use super::{Drawing, add_by_id, in_id_order, require};
 use crate::drawing_view::{
     Exploded, MAX_JOINT_VALUES, MAX_POSE_JOINTS, MAX_POSE_VALUE, MAX_REFERENCE_SHOWN_PERCENT, OccurrencePaths, Pose, TangentEdges, ViewConfiguration,
-    ViewDirection, ViewOverrides, ViewSettings,
+    ViewDirection, ViewOverrides, ViewSettings, looking,
 };
 use crate::{DocError, MAX_PLACEMENT_DEPTH, Result, ids};
 
@@ -279,6 +279,41 @@ impl ResolvedView {
     pub fn shows(&self) -> Shows<'_> {
         let (source, hide) = (self.occurrences.value.as_deref(), self.hide.value.as_deref().unwrap_or_default());
         Shows::set_by(source, hide, (self.occurrences.set_by, self.hide.set_by))
+    }
+}
+
+/// `view`'s place moved by `by`: a point moves, and a place lined up with a parent moves along
+/// its free axis, so the views lined up with a moved view stay where they were beside it.
+pub fn shifted(view: &View, by: Vec2) -> ViewPlace {
+    match (view.place, view.kind) {
+        (ViewPlace::At([x, y]), _) => ViewPlace::At([x + by.x, y + by.y]),
+        (ViewPlace::Aligned(along), ViewKind::Projected { side, .. }) => ViewPlace::Aligned(along + side.along(by)),
+        (ViewPlace::Aligned(along), ViewKind::Base { .. }) => ViewPlace::Aligned(along + by.y),
+    }
+}
+
+impl View {
+    /// This view made a base view of `source` that looks the way `resolved` says it did, with the
+    /// settings it had as its own, centred at `at`: a copy follows none of the views it came from.
+    /// Its line group is its own only when its chain gave it: else it follows its new sheet, as a
+    /// base view copied does. A state of the assembly it drew (exploded, posed, a row of the
+    /// configuration table) is its own when it isn't the default. Every setting is named, so a new
+    /// one must say whether a copy keeps it.
+    pub fn as_base(self, resolved: &ResolvedView, source: u64, at: Vec2) -> View {
+        let settings = ViewOverrides {
+            scale: Some(resolved.scale.value),
+            visual_style: Some(resolved.visual_style.value),
+            reference_style: Some(resolved.reference_style.value),
+            reference_hides_model: Some(resolved.reference_hides_model.value),
+            tangent_edges: Some(resolved.tangent_edges.value),
+            occurrences: resolved.occurrences.value.clone(),
+            hide: resolved.hide.value.clone(),
+            line_group: matches!(resolved.line_group.set_by, SetBy::This | SetBy::Parent(_)).then_some(resolved.line_group.value),
+            exploded: Some(resolved.exploded.value).filter(|exploded| *exploded != Exploded::Assembled),
+            pose: Some(resolved.pose.value.clone()).filter(|pose| *pose != Pose::Designed),
+            configuration: Some(resolved.configuration.value).filter(|row| *row != ViewConfiguration::Active),
+        };
+        View { kind: ViewKind::Base { source, view: looking(&resolved.basis) }, settings, place: ViewPlace::At([at.x, at.y]), ..self }
     }
 }
 
