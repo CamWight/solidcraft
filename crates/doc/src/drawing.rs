@@ -72,6 +72,7 @@ pub mod dimension;
 pub mod fields;
 pub mod image;
 pub mod note;
+pub mod paste;
 pub mod table;
 pub mod template;
 pub mod view;
@@ -563,6 +564,19 @@ impl Drawing {
     /// gives one twice.
     pub fn allocate_id(&self, id_source: &mut IdSource) -> Result<u64> {
         id_source.next(&self.ids().collect())
+    }
+
+    /// `count` ids for new objects, as [`Drawing::allocate_id`] gives one, with the drawing's ids
+    /// gathered once for all of them, not once each.
+    pub fn allocate_ids(&self, count: usize, id_source: &mut IdSource) -> Result<Vec<u64>> {
+        let mut taken: BTreeSet<u64> = self.ids().collect();
+        (0..count)
+            .map(|_| {
+                let id = id_source.next(&taken)?;
+                taken.insert(id);
+                Ok(id)
+            })
+            .collect()
     }
 
     /// The name a new sheet gets: the first `Sheet N` no sheet has, counting from one past the
