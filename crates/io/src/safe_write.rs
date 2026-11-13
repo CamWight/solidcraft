@@ -340,12 +340,21 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
         file.write_all(bytes).and_then(|_| flush(&file))
     };
-    let result = result.and_then(|_| fs::hard_link(&tmp, path));
+    let result = result.and_then(|_| rename_no_replace(&tmp, path));
     let _ = fs::remove_file(&tmp);
     if result.is_ok() {
         sync_dir(path);
     }
     result
+}
+
+/// Give `tmp` the name `path` without replacing anything there.
+fn rename_no_replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    #[cfg(test)]
+    if tests::NO_REPLACE_REFUSED.with(std::cell::Cell::get) {
+        return Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "this drive refuses a no-replace rename"));
+    }
+    fs::hard_link(tmp, path)
 }
 
 /// Leftover temporary files of saves that never finished (a crash part way), next to `path`
@@ -376,6 +385,9 @@ mod tests {
         /// This thread's saves find hard links refused ([`link_backup`]), as on a FAT drive: the
         /// backup is copied, exactly as it is there.
         pub(super) static LINKS_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        /// This thread's new files find a no-replace rename refused too ([`create_atomic`]), as on a
+        /// drive that takes neither it nor a hard link.
+        pub(super) static NO_REPLACE_REFUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 
     /// A new, empty folder of its own for one test (nothing in it is removed).
@@ -595,28 +607,63 @@ mod tests {
         fs::remove_dir_all(d).unwrap();
     }
 
+    /// Two creators at once publish one whole file, the other told it exists, whether the drive
+    /// takes a no-replace rename or the file is written in place.
     #[test]
     fn concurrent_creators_publish_exactly_one_whole_file() {
-        let d = dir("create-race");
-        let p = d.join("render.png");
-        let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
-        let workers: Vec<_> = [b"first image".as_slice(), b"second image".as_slice()]
-            .into_iter()
-            .map(|bytes| {
-                let gate = gate.clone();
-                let p = p.clone();
-                std::thread::spawn(move || {
-                    gate.wait();
-                    create_atomic(&p, bytes)
+        for refused in [false, true] {
+            let d = dir(if refused { "create-race-in-place" } else { "create-race" });
+            let p = d.join("render.png");
+            let gate = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let workers: Vec<_> = [b"first image".as_slice(), b"second image".as_slice()]
+                .into_iter()
+                .map(|bytes| {
+                    let gate = gate.clone();
+                    let p = p.clone();
+                    std::thread::spawn(move || {
+                        NO_REPLACE_REFUSED.with(|r| r.set(refused));
+                        gate.wait();
+                        create_atomic(&p, bytes)
+                    })
                 })
-            })
-            .collect();
-        let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
-        assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
-        assert_eq!(results.iter().filter_map(|r| r.as_ref().err()).next().unwrap().kind(), std::io::ErrorKind::AlreadyExists);
-        let bytes = fs::read(&p).unwrap();
-        assert!(bytes == b"first image" || bytes == b"second image");
-        assert!(stale_temps(&p).is_empty());
+                .collect();
+            let results: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+            assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1, "refused {refused}");
+            assert_eq!(results.iter().filter_map(|r| r.as_ref().err()).next().unwrap().kind(), std::io::ErrorKind::AlreadyExists);
+            let bytes = fs::read(&p).unwrap();
+            assert!(bytes == b"first image" || bytes == b"second image");
+            assert!(stale_temps(&p).is_empty());
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// #16243: a drive that takes neither a hard link nor a no-replace rename (exFAT or FAT32 where
+    /// the rename is refused too) still gets the new file, written in place: whole, with no
+    /// temporary file left, and never in place of a file, a folder or a link already at the name.
+    #[test]
+    fn create_works_where_the_drive_refuses_links_and_no_replace_renames() {
+        NO_REPLACE_REFUSED.with(|r| r.set(true));
+        let d = dir("create-in-place");
+        let p = d.join("library.json");
+        create_atomic(&p, b"whole library").unwrap();
+        assert_eq!(fs::read(&p).unwrap(), b"whole library");
+        assert_eq!(create_atomic(&p, b"replacement").unwrap_err().kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&p).unwrap(), b"whole library");
+        let folder = d.join("folder.json");
+        fs::create_dir(&folder).unwrap();
+        assert!(create_atomic(&folder, b"x").is_err());
+        assert!(folder.is_dir() && fs::read_dir(&folder).unwrap().next().is_none(), "the folder is as it was");
+        #[cfg(unix)]
+        {
+            let theirs = d.join("elsewhere.json");
+            fs::write(&theirs, b"theirs").unwrap();
+            let link = d.join("link.json");
+            std::os::unix::fs::symlink(&theirs, &link).unwrap();
+            assert!(create_atomic(&link, b"ours").is_err());
+            assert_eq!(fs::read(&theirs).unwrap(), b"theirs", "the file a link names is never written");
+        }
+        assert!(stale_temps(&p).is_empty() && stale_temps(&folder).is_empty(), "no temporary file is left");
+        NO_REPLACE_REFUSED.with(|r| r.set(false));
         fs::remove_dir_all(d).unwrap();
     }
 
