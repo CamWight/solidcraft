@@ -4,6 +4,8 @@ use solidcraft_geom::title_block;
 
 use super::*;
 use crate::drawing::Sheet;
+use crate::drawing::note::{Anchor, Note};
+use crate::drawing::table::{Kind, SheetTable};
 use crate::drawing::tests::plate;
 
 fn made(name: &str) -> Drawing {
@@ -163,22 +165,24 @@ fn a_drawing_saved_as_a_template_keeps_only_its_format() {
 }
 
 /// A damaged template file, cut short or with a byte changed anywhere, is read or refused, never
-/// a panic.
+/// a panic: a built-in, and a template with a note and a table on its sheet.
 #[test]
 fn a_damaged_template_file_never_panics() {
-    let text = made("iso-a3-part").to_json().unwrap();
-    let mut read_back = 0;
-    for at in (0..text.len()).step_by(7) {
-        let _ = text.get(..at).map(read);
-        for byte in *b"\"9{-x" {
-            let mut bytes = text.clone().into_bytes();
-            bytes[at] = byte;
-            if let Ok(changed) = String::from_utf8(bytes) {
-                read_back += usize::from(read(&changed).is_ok());
+    for template in [made("iso-a3-part"), from_drawing(&noted()).unwrap()] {
+        let text = template.to_json().unwrap();
+        let mut read_back = 0;
+        for at in (0..text.len()).step_by(7) {
+            let _ = text.get(..at).map(read);
+            for byte in *b"\"9{-x" {
+                let mut bytes = text.clone().into_bytes();
+                bytes[at] = byte;
+                if let Ok(changed) = String::from_utf8(bytes) {
+                    read_back += usize::from(read(&changed).is_ok());
+                }
             }
         }
+        assert!(read_back > 0, "some changes leave a template that still reads (in a name or a number)");
     }
-    assert!(read_back > 0, "some changes leave a template that still reads (in a name or a number)");
 }
 
 /// A drawing from a template has its own ids, none of the template's or of `taken`, the same ones
@@ -207,4 +211,57 @@ fn a_drawing_from_a_template_has_ids_of_its_own() {
     // A drawing with a model makes none.
     let refusal = instantiate(&plate(), "Copy", &taken, &mut IdSource::seeded(9)).unwrap_err().to_string();
     assert!(refusal.starts_with("a template draws no design"), "{refusal}");
+}
+
+/// A note reading `text`, at `anchor`.
+fn note_at(id: u64, anchor: Anchor, text: &str) -> Note {
+    Note { id, anchor, at: [20.0, 20.0], content: Content(vec![Part::Text(text.into())]), cap_mm: None, branches: Vec::new() }
+}
+
+/// A revision table on sheet `sheet`.
+fn revision_table(id: u64, sheet: u64) -> SheetTable {
+    let kind = Kind::Revision;
+    SheetTable { id, sheet, table: kind.default_table(), place: kind.default_place(), kind }
+}
+
+/// [`plate`] with a note on its first sheet and one on a view of that sheet, and a revision table
+/// on the sheet.
+fn noted() -> Drawing {
+    let mut d = plate();
+    let mut id_source = IdSource::seeded(13063);
+    let sheet = d.sheets[0].id;
+    let view = d.views.iter().find(|v| v.sheet == sheet).unwrap().id;
+    for (anchor, text) in [(Anchor::Sheet(sheet), "Deburr"), (Anchor::View(view), "Section A")] {
+        let id = d.allocate_id(&mut id_source).unwrap();
+        d.notes.add([Arc::new(note_at(id, anchor, text))]);
+    }
+    let id = d.allocate_id(&mut id_source).unwrap();
+    d.tables.add([Arc::new(revision_table(id, sheet))]);
+    d.validate().unwrap();
+    d
+}
+
+/// A drawing saved as a template keeps what sits on its sheets, a note and a revision table; a note
+/// on a view goes with the view. A drawing made from the template has them on its sheet's new id,
+/// and so does one made from a template given a note and a table by hand.
+#[test]
+fn a_template_keeps_what_sits_on_its_sheets() {
+    let d = noted();
+    let template = from_drawing(&d).unwrap();
+    assert_eq!(template.notes.iter().map(|n| &n.anchor).collect::<Vec<_>>(), [&Anchor::Sheet(d.sheets[0].id)], "the sheet's note stays");
+    assert_eq!(template.tables, d.tables);
+    let template = read(&template.to_json().unwrap()).unwrap();
+    let mut by_hand = made("iso-a3-part");
+    let sheet = by_hand.sheets[0].id;
+    by_hand.notes.add([Arc::new(note_at(77, Anchor::Sheet(sheet), "Deburr"))]);
+    by_hand.tables.add([Arc::new(revision_table(78, sheet))]);
+    check(&by_hand).unwrap();
+    for template in [template, by_hand] {
+        let drawn = instantiate(&template, "First", &BTreeSet::from([d.id]), &mut IdSource::seeded(1)).unwrap();
+        let sheet = drawn.sheets[0].id;
+        assert_ne!(sheet, template.sheets[0].id, "a sheet of its own");
+        assert_eq!((&drawn.notes[0].anchor, drawn.tables[0].sheet), (&Anchor::Sheet(sheet), sheet), "on the new sheet");
+        assert_eq!((drawn.notes.len(), drawn.tables.len()), (1, 1));
+        check(&drawn).unwrap();
+    }
 }

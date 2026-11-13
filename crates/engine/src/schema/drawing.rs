@@ -177,8 +177,8 @@ pub struct TemplateApplyResult {
 }
 
 /// Write the drawing open as a template file: its sheets, borders, title blocks and the text typed
-/// over their cells, its projection, units, language and properties, and nothing it draws or
-/// documents.
+/// over their cells, its projection, units, language and properties, what sits on its sheets, and
+/// nothing it draws or documents.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TemplateSaveParams {
