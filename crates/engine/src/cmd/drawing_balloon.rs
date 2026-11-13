@@ -19,6 +19,7 @@ use solidcraft_doc::ids;
 
 use super::CommandSpec;
 use super::drawing_dimension::{Slot, repair_reference, status_words};
+use super::drawing_view::{check_drawn, drawn_warning};
 use crate::params::bad;
 use crate::schema::drawing_balloon::{AddParams, BalloonResult, EditParams, EditResult, InspectParams, RepairParams};
 use crate::schema::{TypedContract, output_schema_for};
@@ -45,7 +46,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              {body, index}, with path: the occurrences its body is placed through, from the top (the part the balloon numbers; at \
              least one); at: [x, y], the balloon's centre on paper in mm from the view's centre; parts_list?: the table it reads \
              (default its sheet's only parts list, else the drawing's) → what drawing.balloon.inspect \
-             answers for it. Saved by the edge's name, never the point picked. One undo step; no model is evaluated.",
+             answers for it. Saved by the edge's name, never the point picked; one on a part its view doesn't draw (its hide or \n             source leaves it out) is refused. One undo step; no model is evaluated.",
         ),
     CommandSpec::new(EDIT, "Edit Balloon", crate::checked!("drawing.balloon.edit", edit))
         .icon("edit")
@@ -81,7 +82,7 @@ pub static COMMANDS: &[CommandSpec] = &[
              failed or lost, why?, point?: where its arrow ends (its edge's middle, in the design's frame), exact, candidates?: [{edge: \
              {body, index}}] what an ambiguous edge's name finds, or a lost one's leads ({face: {body, index}} too), parts_list?: the \
              list it reads, choices?: with none to go by, those it could name, item?: its row's item (\"1.2\"), \
-             row_status: ok, no_list, reference, no_row or not_found, warnings?}. A lost row never removes it. Read-only; no model is \
+             row_status: ok, no_list, reference, no_row or not_found, warnings?: such as its view edited since to leave its part out}. A lost row never removes it. Read-only; no model is \
              evaluated.",
         ),
 ];
@@ -92,6 +93,7 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
     let view = request.view.0;
     record.view(view).ok_or_else(|| bad(ADD, format!("the drawing has no view {}", ids::encode(view))))?;
     let edge = s.doc.edge_reference(&s.model, &request.edge.pick, &request.edge.path).map_err(|why| bad(ADD, why.to_string()))?;
+    check_drawn(&record, view, [edge.path.as_slice()], ADD)?;
     let id = record.allocate_id(&mut s.ids).map_err(|e| bad(ADD, e.to_string()))?;
     let balloon = Balloon { id, view, edge, at: request.at, parts_list: request.parts_list.map(|list| list.0) };
     s.edit_drawing(ADD, |d| {
@@ -127,8 +129,10 @@ fn repair(s: &mut Session, p: &Value) -> Result<Value> {
     let id = request.balloon.0;
     let unknown = || bad(REPAIR, format!("the drawing has no balloon {}", ids::encode(id)));
     let d = s.drawing(REPAIR)?;
-    d.balloons.by_id(id).ok_or_else(unknown)?;
-    let read = s.doc.resolve_balloons(&s.model, d, &[id]).map_err(|e| bad(REPAIR, e.to_string()))?;
+    let view = d.balloons.by_id(id).ok_or_else(unknown)?.view;
+    let read = crate::drawing_view::ViewSessions::new(s)
+        .read_on(d, &[(id, view)], solidcraft_doc::Document::resolve_balloons)
+        .map_err(|e| bad(REPAIR, e.to_string()))?;
     let now = read.into_iter().next().map(|r| r.status).ok_or_else(unknown)?;
     repair_reference(s, REPAIR, now, |s, copy| {
         let balloon = copy.balloons.index_of(id).and_then(|at| copy.balloons.get_mut(at)).map(Arc::make_mut).ok_or_else(unknown)?;
@@ -146,11 +150,14 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
 fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let d = s.drawing(cmd)?;
     let balloon = d.balloons.by_id(id).ok_or_else(|| bad(cmd, format!("the drawing has no balloon {}", ids::encode(id))))?;
-    let resolved = s.doc.resolve_balloons(&s.model, d, &[id]).map_err(|e| bad(cmd, e.to_string()))?;
+    let resolved = crate::drawing_view::ViewSessions::new(s)
+        .read_on(d, &[(id, balloon.view)], solidcraft_doc::Document::resolve_balloons)
+        .map_err(|e| bad(cmd, e.to_string()))?;
     let r = resolved.into_iter().next().ok_or_else(|| bad(cmd, format!("balloon {} wasn't read", ids::encode(id))))?;
     let (status, why, candidates) = status_words(r.status);
     let row = read_row(s, d, balloon);
-    let warnings = if row.status == "reference" { vec!["it points at a reference, which no parts list counts".to_string()] } else { Vec::new() };
+    let mut warnings = if row.status == "reference" { vec!["it points at a reference, which no parts list counts".to_string()] } else { Vec::new() };
+    warnings.extend(drawn_warning(d, balloon.view, [balloon.edge.path.as_slice()]));
     let reply = BalloonResult {
         balloon: ids::encode(id),
         view: ids::encode(balloon.view),

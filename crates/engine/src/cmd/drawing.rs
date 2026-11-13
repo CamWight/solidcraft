@@ -2,45 +2,49 @@
 //! and change the open drawing's own settings. A drawing lives in its design's file
 //! ([`solidcraft_doc::Document::drawings`]); while one is open, the drawing commands change it and
 //! the model's wait ([`super::Part`]). Each change of a drawing is one undo step of that drawing,
-//! and evaluates nothing; making and deleting one are steps of the model, whose list of drawings
-//! they change.
+//! and evaluates no model, but a view of another configuration it measures evaluates a copy of the
+//! design; the design is unchanged. Making and deleting one are steps of the model, whose list of
+//! drawings they change.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use solidcraft_doc::bom::{self, Mass, Tree};
+use solidcraft_doc::bom::{self, Tree};
 use solidcraft_doc::drawing::balloon::balloons_by_row;
-use solidcraft_doc::drawing::fields::{Component, Values};
 use solidcraft_doc::drawing::table::Kind;
 use solidcraft_doc::drawing::view::{MAX_VIEW_DEPTH, View, ViewKind};
-use solidcraft_doc::drawing::{self, Drawing, Source, Units, template};
+use solidcraft_doc::drawing::{self, Drawing, Source, template};
 use solidcraft_doc::drawing_view::ViewDirection;
 use solidcraft_doc::{Document, ids};
-use solidcraft_geom::cell::{Content, Projection};
+use solidcraft_geom::cell::Warning;
 use solidcraft_geom::drawing_view::ProjectedSide;
-use solidcraft_geom::revision::Numbering;
-use solidcraft_geom::title_block::CellKind;
+use solidcraft_geom::paper::line::LineGroup;
+use solidcraft_sketch::PaperFonts;
 
 use super::CommandSpec;
 use crate::params::{bad, str_};
 use crate::schema::drawing::{
-    SheetTemplateChange, TemplateApplyParams, TemplateApplyResult, TemplateEntry, TemplateListParams, TemplateListResult, TemplateSaveParams,
-    TemplateSaveResult,
+    DrawingCreateParams, DrawingSetParams, SheetTemplateChange, TemplateApplyParams, TemplateApplyResult, TemplateEntry, TemplateListParams,
+    TemplateListResult, TemplateSaveParams, TemplateSaveResult,
 };
+use crate::schema::drawing_view::LineGroupParam;
 use crate::schema::{TypedContract, output_schema_for};
+use crate::title_block_text::{self, CellText, Note};
 use crate::{EngineError, Result, Session};
 
 /// The longest template file path taken, in bytes, as the sheet export's.
 const MAX_PATH_BYTES: usize = 4096;
+const CREATE_CONTRACT: TypedContract<DrawingCreateParams> = TypedContract::new();
+const SET_CONTRACT: TypedContract<DrawingSetParams> = TypedContract::new();
 const TEMPLATE_APPLY_CONTRACT: TypedContract<TemplateApplyParams> = TypedContract::new();
 const TEMPLATE_LIST_CONTRACT: TypedContract<TemplateListParams> = TypedContract::new();
 const TEMPLATE_SAVE_CONTRACT: TypedContract<TemplateSaveParams> = TypedContract::new();
 
 pub static COMMANDS: &[CommandSpec] = &[
-    CommandSpec::new("drawing.create", "Create Drawing", create).any_part().icon("new").doc_only().params(
-        "name?: the drawing's name (default: the design's); template?: a built-in's name (drawing.template.list; default iso-a3-part for a part, iso-a2-assembly for an assembly, a design that places components) or a .json template file (drawing.template.save); language?: the drawing's content language, a BCP 47 tag (default: the template's, en for the built-ins); units?: \"follow_model\" or one length unit such as \"mm\" (default: the template's); projection?: first or third (angle) (default: the template's, third for the built-ins); font?: the font family its text is set in, by name (default: the template's, the built-in font for the built-ins). Adds a drawing of this design made from the template, with ids of its own, and opens it (one undo step of the model) → as drawing.inspect",
+    CommandSpec::new("drawing.create", "Create Drawing", crate::checked!("drawing.create", create)).any_part().icon("new").doc_only().contract(&CREATE_CONTRACT).params(
+        "name?: the drawing's name (default: the design's); template?: a built-in's name (drawing.template.list; default iso-a3-part for a part, iso-a2-assembly for an assembly, a design that places components) or a .json template file (drawing.template.save); language?: the drawing's content language, a BCP 47 tag (default: the template's, en for the built-ins); units?: \"follow_model\" or one length unit such as \"mm\" (default: the template's); projection?: first or third (angle) (default: the template's, third for the built-ins); font?: the font family its text is set in, by name (default: the template's, the built-in font for the built-ins); line_group?: the ISO 128 line group its lines are drawn in, by its wide line, one of 0.25, 0.35, 0.5, 0.7, 1, 1.4 or 2 (default: the template's, 0.5 for the built-ins). Adds a drawing of this design made from the template, with ids of its own, and opens it (one undo step of the model) → as drawing.inspect",
     ),
     CommandSpec::new("drawing.template.apply", "Apply Drawing Template", crate::checked!("drawing.template.apply", template_apply))
         .in_drawing()
@@ -93,13 +97,14 @@ pub static COMMANDS: &[CommandSpec] = &[
         "drawing: id → deleted: its id; closed when it was open (one undo step of the model)",
     ),
     CommandSpec::new("drawing.inspect", "Inspect Drawing", inspect).in_drawing().icon("inspect").noundo().doc_only().params(
-        "→ {id, name, units, projection, language, font, font_note: why its text is set in the built-in font instead (the font isn't on this computer, or can't be set on paper), or null, properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, title_block (its definition, or null), title_block_cells: [{name, text, value?}] (each text cell as the sheet shows it: its fields' values, \"-\" for one with none, or the text typed over it with the value it hides as `value`), title_block_overrides, dpi, documents, excluded, views: [{id, kind: base|projected, parent?, side?, label, dimensions: [ids], balloons: [ids]}], base views by id, each followed by those projected from it}], revisions: {rows: [{row, revision, description, designer, checker, date, hidden}], the oldest first (the newest is the drawing's revision), next: the revision a new row gets}}. Read-only.",
+        "→ {id, name, units, projection, updates: automatic or deferred, language, font, line_group, font_note: why its text is set in the built-in font instead (the font isn't on this computer, or can't be set on paper), or null, font_fallbacks: which font set each script of its title blocks' text that the drawing's font lacks, as lines such as \"Kana set in BIZ UDPGothic\", properties, sources: [{id}], sheets: [{id, name, size_mm, orientation, title_block (its definition, or null), title_block_cells: [{name, text, value?, notes?}] (each text cell as the sheet shows it, a cell that shows a logo, its `image` in `title_block`, left out: its fields' values, nothing for one with none, or the text typed over it with the value it hides as `value`; `notes` are what doesn't fit on paper, each {fit: chars (with count and max), height or width}, shown whole, or {refused: why} for a label or value the drawing's font can't set, left off the sheet), title_block_overrides, dpi, line_group (its own, or null for the drawing's), documents, excluded, views: [{id, kind: base|projected, parent?, side?, label, dimensions: [ids], balloons: [ids]}], base views by id, each followed by those projected from it}], revisions: {rows: [{row, revision, description, designer, checker, date, hidden}], the oldest first (the newest is the drawing's revision), next: the revision a new row gets}}. Read-only.",
     ),
-    CommandSpec::new("drawing.set", "Drawing Settings", set)
+    CommandSpec::new("drawing.set", "Drawing Settings", crate::checked!("drawing.set", set))
         .in_drawing()
         .icon("settings")
         .doc_only()
-        .params("name?, language?: a BCP 47 tag, units?: \"follow_model\" or one length unit such as \"mm\", projection?: first or third (angle), which every projected view follows, font?: the font family its text is set in, by name, never a file (\"\": the built-in font). revision_numbering?: {start: 0 or 1}, the number new revisions count from: rows already there stay as typed. One undo step."),
+        .contract(&SET_CONTRACT)
+        .params("name?, language?: a BCP 47 tag, units?: \"follow_model\" or one length unit such as \"mm\", projection?: first or third (angle), which every projected view follows, updates?: automatic, or deferred: its views follow a changed model only on drawing.update, font?: the font family its text is set in, by name, never a file (\"\": the built-in font). line_group?: the ISO 128 line group its lines are drawn in, by its wide line: 0.25, 0.35, 0.5, 0.7, 1, 1.4 or 2; a sheet or a view may choose another. revision_numbering?: {start: 0 or 1}, the number new revisions count from: rows already there stay as typed. One undo step."),
     CommandSpec::new("drawing.properties", "Drawing Properties", properties).in_drawing().icon("settings").noundo().doc_only().params(
         "→ metadata: the drawing's properties as saved (other tools' keys too); properties: project, part_number, revision, author, organization, description and license, each its text or null. The design properties' rules (document.metadata).",
     ),
@@ -113,40 +118,20 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params("key, or keys: [keys] → metadata, removed: [keys that were there]"),
 ];
 
-/// `units` as given: `follow_model`, or a length unit the drawing's rules check.
-fn units(cmd: &str, p: &Value) -> Result<Option<Units>> {
-    match p.get("units") {
-        None => Ok(None),
-        Some(Value::String(u)) if u == "follow_model" => Ok(Some(Units::FollowModel)),
-        Some(Value::String(u)) => Ok(Some(Units::Fixed { unit: u.clone() })),
-        Some(_) => Err(bad(cmd, "`units` is \"follow_model\" or a length unit such as \"mm\"")),
-    }
-}
-
-/// `projection` as given: first or third angle.
-fn projection(cmd: &str, p: &Value) -> Result<Option<Projection>> {
-    match p.get("projection") {
-        None => Ok(None),
-        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad(cmd, "`projection` is first or third (angle)")),
-    }
+/// A sheet's `line_group` as given, refused as `cmd` in the words every line group is.
+pub(super) fn line_group(cmd: &str, v: &Value) -> Result<LineGroup> {
+    serde_json::from_value::<LineGroupParam>(v.clone()).map(|group| group.0).map_err(|e| bad(cmd, format!("`line_group` {e}")))
 }
 
 /// `font` as given: a font family's name, never a file (drawings name fonts by family, so they
-/// travel).
-fn font<'a>(cmd: &str, p: &'a Value) -> Result<Option<&'a str>> {
-    let font = text(cmd, p, "font")?;
+/// travel). Checked as given, before the trim, so a control character or an overlong name is
+/// refused even where trimming would hide it; `Drawing::validate` checks the trimmed name the
+/// drawing keeps, and a drawing read from a file.
+fn font<'a>(cmd: &str, font: Option<&'a str>) -> Result<Option<&'a str>> {
     if let Some(family) = font {
         solidcraft_sketch::check_family(family).map_err(|e| bad(cmd, e.to_string()))?;
     }
     Ok(font.map(str::trim))
-}
-
-/// How `p` asks new revisions to be named. A start the record's rules refuse is refused with them.
-fn revision_numbering(cmd: &str, p: &Value) -> Result<Option<Numbering>> {
-    match p.get("revision_numbering") {
-        None => Ok(None),
-        Some(v) => serde_json::from_value(v.clone()).map(Some).map_err(|_| bad(cmd, "`revision_numbering` is {start: 0 or 1}")),
-    }
 }
 
 /// An optional text parameter: absent, or a string.
@@ -169,26 +154,30 @@ fn create(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(cmd, "the design is empty: there is nothing to draw yet"));
     }
     drawing::check_count(s.doc.drawings.len() + 1).map_err(|e| bad(cmd, e.to_string()))?;
-    let name = text(cmd, p, "name")?.map_or_else(|| s.doc.name.clone(), str::to_string);
+    let request: DrawingCreateParams = crate::schema::read(cmd, p)?;
+    let name = request.name.unwrap_or_else(|| s.doc.name.clone());
     let fail = |e: solidcraft_doc::DocError| bad(cmd, e.to_string());
-    let from = text(cmd, p, "template")?.unwrap_or_else(|| template::default_for(template::is_assembly(&s.doc)));
+    let from = request.template.as_deref().unwrap_or_else(|| template::default_for(template::is_assembly(&s.doc)));
     let chosen = template_named(cmd, from)?;
     // Not the id of a drawing undo or redo could bring back either.
     let steps = s.undo.iter().chain(&s.redo).filter_map(|step| step.part);
     let taken: BTreeSet<u64> = s.doc.drawings.iter().map(|d| d.id).chain(steps).collect();
     let mut d = template::instantiate(&chosen, &name, &taken, &mut s.ids).map_err(fail)?;
-    if let Some(language) = text(cmd, p, "language")? {
-        d.language = language.to_string();
+    if let Some(language) = request.language {
+        d.language = language;
     }
-    if let Some(projection) = projection(cmd, p)? {
+    if let Some(projection) = request.projection {
         d.projection = projection;
+    }
+    if let Some(LineGroupParam(group)) = request.line_group {
+        d.line_group = group;
     }
     let source = d.allocate_id(&mut s.ids).map_err(fail)?;
     d.sources.push(Source { id: source });
-    if let Some(units) = units(cmd, p)? {
+    if let Some(units) = request.units {
         d.units = units;
     }
-    if let Some(font) = font(cmd, p)? {
+    if let Some(font) = font(cmd, request.font.as_deref())? {
         d.font = font.to_string();
     }
     d.validate().map_err(fail)?;
@@ -207,7 +196,8 @@ fn template_apply(s: &mut Session, p: &Value) -> Result<Value> {
         Some(Value::Bool(dry_run)) => *dry_run,
         Some(_) => return Err(bad(cmd, "`dry_run` is true or false")),
     };
-    let (applied, changed) = template::apply(s.drawing(cmd)?, &chosen).map_err(fail)?;
+    let record = s.drawing(cmd)?.clone();
+    let (applied, changed) = template::apply(&record, &chosen, &mut s.ids).map_err(fail)?;
     // The views on a sheet whose room changed: listed when they fall outside or over the block, never moved.
     let views: Vec<u64> = changed.iter().filter(|c| c.paper || c.border || c.title_block).flat_map(|c| applied.on_sheet(c.sheet).views).collect();
     let outside = super::drawing_view::outside_results(crate::drawing_view::outside(s, &applied, &views, cmd)?);
@@ -386,17 +376,23 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
     // One tree for the drawing: each component it documents is weighed once.
     let mut tree = Tree::new(&s.doc, &state);
     let mut sheets = Vec::with_capacity(d.sheets.len());
+    // The title blocks' text, labels too, for which font set each script the drawing's font lacks.
+    let mut texts: Vec<String> = Vec::new();
     for (at, sheet) in d.sheets.iter().enumerate() {
         let size = sheet.sheet.size_mm().map_err(|e| bad(cmd, e.to_string()))?;
+        let cells = title_block_cells(&s.doc, &mut tree, d, at)?;
+        texts.extend(cells.iter().filter_map(|cell| cell["text"].as_str()).map(str::to_string));
+        texts.extend(sheet.title_block.iter().flat_map(|block| &block.cells).filter_map(|cell| cell.label.as_ref()).map(|label| label.text.clone()));
         sheets.push(json!({
             "id": ids::encode(sheet.id),
             "name": sheet.name,
             "size_mm": [size.x, size.y],
             "orientation": sheet.sheet.orientation,
             "title_block": sheet.title_block,
-            "title_block_cells": title_block_cells(&s.doc, &mut tree, d, at),
+            "title_block_cells": cells,
             "title_block_overrides": sheet.title_block_overrides,
             "dpi": sheet.dpi,
+            "line_group": sheet.line_group,
             "documents": sheet.documents.map(|c| json!({"source": ids::encode(c.source), "component": c.component})),
             "excluded": sheet.excluded,
             "views": sheet_views(d, sheet.id, &dimensions, &balloons),
@@ -409,9 +405,12 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         "name": d.name,
         "units": d.units,
         "projection": d.projection,
+        "updates": d.updates,
         "language": d.language,
         "font": d.font,
+        "line_group": d.line_group,
         "font_note": solidcraft_sketch::paper_font_note(&solidcraft_sketch::font_dirs(), &d.font),
+        "font_fallbacks": solidcraft_sketch::paper_fallback_notes(&solidcraft_sketch::font_dirs(), &d.font, &d.language, texts.iter().map(String::as_str)),
         "properties": d.properties,
         "sources": d.sources.iter().map(|source| json!({"id": ids::encode(source.id)})).collect::<Vec<_>>(),
         "sheets": sheets,
@@ -429,74 +428,87 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
 /// Each parts list with how many balloons point at each of its rows, its editor's ballooned column
 /// (`drawing.inspect`): null for a list that can't be made, its component deleted or too large.
 fn parts_lists(d: &Drawing, tree: &mut Tree<'_>) -> Vec<Value> {
+    let lists = ballooned(d, tree).into_iter().map(|(id, rows)| {
+        let rows = rows.map(|rows| rows.into_iter().map(|(item, balloons)| json!({"item": item, "balloons": balloons})).collect::<Vec<_>>());
+        json!({"table": ids::encode(id), "ballooned": rows})
+    });
+    lists.collect()
+}
+
+/// Each parts list of `d` by id, with how many balloons point at each of its rows by item, in its
+/// order: none for a list that can't be made. One count for `drawing.inspect` and `drawing.check`.
+pub(super) fn ballooned(d: &Drawing, tree: &mut Tree<'_>) -> Vec<(u64, Option<Vec<(String, usize)>>)> {
     let reading = d.balloons_by_list();
     let lists = d.tables.iter().filter_map(|t| if let Kind::PartsList(list) = &t.kind { Some((t.id, list)) } else { None });
     lists
         .map(|(id, list)| {
-            let ballooned = bom::list_with(tree, &list.request(), true).ok().map(|listed| {
-                let rows = balloons_by_row(reading.get(&id).map_or(&[], Vec::as_slice), &listed, tree);
-                rows.into_iter().map(|(item, balloons)| json!({"item": item, "balloons": balloons})).collect::<Vec<_>>()
-            });
-            json!({"table": ids::encode(id), "ballooned": ballooned})
+            let rows = bom::list_with(tree, &list.request(), true)
+                .ok()
+                .map(|listed| balloons_by_row(reading.get(&id).map_or(&[], Vec::as_slice), &listed, tree));
+            (id, rows)
         })
         .collect()
 }
 
-/// The text cells of sheet `at`'s title block as the sheet shows them (`drawing.inspect`).
-fn title_block_cells(doc: &Document, tree: &mut Tree<'_>, d: &Drawing, at: usize) -> Vec<Value> {
-    let Some(sheet) = d.sheets.get(at) else { return Vec::new() };
-    let Some(block) = &sheet.title_block else { return Vec::new() };
-    // What the model says of the component it documents: a component since deleted has nothing.
-    let id = sheet.documents.map(|documents| documents.component);
-    let (mass, materials) = id.and_then(|id| tree.component(id).ok()).unzip();
-    let mass = mass.and_then(|mass| if let Mass::Grams(grams) = mass { Some(format_mass(grams)) } else { None });
-    let material = materials.filter(|m| !m.is_empty()).map(|m| m.join("; "));
-    let component = id.and_then(|id| documented(doc, id, material.as_deref(), mass.as_deref()));
-    let values = Values { drawing: d, sheet: at, component };
-    let cell = |name: &str, content: &Content| {
-        let value = values.text(content);
-        match sheet.title_block_overrides.get(name) {
-            Some(typed) => json!({"name": name, "text": typed, "value": value}),
-            None => json!({"name": name, "text": value}),
-        }
+/// The text cells of sheet `at`'s title block as the sheet shows them (`drawing.inspect`), each
+/// with what doesn't fit on paper or why its text is off the sheet.
+fn title_block_cells(doc: &Document, tree: &mut Tree<'_>, d: &Drawing, at: usize) -> Result<Vec<Value>> {
+    let shown = title_block_text::shown(doc, tree, d, at);
+    // Laid out for its notes only: nothing is placed on a sheet here.
+    // `Drawing::validate` checks the layout, so an error here is a drawing that skipped it.
+    let block = match d.sheets.get(at) {
+        Some(sheet) => sheet.title_block.as_ref().zip(sheet.title_block_layout()?),
+        None => None,
     };
-    block.cells.iter().filter_map(|c| if let CellKind::Text(text) = &c.kind { Some(cell(&c.name, &text.content)) } else { None }).collect()
-}
-
-/// Component `id` of the design (0: the design itself) as a title block's fields read it, with
-/// what the model says of it; none when the design has no such component.
-fn documented<'a>(doc: &'a Document, id: u64, material: Option<&'a str>, mass: Option<&'a str>) -> Option<Component<'a>> {
-    if id == 0 {
-        return Some(Component { name: &doc.name, metadata: &doc.metadata, properties: None, material, mass });
-    }
-    let c = doc.components.iter().find(|c| c.id == id)?;
-    Some(Component { name: &c.name, metadata: &c.metadata, properties: Some(&c.properties), material, mass })
-}
-
-/// A mass as a sheet shows it: kilograms to two places, until #4867 gives drawings their units.
-fn format_mass(grams: f64) -> String {
-    format!("{:.2} kg", grams / 1000.0)
+    let notes = block
+        .map(|(block, placed)| title_block_text::lay(block, &placed, &PaperFonts::new(&d.font, &d.language, true), &shown).notes)
+        .unwrap_or_default();
+    let note = |note: &Note| match note {
+        Note::Fit(Warning::Chars { count, max }) => json!({"fit": "chars", "count": count, "max": max}),
+        Note::Fit(Warning::Height) => json!({"fit": "height"}),
+        Note::Fit(Warning::Width) => json!({"fit": "width"}),
+        Note::Refused(why) => json!({"refused": why}),
+    };
+    let cell = |shown: &CellText| {
+        let mut cell = json!({"name": shown.name, "text": shown.text});
+        if let Some(value) = &shown.replaced {
+            cell["value"] = json!(value);
+        }
+        let notes: Vec<Value> = notes.iter().filter(|(cell, _)| *cell == shown.name).map(|(_, n)| note(n)).collect();
+        if !notes.is_empty() {
+            cell["notes"] = json!(notes);
+        }
+        cell
+    };
+    Ok(shown.iter().map(cell).collect())
 }
 
 fn set(s: &mut Session, p: &Value) -> Result<Value> {
     let cmd = "drawing.set";
+    let request: DrawingSetParams = crate::schema::read(cmd, p)?;
     s.edit_drawing(cmd, |d| {
-        if let Some(name) = text(cmd, p, "name")? {
-            d.name = name.to_string();
+        if let Some(name) = request.name {
+            d.name = name;
         }
-        if let Some(language) = text(cmd, p, "language")? {
-            d.language = language.to_string();
+        if let Some(language) = request.language {
+            d.language = language;
         }
-        if let Some(units) = units(cmd, p)? {
+        if let Some(units) = request.units {
             d.units = units;
         }
-        if let Some(projection) = projection(cmd, p)? {
+        if let Some(projection) = request.projection {
             d.projection = projection;
         }
-        if let Some(font) = font(cmd, p)? {
+        if let Some(updates) = request.updates {
+            d.updates = updates;
+        }
+        if let Some(LineGroupParam(group)) = request.line_group {
+            d.line_group = group;
+        }
+        if let Some(font) = font(cmd, request.font.as_deref())? {
             d.font = font.to_string();
         }
-        if let Some(numbering) = revision_numbering(cmd, p)? {
+        if let Some(numbering) = request.revision_numbering {
             Arc::make_mut(&mut d.revisions).numbering = numbering;
         }
         Ok(())

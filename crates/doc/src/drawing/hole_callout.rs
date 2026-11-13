@@ -242,7 +242,7 @@ pub fn resolve(doc: &Document, model: &Model, hole: &HoleRef) -> Result<Resoluti
     let (vals, _) = crate::eval::evaluation_values(doc);
     let before = model.state_before(f.id);
     let motion = |body: &str| later_motion(doc, model, &vals, f.id, body);
-    measure(&vals, &before, &own, &model.state(), f, index, &motion)
+    measure(doc, &vals, &before, &own, &model.state(), f, index, &motion)
 }
 
 /// The rigid motion the Move features after feature `id` give the body `body`, in order: what
@@ -300,6 +300,7 @@ fn sketch_has_point(doc: &Document, sketch: u64, id: &str) -> bool {
 /// after the feature) and found in `after` (the model as it is now), where `motion` (of the body
 /// it is in) carried it. Failed when `after` has no face of that hole there.
 fn measure(
+    doc: &Document,
     vals: &BTreeMap<String, Value>,
     before: &ModelState,
     own: &ModelState,
@@ -311,7 +312,7 @@ fn measure(
     let FeatureKind::Hole { diameter, depth, hole, thread, thread_depth, to, .. } = &f.kind else {
         return Err(DocError::Invalid("not a hole".into()));
     };
-    let (spots, dir) = crate::eval::hole_spots(vals, before, f)?;
+    let (spots, dir) = crate::eval::hole_spots(doc, vals, before, f)?;
     if spots.is_empty() || spots.len() > MAX_HOLES {
         return Err(DocError::Invalid(format!("a hole needs 1…{MAX_HOLES} points")));
     }

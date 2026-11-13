@@ -12,9 +12,10 @@ use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use solidcore_record::Seg2;
-use solidcraft_doc::drawing_view::{TangentEdges, ViewDirection, ViewSettings};
+use solidcraft_doc::drawing_view::{MAX_JOINT_VALUES, MAX_POSE_JOINTS, TangentEdges, ViewDirection, ViewSettings};
 use solidcraft_geom::drawing_sheet::{Orientation, PaperSize, SheetSize};
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide, Scale};
+use solidcraft_geom::paper::line::LineGroup;
 use solidcraft_geom::paper::{MAX_DASH_MM, ObjectKind};
 use solidcraft_geom::section::CurveAccuracy;
 use solidcraft_render::VisualStyle;
@@ -216,6 +217,200 @@ impl JsonSchema for TangentEdgesParam {
     }
 }
 
+/// An ISO 128 line group, by its wide line. Every command that takes one refuses anything else in
+/// these words, after the key.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineGroupParam(pub LineGroup);
+
+impl<'de> Deserialize<'de> for LineGroupParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        serde_json::from_value(Value::deserialize(d)?).map(LineGroupParam).map_err(|_| {
+            let (last, rest) = LineGroup::NAMES.split_last().map_or(("", &[][..]), |(last, rest)| (*last, rest));
+            serde::de::Error::custom(format!("must be one of {} or {last}", rest.join(", ")))
+        })
+    }
+}
+
+impl JsonSchema for LineGroupParam {
+    fn schema_name() -> Cow<'static, str> {
+        "LineGroup".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"description": "An ISO 128 line group, by its wide line in millimetres.", "type": "string", "enum": LineGroup::NAMES})
+    }
+}
+
+/// Which state of the assembly a view draws (#13048), as given: `"assembled"`, or one of the
+/// design's exploded views by its name or id.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExplodedParam {
+    Assembled,
+    Id(u64),
+    Name(String),
+}
+
+/// A view's choice of something in the design, as given: `keyword` in any case, or the thing by its
+/// id (a whole number) or its name (text). Anything else is refused with one `message`, rather than
+/// serde's "did not match any variant".
+enum Named {
+    Keyword,
+    Id(u64),
+    Name(String),
+}
+
+fn named<'de, D: serde::Deserializer<'de>>(d: D, keyword: &str, message: &str) -> Result<Named, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Either {
+        Id(u64),
+        Name(String),
+    }
+    Ok(match Either::deserialize(d).map_err(|_| serde::de::Error::custom(message))? {
+        Either::Id(id) => Named::Id(id),
+        Either::Name(name) if name.eq_ignore_ascii_case(keyword) => Named::Keyword,
+        Either::Name(name) => Named::Name(name),
+    })
+}
+
+impl<'de> Deserialize<'de> for ExplodedParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<ExplodedParam, D::Error> {
+        let message = "exploded is \"assembled\", or an exploded view of the design by its name or id";
+        Ok(match named(d, "assembled", message)? {
+            Named::Keyword => ExplodedParam::Assembled,
+            Named::Id(id) => ExplodedParam::Id(id),
+            Named::Name(name) => ExplodedParam::Name(name),
+        })
+    }
+}
+
+impl JsonSchema for ExplodedParam {
+    fn schema_name() -> Cow<'static, str> {
+        "ViewExploded".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "Which state of the assembly the view draws: \"assembled\" (as the design places its parts), or one of the design's exploded views by its name or id. \"assembled\" in any case is the assembly: choose an exploded view of that name by its id. The design never changes.",
+            "oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]
+        })
+    }
+}
+
+/// Which configuration of the design a view draws (#13048), as given: `"active"`, or a row of the
+/// design's configuration table by its id (a whole number) or its name (text).
+#[derive(Clone, Debug, PartialEq)]
+pub enum ConfigurationParam {
+    Active,
+    Id(u64),
+    Name(String),
+}
+
+impl<'de> Deserialize<'de> for ConfigurationParam {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<ConfigurationParam, D::Error> {
+        let message = "configuration is \"active\", or a row of the design's configuration table by its name or id";
+        Ok(match named(d, "active", message)? {
+            Named::Keyword => ConfigurationParam::Active,
+            Named::Id(id) => ConfigurationParam::Id(id),
+            Named::Name(name) => ConfigurationParam::Name(name),
+        })
+    }
+}
+
+impl JsonSchema for ConfigurationParam {
+    fn schema_name() -> Cow<'static, str> {
+        "ViewConfiguration".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({
+            "description": "Which configuration of the design the view draws: \"active\" (the design's active configuration, as the design is now), or a row of its configuration table by its id (a number, as config.table lists it) or its name (text). \"active\" in any case is the active configuration: choose a row of that name by its id. The view saves the row's id, so a rename keeps it. The design never changes.",
+            "oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]
+        })
+    }
+}
+
+/// The position of its assembly a view draws (#13048), as given: `"designed"`, some of the design's
+/// joints at values of their own, or a step of one of its motion studies.
+#[derive(Clone, Debug, PartialEq)]
+pub enum PoseParam {
+    Designed,
+    Joints(Vec<JointPoseParam>),
+    Study(StudyPoseParam),
+}
+
+/// One joint of a position, as given: the joint by its id or name, and its values as `joint.drive` takes
+/// them (degrees and millimetres, numbers or expressions).
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JointPoseParam {
+    pub joint: Value,
+    pub values: Vec<Value>,
+}
+
+/// A step of a motion study, as given: the study by its id or name, as `motion.play` finds it, and a
+/// whole step of its timeline.
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StudyPoseParam {
+    pub study: Value,
+    pub step: Value,
+}
+
+impl<'de> Deserialize<'de> for PoseParam {
+    /// One message for anything that is neither, rather than serde's "did not match any variant".
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<PoseParam, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Name(String),
+            Joints(Vec<JointPoseParam>),
+            Study(StudyPoseParam),
+        }
+        let message = "pose is \"designed\", a list of joints, each {\"joint\": its id or name, \"values\": [...]}, \
+                       or a motion study's step, {\"study\": its id or name, \"step\": n}";
+        match Either::deserialize(d).map_err(|_| serde::de::Error::custom(message))? {
+            Either::Name(name) if name.eq_ignore_ascii_case("designed") => Ok(PoseParam::Designed),
+            Either::Name(_) => Err(serde::de::Error::custom(message)),
+            Either::Joints(joints) => Ok(PoseParam::Joints(joints)),
+            Either::Study(study) => Ok(PoseParam::Study(study)),
+        }
+    }
+}
+
+impl JsonSchema for PoseParam {
+    fn schema_name() -> Cow<'static, str> {
+        "ViewPose".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        let joint = json!({
+            "type": "object",
+            "properties": {
+                "joint": {"description": "The joint, by its id or name.", "oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]},
+                "values": {
+                    "description": "Its values in the order `joint.drive` takes them: degrees and millimetres, numbers or expressions.",
+                    "type": "array",
+                    "items": {"oneOf": [{"type": "number"}, {"type": "string"}]},
+                    "minItems": 1,
+                    "maxItems": MAX_JOINT_VALUES
+                }
+            },
+            "required": ["joint", "values"],
+            "additionalProperties": false
+        });
+        let study = json!({
+            "type": "object",
+            "properties": {
+                "study": {"description": "The motion study, by its id or name.", "oneOf": [{"type": "string"}, {"type": "integer", "minimum": 0}]},
+                "step": {"description": "A whole step of its timeline, 0 to its steps.", "type": "integer", "minimum": 0}
+            },
+            "required": ["study", "step"],
+            "additionalProperties": false
+        });
+        json_schema!({
+            "description": "The position of its assembly the view draws: \"designed\" (as the design places its parts), some of the design's joints at values of their own, driven as `joint.drive` drives them (limits, closed loops and motion links alike), or a step of one of its motion studies, driven as `motion.play` drives it. A study step follows the study when it changes. The design never changes.",
+            "oneOf": [{"type": "string", "enum": ["designed"]}, {"type": "array", "items": joint, "minItems": 1, "maxItems": MAX_POSE_JOINTS}, study]
+        })
+    }
+}
+
 /// The chord the lines are sampled at, in paper millimetres.
 #[derive(Clone, Copy, Debug, PartialEq, Deserialize)]
 #[serde(transparent)]
@@ -332,8 +527,9 @@ pub struct EditParams {
     pub set: ViewSet,
 }
 
-/// The settings `drawing.view.edit` changes, each only when given. For the seven that can follow
-/// the view's parent, `null` means follow it (a base view's scale can't: it has no parent).
+/// The settings `drawing.view.edit` changes, each only when given. For the eight that can follow
+/// the view's parent, `null` means follow it (a base view's scale can't: it has no parent; a base
+/// view's line group follows its sheet's, then its drawing's).
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 #[schemars(deny_unknown_fields)]
@@ -348,12 +544,24 @@ pub struct ViewSet {
     pub reference_hides_model: Option<Option<bool>>,
     #[serde(deserialize_with = "super::present")]
     pub tangent_edges: Option<Option<TangentEdgesParam>>,
+    /// The line group its lines and dimensions are drawn in.
+    #[serde(deserialize_with = "super::present")]
+    pub line_group: Option<Option<LineGroupParam>>,
     /// The occurrence subtrees it draws.
     #[serde(deserialize_with = "super::present")]
     pub source: Option<Option<SourceParam>>,
     /// Occurrence paths it leaves out, with everything under them.
     #[serde(deserialize_with = "super::present")]
     pub hide: Option<Option<Vec<Vec<u64>>>>,
+    /// The state of the assembly it draws.
+    #[serde(deserialize_with = "super::present")]
+    pub exploded: Option<Option<ExplodedParam>>,
+    /// The position of its assembly it draws.
+    #[serde(deserialize_with = "super::present")]
+    pub pose: Option<Option<PoseParam>>,
+    /// The configuration of the design it draws.
+    #[serde(deserialize_with = "super::present")]
+    pub configuration: Option<Option<ConfigurationParam>>,
     /// How far the view's boundary grows from the model's box towards the box that also holds its
     /// reference parts, each side on its own: 0 to 100.
     #[serde(deserialize_with = "super::present")]
@@ -366,7 +574,7 @@ pub struct ViewSet {
     #[serde(deserialize_with = "super::present")]
     #[schemars(with = "PlaceParam")]
     pub place: Option<PlaceParam>,
-    /// A projected view's display settings (styles, reference parts, tangent edges) all following
+    /// A projected view's display settings (styles, reference parts, tangent edges, line group) all following
     /// its parent (true), or all its own, at the values they have now (false).
     #[serde(deserialize_with = "super::present")]
     #[schemars(with = "bool")]
@@ -379,6 +587,10 @@ pub struct ViewSet {
 pub enum FromResult {
     This,
     Parent,
+    /// No view of the chain sets it: the view's sheet does.
+    Sheet,
+    /// No view of the chain nor its sheet sets it: the drawing does.
+    Drawing,
     Default,
 }
 
@@ -401,10 +613,76 @@ pub struct SettingsResult {
     pub reference_style: SettingResult<String>,
     pub reference_hides_model: SettingResult<bool>,
     pub tangent_edges: SettingResult<String>,
+    /// The ISO 128 line group it is drawn in, by its wide line.
+    pub line_group: SettingResult<String>,
     /// The occurrence subtrees it draws: every body when null.
     pub occurrences: SettingResult<Option<Vec<Vec<u64>>>>,
     /// Occurrence paths it leaves out, with everything under them: none when null.
     pub hide: SettingResult<Option<Vec<Vec<u64>>>>,
+    /// The state of the assembly it draws: `"assembled"`, or `{"view": id}` for an exploded view.
+    pub exploded: SettingResult<Value>,
+    /// The position of its assembly it draws: `"designed"`, `{"joints": [...]}` as saved (radians
+    /// and mm), or `{"study": {"id": .., "step": ..}}`.
+    pub pose: PoseResult,
+    /// The configuration of the design it draws: `"active"`, or `{"row": id}` for a row of the
+    /// design's configuration table.
+    pub configuration: ConfigurationResult,
+}
+
+/// A view's configuration as inspect shows it: the setting, and what it draws.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct ConfigurationResult {
+    #[serde(flatten)]
+    pub setting: SettingResult<Value>,
+    /// The row it draws: the one it names, or for `"active"` the design's active row while the design
+    /// matches it. Null when it draws none: the row is no longer in the design or can't be applied to
+    /// it, or the design matches none of its rows.
+    pub drawn: Option<DrawnRowResult>,
+    /// The features its row fails to build that the design builds, each as `name: error`, as
+    /// `config.activate` lists them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+}
+
+/// A row of the design's configuration table as a view draws it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DrawnRowResult {
+    pub id: u64,
+    pub name: String,
+}
+
+/// A view's position as inspect shows it: the setting, and for a position of its own what it draws.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct PoseResult {
+    #[serde(flatten)]
+    pub setting: SettingResult<Value>,
+    /// The joints it draws, at the values they take once driven (a value past a limit draws at the
+    /// limit), in degrees and mm. Empty when the joints can't be driven.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub drawn: Option<Vec<DrawnJointResult>>,
+    /// The ids of the joints it names that the design no longer has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped: Option<Vec<u64>>,
+    /// The motion study step it draws, for a step of a study the design has: a saved step past the
+    /// study's end draws its last.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub study: Option<StudyStepResult>,
+}
+
+/// A motion study's step as a view draws it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct StudyStepResult {
+    pub id: u64,
+    pub name: String,
+    pub step: u32,
+}
+
+/// One joint as a view in a position of its own draws it.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct DrawnJointResult {
+    pub joint: u64,
+    pub name: String,
+    pub values: Vec<f64>,
 }
 
 /// The values a window offers for a view's settings.
@@ -551,6 +829,18 @@ pub struct BaseParams {
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Vec<Vec<u64>>")]
     pub hide: Option<Vec<Vec<u64>>>,
+    /// The state of the assembly it draws (assembled when not given).
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ExplodedParam")]
+    pub exploded: Option<ExplodedParam>,
+    /// The position of its assembly it draws (designed when not given).
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "PoseParam")]
+    pub pose: Option<PoseParam>,
+    /// The configuration of the design it draws (the active one when not given).
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "ConfigurationParam")]
+    pub configuration: Option<ConfigurationParam>,
 }
 
 /// What `drawing.view.projected` takes: its parent, the side of it it sits on, and where.
@@ -707,6 +997,15 @@ pub enum LineSourceResult {
     Silhouette { face: usize },
 }
 
+impl From<solidcraft_geom::hlr::Source> for LineSourceResult {
+    fn from(source: solidcraft_geom::hlr::Source) -> Self {
+        match source {
+            solidcraft_geom::hlr::Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
+            solidcraft_geom::hlr::Source::Silhouette { face } => LineSourceResult::Silhouette { face },
+        }
+    }
+}
+
 /// A run of a line at one visibility, on the sheet.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct PieceResult {
@@ -817,7 +1116,7 @@ impl JsonSchema for SceneResult {
 }
 
 /// A paper scene's schema ([`solidcraft_geom::paper::Scene`]): its groups of `kinds`, each holding
-/// strokes, and fills and pictures too when it is a `whole_sheet`'s.
+/// strokes, and fills, pictures, text and its fonts too when it is a `whole_sheet`'s.
 pub(super) fn paper_scene_schema(generator: &mut SchemaGenerator, kinds: &[ObjectKind], whole_sheet: bool) -> Schema {
     let point = json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2});
     let segment = generator.subschema_for::<PathSegResult>();
@@ -873,7 +1172,7 @@ pub(super) fn paper_scene_schema(generator: &mut SchemaGenerator, kinds: &[Objec
         "required": ["kind", "source", "rect", "opacity"],
         "additionalProperties": false
     });
-    let items = if whole_sheet { json!({"anyOf": [stroke, fill, picture]}) } else { stroke };
+    let items = if whole_sheet { json!({"anyOf": [stroke, fill, picture, text_item_schema(point.clone())]}) } else { stroke };
     let kinds: Vec<Value> = kinds.iter().filter_map(|kind| serde_json::to_value(kind).ok()).collect();
     let group = json!({
         "type": "object",
@@ -881,10 +1180,87 @@ pub(super) fn paper_scene_schema(generator: &mut SchemaGenerator, kinds: &[Objec
         "required": ["object", "kind", "items"],
         "additionalProperties": false
     });
+    let mut properties = json!({"size_mm": point, "groups": {"type": "array", "items": group}});
+    if whole_sheet {
+        properties["fonts"] = json!({"type": "array", "items": font_schema(ring)});
+    }
     json_schema!({
         "type": "object",
-        "properties": {"size_mm": point, "groups": {"type": "array", "items": group}},
+        "properties": properties,
         "required": ["size_mm", "groups"],
+        "additionalProperties": false
+    })
+}
+
+/// A font's id: a hash of its face.
+fn font_id_schema() -> Value {
+    json!({"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}, "minItems": 32, "maxItems": 32})
+}
+
+/// One run of text in a paper scene.
+fn text_item_schema(point: Value) -> Value {
+    let glyph = json!({
+        "type": "object",
+        "properties": {"id": {"type": "integer", "minimum": 0}, "x": {"type": "number"}, "rise": {"type": "number"}, "advance": {"type": "number"}},
+        "required": ["id", "x", "rise", "advance"],
+        "additionalProperties": false
+    });
+    let range = json!({
+        "type": "object",
+        "properties": {"start": {"type": "integer", "minimum": 0}, "end": {"type": "integer", "minimum": 0}},
+        "required": ["start", "end"],
+        "additionalProperties": false
+    });
+    let cluster = json!({
+        "type": "object",
+        "properties": {"glyphs": range, "text": range},
+        "required": ["glyphs", "text"],
+        "additionalProperties": false
+    });
+    json!({
+        "type": "object",
+        "properties": {
+            "kind": {"const": "text"}, "font": font_id_schema(), "scale": {"type": "number"}, "origin": point, "angle": {"type": "number"},
+            "slant": {"type": "number"}, "glyphs": {"type": "array", "items": glyph}, "text": {"type": "string"},
+            "clusters": {"type": "array", "items": cluster}, "rtl": {"type": "boolean"}
+        },
+        "required": ["kind", "font", "scale", "origin", "angle", "slant", "glyphs", "text", "clusters", "rtl"],
+        "additionalProperties": false
+    })
+}
+
+/// One font a paper scene's text uses: never its bytes.
+fn font_schema(ring: Value) -> Value {
+    let int = json!({"type": "integer"});
+    let flags = json!({
+        "type": "object",
+        "properties": {"fixed_pitch": {"type": "boolean"}, "serif": {"type": "boolean"}, "italic": {"type": "boolean"}, "symbolic": {"type": "boolean"}},
+        "required": ["fixed_pitch", "serif", "italic", "symbolic"],
+        "additionalProperties": false
+    });
+    let metrics = json!({
+        "type": "object",
+        "properties": {
+            "ascent": int, "descent": int, "cap_height": int, "bbox": {"type": "array", "items": int, "minItems": 4, "maxItems": 4},
+            "italic_angle": {"type": "number"}, "flags": flags, "stem_v": int
+        },
+        "required": ["ascent", "descent", "cap_height", "bbox", "italic_angle", "flags", "stem_v"],
+        "additionalProperties": false
+    });
+    let glyph = json!({
+        "type": "object",
+        "properties": {"advance": int, "outline": {"type": "array", "items": ring}},
+        "required": ["advance", "outline"],
+        "additionalProperties": false
+    });
+    json!({
+        "type": "object",
+        "properties": {
+            "id": font_id_schema(), "face": int, "postscript_name": {"type": "string"}, "family": {"type": "string"},
+            "embed": {"enum": ["subset", "whole", "outlines"]}, "num_glyphs": int, "units_per_em": int, "metrics": metrics,
+            "glyphs": {"type": "object", "additionalProperties": glyph}
+        },
+        "required": ["id", "face", "postscript_name", "family", "embed", "num_glyphs", "units_per_em", "metrics", "glyphs"],
         "additionalProperties": false
     })
 }

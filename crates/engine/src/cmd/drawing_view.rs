@@ -4,7 +4,8 @@
 //! `drawing.view.inspect` and `drawing.view.edit` (W17c, #4816) read and change a saved view of a
 //! drawing: each setting with where its value comes from ([`solidcraft_doc::drawing::Drawing::resolve_view`])
 //! and where the view sits on its sheet ([`crate::drawing_view::on_sheet`]), and a change as one
-//! undo step that evaluates no model.
+//! undo step. Drawing or measuring a view of another configuration evaluates a copy of the design
+//! ([`crate::drawing_view::copy_for`]); the design is unchanged.
 //!
 //! `drawing.view.move_to_sheet` and `drawing.view.copy_to_sheet` (#4816) put a saved view on a
 //! sheet: the views lined up with it go with it, and keep their places beside it. A copy is
@@ -24,25 +25,29 @@
 //! paper are `geom::drawing_view`'s. Without a scale it takes the largest ISO 5455 scale at
 //! which the view, centred where it goes, lies inside the sheet's drawing border.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use solidcore_record::Plane;
 use solidcore_record::Vec2;
+use solidcraft_doc::config::RowKey;
 use solidcraft_doc::display_units::unit_scale;
 use solidcraft_doc::drawing::Drawing;
 use solidcraft_doc::drawing::balloon::Balloon;
 use solidcraft_doc::drawing::dimension::{Dimension, LabelKind, MAX_DECIMALS, reading_label};
 use solidcraft_doc::drawing::note::Note;
-use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace, check_occurrence_paths};
-use solidcraft_doc::drawing_view::{Looking, OccurrencePaths, TangentEdges, ViewDirection, ViewOverrides};
+use solidcraft_doc::drawing::view::{ResolvedView, SetBy, Setting, View, ViewKind, ViewPlace, check_occurrence_paths, check_pose};
+use solidcraft_doc::drawing_view::{
+    Exploded, JointPose, Looking, MAX_POSE_JOINTS, OccurrencePaths, Pose, StudyStep, TangentEdges, ViewConfiguration, ViewDirection, ViewOverrides,
+};
 use solidcraft_doc::ids;
 use solidcraft_geom::Aabb2;
 use solidcraft_geom::drawing_measure::{self, AngleFrom, LinearDirection, Measured, Reading};
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
 use solidcraft_geom::drawing_view::{Invalid, NamedView, PRESETS, ProjectedSide, Scale};
-use solidcraft_geom::hlr::{Source, Visibility};
+use solidcraft_geom::hlr::Visibility;
 use solidcraft_geom::paper::{MAX_COORDINATE_MM, Picture};
 use solidcraft_geom::prelude::*;
 use solidcraft_geom::section::CurveAccuracy;
@@ -50,13 +55,16 @@ use solidcraft_io::paper::MAX_PICTURE_DPI;
 use solidcraft_render::VisualStyle;
 
 use super::CommandSpec;
-use crate::drawing_view::{CHORD_RANGE, Extents, LineRequest, Lines, NOTHING_CHOSEN, OnSheet, Room, ShownSet, Styles, Unmeasured};
+use crate::drawing_view::{
+    CHORD_RANGE, Extents, LeftOut, LineRequest, Lines, NOTHING_CHOSEN, OnSheet, Room, ShownSet, Styles, Unmeasured, ViewSessions,
+};
 use crate::params::bad;
 use crate::schema::drawing_view::{
-    AccuracyResult, AlongParam, AngleFromParam, BaseParams, BoxResult, ChoicesResult, CopyParams, CreateResult, DPI_RANGE, EditParams, EditResult,
-    ExtentsResult, FromResult, InspectParams, InspectResult, LineResult, LineSourceResult, LinesStatusResult, MeasureParam, MeasurementResult,
-    MoveParams, OutsideResult, PathSegResult, PictureResult, PieceResult, PlaceParam, ProjectedParams, ScaleResult, SceneResult, SettingResult,
-    SettingsResult, SnapshotParams, SnapshotResult, SourceResult, ToSheetResult, ViewLineParam, ViewResult, ViewSet,
+    AccuracyResult, AlongParam, AngleFromParam, BaseParams, BoxResult, ChoicesResult, ConfigurationParam, ConfigurationResult, CopyParams,
+    CreateResult, DPI_RANGE, DrawnJointResult, DrawnRowResult, EditParams, EditResult, ExplodedParam, ExtentsResult, FromResult, InspectParams,
+    InspectResult, LineResult, LinesStatusResult, MeasureParam, MeasurementResult, MoveParams, OutsideResult, PathSegResult, PictureResult,
+    PieceResult, PlaceParam, PoseParam, PoseResult, ProjectedParams, ScaleResult, SceneResult, SettingResult, SettingsResult, SnapshotParams,
+    SnapshotResult, SourceResult, StudyPoseParam, StudyStepResult, ToSheetResult, ViewLineParam, ViewResult, ViewSet,
 };
 use crate::schema::{TypedContract, output_schema_for};
 use crate::{Result, Session};
@@ -93,14 +101,14 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&INSPECT_CONTRACT)
         .output(output_schema_for::<InspectResult>)
-        .params("view: a saved view's id → {view, sheet, kind: base|projected, source, parent?, side?, direction, place: {at: [x, y]} or {aligned: n}, settings: {scale, visual_style, reference_style, reference_hides_model, tangent_edges, occurrences (null: every body), hide: {value, from: this|parent|default, parent?, set}}, reference_shown_percent, boundary_mm: {min, max} on the sheet (a 20 x 20 mm placeholder round the view's centre when there's nothing to measure), extents: {min, max, error_mm, status: approximate|placeholder, provenance (a placeholder's reason: past_walk_limit, no_bodies or nothing_chosen)} in model mm on the view's plane, linked? (a projected view's display settings: true, false or \"partly\"), dimensions: [its dimensions' ids, in id order], balloons: [its balloons' ids, in id order], choices: {visual_style, scale}}. Read-only; no model is evaluated."),
+        .params("view: a saved view's id → {view, sheet, kind: base|projected, source, parent?, side?, direction, place: {at: [x, y]} or {aligned: n}, settings: {scale, visual_style, reference_style, reference_hides_model, tangent_edges, occurrences (null: every body), exploded (\"assembled\" or {view: id}), pose (\"designed\", {joints: [...]} as saved, in radians and mm, or {study: {id, step}}; with drawn?, skipped? and study? for a position of its own), configuration (\"active\" or {row: id}, with drawn: {id, name} or null, and errors?), hide: {value, from: this|parent|default, parent?, set}}, reference_shown_percent, boundary_mm: {min, max} on the sheet (a 20 x 20 mm placeholder round the view's centre when there's nothing to measure), extents: {min, max, error_mm, status: approximate|placeholder, provenance (a placeholder's reason: past_walk_limit, no_bodies, not_placed, nothing_chosen, no_exploded_view, not_posed, no_configuration or not_configured)} in model mm on the view's plane, linked? (a projected view's display settings: true, false or \"partly\"), dimensions: [its dimensions' ids, in id order], balloons: [its balloons' ids, in id order], choices: {visual_style, scale}}. Read-only; a view of another configuration evaluates a copy of the design; the design is unchanged."),
     CommandSpec::new(EDIT, "Edit Drawing View", crate::checked!("drawing.view.edit", edit))
         .icon("edit")
         .in_drawing()
         .doc_only()
         .contract(&EDIT_CONTRACT)
         .output(output_schema_for::<EditResult>)
-        .params("view: a saved view's id; set: {scale?, visual_style?, reference_style?, reference_hides_model?, tangent_edges?, source?: {occurrences: [[ids…]]}, hide?: [[ids…]] as drawing.view.snapshot's: each a value, or null to follow the parent (a base view keeps a scale); reference_shown_percent?; view?: a base view's direction; place?: {at: [x, y]} or {aligned: n}; linked?: a projected view's display settings all following its parent (true) or all its own, as they are now (false)} → {view, changed: [fields], followers: [the views projected from it whose settings changed with it]}. One undo step; no model is evaluated."),
+        .params("view: a saved view's id; set: {scale?, visual_style?, reference_style?, reference_hides_model?, tangent_edges?, line_group?: an ISO 128 line group by its wide line (0.25, 0.35, 0.5, 0.7, 1, 1.4 or 2), source?: {occurrences: [[ids…]]}, hide?: [[ids…]] as drawing.view.snapshot's, exploded?, pose?, configuration?: as drawing.view.base's: each a value, or null to follow the parent (a base view keeps a scale; a base view's line group follows its sheet's, then its drawing's); reference_shown_percent?; view?: a base view's direction; place?: {at: [x, y]} or {aligned: n}; linked?: a projected view's display settings all following its parent (true) or all its own, as they are now (false)} → {view, changed: [fields], followers: [the views projected from it whose settings changed with it]}. One undo step; no model is evaluated, but to check a new source or hide, a view of another configuration evaluates a copy of the design; the design is unchanged."),
     CommandSpec::new(MOVE, "Move View to Sheet", crate::checked!("drawing.view.move_to_sheet", move_to_sheet))
         .icon("move")
         .in_drawing()
@@ -121,14 +129,14 @@ pub static COMMANDS: &[CommandSpec] = &[CommandSpec::new(CMD, "Drawing View Snap
         .doc_only()
         .contract(&BASE_CONTRACT)
         .output(output_schema_for::<CreateResult>)
-        .params("sheet: id or name; view?: as drawing.view.snapshot's (front by default); scale?: \"paper:model\" (default: the largest ISO 5455 preset at which it lies inside the sheet's drawing space and off its title block, centred where it goes, or 1:1 with nothing to measure; saved either way); position_mm?: [x, y] for its centre (default the sheet's centre); visual_style?, reference_style?, reference_hides_model?, reference_shown_percent?, tangent_edges?, source?: {occurrences: [[ids…]]}, hide?: [[ids…]] (as drawing.view.snapshot's): settings it sets itself (each left out follows the default) → {view, sheet, scale: {text, factor, fitted}, boundary_mm, outside?: [it, when its boundary leaves the sheet's drawing space or lies over its title block]}. A view of the drawing's design. One undo step; no model is evaluated."),
+        .params("sheet: id or name; view?: as drawing.view.snapshot's (front by default); scale?: \"paper:model\" (default: the largest ISO 5455 preset at which it lies inside the sheet's drawing space and off its title block, centred where it goes, or 1:1 with nothing to measure; saved either way); position_mm?: [x, y] for its centre (default the sheet's centre); visual_style?, reference_style?, reference_hides_model?, reference_shown_percent?, tangent_edges?, source?: {occurrences: [[ids…]]}, hide?: [[ids…]] (as drawing.view.snapshot's), exploded?: \"assembled\" (default) or an exploded view of the design by its name or id, pose?: \"designed\" (default), [{joint: id or name, values: [as joint.drive takes them]}] or {study: id or name, step: a whole step of its timeline}, configuration?: \"active\" (default) or a row of the design's configuration table by its name or id: settings it sets itself (each left out follows the default) → {view, sheet, scale: {text, factor, fitted}, boundary_mm, outside?: [it, when its boundary leaves the sheet's drawing space or lies over its title block]}. A view of the drawing's design. One undo step; a view of another configuration evaluates a copy of the design; the design is unchanged."),
     CommandSpec::new(PROJECTED, "Projected View", crate::checked!("drawing.view.projected", projected))
         .icon("new")
         .in_drawing()
         .doc_only()
         .contract(&PROJECTED_CONTRACT)
         .output(output_schema_for::<CreateResult>)
-        .params("parent: a saved view's id; side: left, right, above or below, where it sits (the drawing's projection says which side of the model it shows); place?: {at: [x, y]} or {aligned: n} (default: lined up with its parent, its boundary 20 mm past the parent's) → {view, sheet: its parent's, scale: its parent's, boundary_mm, outside?}. Its scale and display settings follow its parent; drawing.view.edit sets its own. One undo step; no model is evaluated."),
+        .params("parent: a saved view's id; side: left, right, above or below, where it sits (the drawing's projection says which side of the model it shows); place?: {at: [x, y]} or {aligned: n} (default: lined up with its parent, its boundary 20 mm past the parent's) → {view, sheet: its parent's, scale: its parent's, boundary_mm, outside?}. Its scale and display settings follow its parent; drawing.view.edit sets its own. One undo step; a view of another configuration evaluates a copy of the design; the design is unchanged."),
 ];
 
 fn snapshot(s: &mut Session, p: &Value) -> Result<Value> {
@@ -316,6 +324,45 @@ fn measurements(s: &Session, request: &SnapshotParams, basis: &Plane, scale: Sca
     read.collect()
 }
 
+/// Refused when saved view `view` of `record` doesn't draw a part that one of the occurrence paths
+/// `paths` places: an annotation attaches only to what its view draws.
+pub(super) fn check_drawn<'a>(record: &Drawing, view: u64, paths: impl IntoIterator<Item = &'a [u64]>, cmd: &str) -> Result<()> {
+    match not_drawn(record, view, paths) {
+        Some(why) => Err(bad(cmd, format!("view {} doesn't draw that part: {why}", ids::encode(view)))),
+        None => Ok(()),
+    }
+}
+
+/// Why view `view` of `record` doesn't draw the first of `paths` it leaves out, in words ([`left_out`]);
+/// nothing when it draws them all, or for a view that can't be resolved, which its own reply reports.
+/// The view is resolved once, however many paths there are.
+fn not_drawn<'a>(record: &Drawing, view: u64, paths: impl IntoIterator<Item = &'a [u64]>) -> Option<String> {
+    let resolved = record.resolve_view(view).ok()?;
+    let left = paths.into_iter().find_map(|path| crate::drawing_view::left_out(&resolved, path))?;
+    Some(match left {
+        LeftOut::Hidden { by, set_by } => format!("its hide leaves out occurrence path {by:?}{}", set_on(set_by)),
+        LeftOut::NotChosen { set_by } => format!("its source draws only the occurrences it chose{}", set_on(set_by)),
+    })
+}
+
+/// Where a setting that leaves a part out was set, in words for [`not_drawn`]: nothing when the view
+/// itself or the default set it. Hide and the chosen occurrences come from a view's chain today, but
+/// a sheet and a drawing can set other settings (its line group), so each says where.
+fn set_on(set_by: SetBy) -> String {
+    match set_by {
+        SetBy::Parent(parent) => format!(" (set on view {})", ids::encode(parent)),
+        SetBy::Sheet => " (set on its sheet)".to_string(),
+        SetBy::Drawing => " (set on the drawing)".to_string(),
+        SetBy::This | SetBy::Default => String::new(),
+    }
+}
+
+/// The warning for an annotation on view `view` that points through `paths`, when the view's
+/// settings were changed to leave one of them out after it was added: it stays, and says so.
+pub(super) fn drawn_warning<'a>(record: &Drawing, view: u64, paths: impl IntoIterator<Item = &'a [u64]>) -> Vec<String> {
+    not_drawn(record, view, paths).map(|why| format!("view {} doesn't draw this part now: {why}", ids::encode(view))).into_iter().collect()
+}
+
 /// Refused when `view` would show nothing of a design that has bodies to show. One with nothing to
 /// measure anyway isn't the choice's fault, and gets its placeholder.
 fn check_shows_bodies(shown: &std::result::Result<ShownSet, Unmeasured>, view: &ResolvedView, cmd: &str) -> Result<()> {
@@ -366,10 +413,7 @@ fn line_results(shown: &ShownSet, drawn: &Lines) -> Vec<LineResult> {
             occurrence: body.map(|b| b.path.clone()).unwrap_or_default(),
             body: body.map(|b| b.body.clone()).unwrap_or_default(),
             reference: l.reference,
-            source: match l.source {
-                Source::Edge { edge, tangent } => LineSourceResult::Edge { edge, tangent },
-                Source::Silhouette { face } => LineSourceResult::Silhouette { face },
-            },
+            source: l.source.into(),
             pieces: l
                 .pieces
                 .iter()
@@ -389,7 +433,10 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
     let d = s.drawing(INSPECT)?;
     let view = find(d, request.view.0, INSPECT)?;
     let resolved = d.resolve_view(view.id).map_err(|e| bad(INSPECT, e.to_string()))?;
-    let placed = crate::drawing_view::on_sheet(s, d, view.id, INSPECT)?;
+    let mut sessions = ViewSessions::new(s);
+    let placed = crate::drawing_view::on_sheet_from(&mut sessions, d, view.id, INSPECT)?;
+    let pose = pose_result(s, &mut sessions, &resolved, view.settings.pose.clone());
+    let configuration = configuration_result(&mut sessions, &resolved, view.settings.configuration);
     let (parent, side) = match view.kind {
         ViewKind::Base { .. } => (None, None),
         ViewKind::Projected { parent, side } => (Some(ids::encode(parent)), Some(snake_name(side))),
@@ -413,8 +460,12 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
             reference_style: setting(resolved.reference_style, own.reference_style, snake_name),
             reference_hides_model: setting(resolved.reference_hides_model, own.reference_hides_model, |b| b),
             tangent_edges: setting(resolved.tangent_edges, own.tangent_edges, snake_name),
+            line_group: setting(resolved.line_group, own.line_group, snake_name),
             occurrences: setting(resolved.occurrences, own.occurrences.clone().map(Some), path_lists),
             hide: setting(resolved.hide, own.hide.clone().map(Some), path_lists),
+            exploded: setting(resolved.exploded, own.exploded, exploded_value),
+            pose,
+            configuration,
         },
         reference_shown_percent: view.reference_shown_percent,
         boundary_mm: BoxResult { min: placed.boundary.min.into(), max: placed.boundary.max.into() },
@@ -442,14 +493,30 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         let source = request.set.source.as_ref().and_then(Option::as_ref).map(|chosen| chosen.occurrences.as_slice());
         check_paths(s, source, request.set.hide.as_ref().and_then(Option::as_deref).unwrap_or_default(), EDIT)?;
         let mut staged = Drawing::clone(s.drawing(EDIT)?);
-        change(&mut staged, id, &request.set)?;
+        change(&mut staged, id, &request.set, &Found::default())?;
         let resolved = staged.resolve_view(id).map_err(|e| bad(EDIT, e.to_string()))?;
-        check_shows_bodies(&crate::drawing_view::shown(s), &resolved, EDIT)?;
+        check_shows_bodies(&crate::drawing_view::shown_by(&mut ViewSessions::new(s), &resolved), &resolved, EDIT)?;
     }
+    let set = &request.set;
+    let found = Found {
+        exploded: set.exploded.as_ref().map(|chosen| chosen.as_ref().map(|chosen| exploded_of(s, chosen, EDIT)).transpose()).transpose()?,
+        pose: set.pose.as_ref().map(|chosen| chosen.as_ref().map(|chosen| pose_of(s, chosen, EDIT)).transpose()).transpose()?,
+        configuration: set
+            .configuration
+            .as_ref()
+            .map(|chosen| chosen.as_ref().map(|chosen| configuration_of(s, chosen, EDIT)).transpose())
+            .transpose()?,
+    };
     let descendants = descendants(s.drawing(EDIT)?, id, |_| true);
+    let apart = found.exploded.is_some() || found.pose.is_some() || found.configuration.is_some();
+    if apart || set.visual_style.is_some() || set.reference_style.is_some() || set.linked.is_some() {
+        let mut staged = Drawing::clone(s.drawing(EDIT)?);
+        change(&mut staged, id, set, &found)?;
+        check_apart(&staged, std::iter::once(id).chain(descendants.iter().copied()), EDIT)?;
+    }
     let resolve = |d: &Drawing, ids: &[u64]| ids.iter().map(|id| d.resolve_view(*id).ok()).collect::<Vec<Option<ResolvedView>>>();
     let before = resolve(s.drawing(EDIT)?, &descendants);
-    let changed = s.edit_drawing(EDIT, |d| change(d, id, &request.set))?;
+    let changed = s.edit_drawing(EDIT, |d| change(d, id, &request.set, &found))?;
     let after = resolve(s.drawing(EDIT)?, &descendants);
     let followers = descendants.iter().zip(before.iter().zip(&after)).filter(|(_, (b, a))| b != a).map(|(id, _)| ids::encode(*id)).collect();
     let reply = EditResult { view: ids::encode(id), changed, followers, param_warnings: Vec::new() };
@@ -458,14 +525,20 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
 
 /// The display settings a linked view takes from its parent: every inheritable one but the scale,
 /// which keeps its own switch.
-const DISPLAY_GROUP: usize = 4;
+const DISPLAY_GROUP: usize = 5;
 
 /// How many of the display settings `own` sets itself.
 fn display_set(own: &ViewOverrides) -> usize {
-    [own.visual_style.is_some(), own.reference_style.is_some(), own.reference_hides_model.is_some(), own.tangent_edges.is_some()]
-        .into_iter()
-        .filter(|set| *set)
-        .count()
+    [
+        own.visual_style.is_some(),
+        own.reference_style.is_some(),
+        own.reference_hides_model.is_some(),
+        own.tangent_edges.is_some(),
+        own.line_group.is_some(),
+    ]
+    .into_iter()
+    .filter(|set| *set)
+    .count()
 }
 
 /// View `id` of `d`, for `cmd`.
@@ -494,8 +567,19 @@ fn descendants(d: &Drawing, id: u64, follows: impl Fn(&View) -> bool) -> Vec<u64
     d.views.iter().map(|v| v.id).filter(|v| found.contains(v)).collect()
 }
 
-/// `set` made on view `id` of `d`: the fields it changes, by name.
-fn change(d: &mut Drawing, id: u64, set: &ViewSet) -> Result<Vec<String>> {
+/// What an edit's choices name in the design, found there before it changes anything: its exploded
+/// view ([`exploded_of`]), its position ([`pose_of`]) and its configuration ([`configuration_of`]),
+/// each `None` when the edit leaves it.
+#[derive(Default)]
+struct Found {
+    exploded: Option<Option<Exploded>>,
+    pose: Option<Option<Pose>>,
+    configuration: Option<Option<ViewConfiguration>>,
+}
+
+/// `set` made on view `id` of `d`, with what it names in the design as `found`: the fields it changes,
+/// by name.
+fn change(d: &mut Drawing, id: u64, set: &ViewSet, found: &Found) -> Result<Vec<String>> {
     let resolved = d.resolve_view(id).map_err(|e| bad(EDIT, e.to_string()))?;
     let at = d.view_index(id).ok_or_else(|| bad(EDIT, format!("the drawing has no view {}", ids::encode(id))))?;
     let Some(view) = d.views.get_mut(at).map(std::sync::Arc::make_mut) else { return Ok(Vec::new()) };
@@ -511,6 +595,7 @@ fn change(d: &mut Drawing, id: u64, set: &ViewSet) -> Result<Vec<String>> {
         own.reference_style = (!linked).then_some(resolved.reference_style.value);
         own.reference_hides_model = (!linked).then_some(resolved.reference_hides_model.value);
         own.tangent_edges = (!linked).then_some(resolved.tangent_edges.value);
+        own.line_group = (!linked).then_some(resolved.line_group.value);
     }
     if let Some(scale) = set.scale {
         if base && scale.is_none() {
@@ -530,11 +615,23 @@ fn change(d: &mut Drawing, id: u64, set: &ViewSet) -> Result<Vec<String>> {
     if let Some(edges) = set.tangent_edges {
         own.tangent_edges = edges.map(|e| e.0);
     }
+    if let Some(group) = set.line_group {
+        own.line_group = group.map(|g| g.0);
+    }
     if let Some(source) = &set.source {
         own.occurrences = source.as_ref().map(|chosen| occurrence_paths(&chosen.occurrences));
     }
     if let Some(hide) = &set.hide {
         own.hide = hide.as_deref().map(occurrence_paths);
+    }
+    if let Some(exploded) = found.exploded {
+        own.exploded = exploded;
+    }
+    if let Some(pose) = &found.pose {
+        own.pose = pose.clone();
+    }
+    if let Some(configuration) = found.configuration {
+        own.configuration = configuration;
     }
     if let Some(percent) = set.reference_shown_percent {
         view.reference_shown_percent = percent;
@@ -563,8 +660,12 @@ fn changed_fields(a: &View, b: &View) -> Vec<String> {
         ("reference_style", x.reference_style != y.reference_style),
         ("reference_hides_model", x.reference_hides_model != y.reference_hides_model),
         ("tangent_edges", x.tangent_edges != y.tangent_edges),
+        ("line_group", x.line_group != y.line_group),
         ("source", x.occurrences != y.occurrences),
         ("hide", x.hide != y.hide),
+        ("exploded", x.exploded != y.exploded),
+        ("pose", x.pose != y.pose),
+        ("configuration", x.configuration != y.configuration),
         ("reference_shown_percent", a.reference_shown_percent != b.reference_shown_percent),
         ("view", a.kind != b.kind),
         ("place", a.place != b.place),
@@ -593,11 +694,176 @@ fn extents_result(extents: &Extents, unmeasured: Option<Unmeasured>) -> ExtentsR
     }
 }
 
+/// An exploded choice as inspect shows it and a view saves it: `"assembled"`, or `{"view": id}`.
+fn exploded_value(exploded: Exploded) -> Value {
+    serde_json::to_value(exploded).unwrap_or(Value::Null)
+}
+
+/// A configuration as inspect shows it and a view saves it: `"active"`, or `{"row": id}`.
+fn configuration_value(configuration: ViewConfiguration) -> Value {
+    serde_json::to_value(configuration).unwrap_or(Value::Null)
+}
+
+/// Saved view `view`'s configuration as inspect shows it, where `own` is what the view sets itself, and
+/// what it draws from `sessions`: the row its copy is put in, or else the design's active row while the
+/// design is still in it, and the features the row fails to build that the design builds
+/// ([`crate::drawing_view::ViewCopy`]).
+fn configuration_result(sessions: &mut ViewSessions, view: &ResolvedView, own: Option<ViewConfiguration>) -> ConfigurationResult {
+    let setting = setting(view.configuration, own, configuration_value);
+    let choice = sessions.choice(view);
+    // The answer the key already holds for a view of the active row: the design isn't compared again.
+    let in_active = choice.row().is_none() && sessions.matches();
+    let (drawn, errors) = match sessions.drawing(&choice) {
+        Ok((from, failing)) => {
+            let row = match choice.row() {
+                Some(row) => from.doc.configs.row(RowKey::Id(row)),
+                None => from.doc.configs.active_row().filter(|_| in_active),
+            };
+            (row.map(|row| DrawnRowResult { id: row.id, name: row.name.clone() }), failing.to_vec())
+        }
+        Err(_) => (None, Vec::new()),
+    };
+    ConfigurationResult { setting, drawn, errors }
+}
+
+/// `chosen` as a view saves it, for `cmd`: active, or a row of the design's configuration table found
+/// by its id or its name, as `config.activate` finds one, saved by its id.
+fn configuration_of(s: &Session, chosen: &ConfigurationParam, cmd: &str) -> Result<ViewConfiguration> {
+    let key = match chosen {
+        ConfigurationParam::Active => return Ok(ViewConfiguration::Active),
+        ConfigurationParam::Id(id) => RowKey::Id(*id),
+        ConfigurationParam::Name(name) => RowKey::Name(name),
+    };
+    let row = s.doc.configs.row(key).ok_or_else(|| bad(cmd, format!("no configuration `{key}` in the design")))?;
+    Ok(ViewConfiguration::Row(row.id))
+}
+
+/// `chosen` as a view saves it, for `cmd`: assembled, or an exploded view of the design found by its
+/// id or name, as `explode.show` finds one.
+fn exploded_of(s: &Session, chosen: &ExplodedParam, cmd: &str) -> Result<Exploded> {
+    let views = &s.doc.assembly.exploded;
+    let found = match chosen {
+        ExplodedParam::Assembled => return Ok(Exploded::Assembled),
+        ExplodedParam::Id(id) => views.iter().find(|v| v.id == *id).ok_or_else(|| id.to_string()),
+        ExplodedParam::Name(name) => views.iter().find(|v| v.name == *name || v.id.to_string() == *name).ok_or_else(|| name.clone()),
+    };
+    found.map(|v| Exploded::View(v.id)).map_err(|key| bad(cmd, format!("no exploded view `{key}` in the design")))
+}
+
+/// `chosen` as a view saves it, for `cmd`: designed; each joint found by its id or name with its
+/// values read as `joint.drive` reads them, then held to the record's limits ([`check_pose`]); or a
+/// study found as `motion.play` finds it, at a whole step of its timeline.
+fn pose_of(s: &Session, chosen: &PoseParam, cmd: &str) -> Result<Pose> {
+    let given = match chosen {
+        PoseParam::Designed => return Ok(Pose::Designed),
+        PoseParam::Study(at) => return study_step_of(s, at, cmd).map(Pose::Study),
+        PoseParam::Joints(given) => given,
+    };
+    // Bounded before any joint is looked up.
+    if given.len() > MAX_POSE_JOINTS {
+        return Err(bad(cmd, format!("a position sets at most {MAX_POSE_JOINTS} joints")));
+    }
+    let mut joints = Vec::with_capacity(given.len());
+    for one in given {
+        let id = super::joints::joint_id(s, Some(&one.joint), cmd)?;
+        let joint = s.doc.assembly.joints.iter().find(|j| j.id == id).ok_or_else(|| bad(cmd, format!("no joint {id}")))?;
+        let takes = joint.kind.dofs().len();
+        if one.values.len() != takes {
+            return Err(bad(cmd, format!("joint `{}` takes {takes} value{}", joint.name, if takes == 1 { "" } else { "s" })));
+        }
+        // A value's reason, said of its joint.
+        let named = |e| match e {
+            crate::EngineError::BadParams { msg, .. } => bad(cmd, format!("joint `{}`: {msg}", joint.name)),
+            other => other,
+        };
+        let value = |(i, v)| {
+            let x = super::joints::value(s, v, joint.kind.is_angle(i), cmd)?;
+            if x.is_finite() { Ok(x) } else { Err(bad(cmd, "a value must be a finite number")) }
+        };
+        let values = one.values.iter().enumerate().map(|one| value(one).map_err(named));
+        joints.push(JointPose { joint: id, values: values.collect::<Result<_>>()? });
+    }
+    let pose = Pose::Joints(joints.into());
+    check_pose(&pose).map_err(|e| bad(cmd, e.to_string()))?;
+    Ok(pose)
+}
+
+/// `at` as a view saves it, for `cmd`: the study by its id, and a whole step of its timeline.
+fn study_step_of(s: &Session, at: &StudyPoseParam, cmd: &str) -> Result<StudyStep> {
+    let index = super::motion::study_index(s, &json!({"study": at.study}), cmd)?;
+    let study = s.doc.assembly.studies.get(index).ok_or_else(|| bad(cmd, "no such motion study"))?;
+    let step = at.step.as_u64().and_then(|step| u32::try_from(step).ok()).filter(|step| *step <= study.steps);
+    let step = step.ok_or_else(|| bad(cmd, format!("`step` is a whole step of motion study `{}`: 0 to {}", study.name, study.steps)))?;
+    Ok(StudyStep { id: study.id, step })
+}
+
+/// A position as inspect shows it and a view saves it: `"designed"`, `{"joints": [...]}`, or
+/// `{"study": {"id": .., "step": ..}}`.
+fn pose_value(pose: Pose) -> Value {
+    serde_json::to_value(pose).unwrap_or(Value::Null)
+}
+
+/// Saved view `view`'s position as inspect shows it, where `own` is what the view sets itself; for a
+/// position of its own, also what it draws from `sessions`: the joints it sets, or a study keys, at
+/// the values they take, the joints `s`'s design no longer has, and the study step it draws.
+fn pose_result(s: &Session, sessions: &mut ViewSessions, view: &ResolvedView, own: Option<Pose>) -> PoseResult {
+    let setting = setting(view.pose.clone(), own, pose_value);
+    let (joints, study): (Vec<u64>, Option<StudyStepResult>) = match &view.pose.value {
+        Pose::Designed => return PoseResult { setting, drawn: None, skipped: None, study: None },
+        Pose::Joints(joints) => (joints.iter().map(|j| j.joint).collect(), None),
+        Pose::Study(at) => match at.drawn(&s.doc.assembly.studies) {
+            Some((m, step)) => {
+                // Each joint it keys once, as `motion.play` lists them.
+                let keyed: BTreeSet<u64> = m.keys.iter().map(|k| k.joint).collect();
+                (keyed.into_iter().collect(), Some(StudyStepResult { id: m.id, name: m.name.clone(), step }))
+            }
+            None => (Vec::new(), None),
+        },
+    };
+    let skipped = crate::drawing_view::gone_joints(s, view);
+    let drawn = match sessions.of(view) {
+        Ok(posed) => {
+            // As the solver places them, after motion links: a screw's travel follows its turn.
+            let placed = solidcraft_doc::joints::joint_values(&posed.doc.assembly);
+            joints
+                .iter()
+                .filter_map(|joint| posed.doc.assembly.joints.iter().find(|driven| driven.id == *joint))
+                .map(|driven| DrawnJointResult {
+                    joint: driven.id,
+                    name: driven.name.clone(),
+                    values: placed
+                        .get(&driven.id)
+                        .unwrap_or(&driven.values)
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| if driven.kind.is_angle(i) { v.to_degrees() } else { *v })
+                        .collect(),
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    };
+    PoseResult { setting, drawn: Some(drawn), skipped: Some(skipped), study }
+}
+
+/// Refuses a drawing in which one of `views` draws its parts apart in a way it can't draw yet
+/// ([`crate::drawing_view::not_drawable_apart`]).
+fn check_apart(d: &Drawing, views: impl Iterator<Item = u64>, cmd: &str) -> Result<()> {
+    for view in views {
+        if let Some(why) = d.resolve_view(view).ok().as_ref().and_then(crate::drawing_view::not_drawable_apart) {
+            return Err(bad(cmd, why));
+        }
+    }
+    Ok(())
+}
+
 /// A resolved setting as inspect shows it: its value, where it comes from and what the view sets.
 fn setting<T, U>(resolved: Setting<T>, own: Option<T>, show: impl Fn(T) -> U) -> SettingResult<U> {
     let (from, parent) = match resolved.set_by {
         SetBy::This => (FromResult::This, None),
         SetBy::Parent(id) => (FromResult::Parent, Some(ids::encode(id))),
+        SetBy::Sheet => (FromResult::Sheet, None),
+        SetBy::Drawing => (FromResult::Drawing, None),
         SetBy::Default => (FromResult::Default, None),
     };
     SettingResult { value: show(resolved.value), from, parent, set: own.map(&show) }
@@ -696,7 +962,9 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             view.place = shifted(original, to - from);
             match original.kind {
                 // The copy follows none of the views it came from: a projected view copied alone is
-                // a base view, looking the way it did, with the settings it had as its own.
+                // a base view, looking the way it did, with the settings it had as its own. Its line
+                // group is its own only when its chain gave it: else it follows its new sheet, as a
+                // base view copied does.
                 ViewKind::Projected { .. } if *old == id => {
                     view.kind = ViewKind::Base { source: resolved.source, view: looking(&resolved.basis) };
                     view.settings = ViewOverrides {
@@ -707,6 +975,10 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
                         tangent_edges: Some(resolved.tangent_edges.value),
                         occurrences: resolved.occurrences.value.clone(),
                         hide: resolved.hide.value.clone(),
+                        line_group: matches!(resolved.line_group.set_by, SetBy::This | SetBy::Parent(_)).then_some(resolved.line_group.value),
+                        exploded: Some(resolved.exploded.value).filter(|exploded| *exploded != Exploded::Assembled),
+                        pose: Some(resolved.pose.value.clone()).filter(|pose| *pose != Pose::Designed),
+                        configuration: Some(resolved.configuration.value).filter(|row| *row != ViewConfiguration::Active),
                     };
                     view.place = ViewPlace::At([to.x, to.y]);
                 }
@@ -721,7 +993,8 @@ fn copy_to_sheet(s: &mut Session, p: &Value) -> Result<Value> {
             .zip(&dimension_copies)
             .filter_map(|(old, new)| {
                 let original = d.dimension(*old)?;
-                Some(Arc::new(Dimension { id: *new, view: copy_of(original.view)?, ..original.clone() }))
+                // A copy shows no model dimension: its original still does, and each shows once.
+                Some(Arc::new(Dimension { id: *new, view: copy_of(original.view)?, from_model: None, ..original.clone() }))
             })
             .collect();
         d.add_dimensions(copied);
@@ -768,6 +1041,10 @@ fn base(s: &mut Session, p: &Value) -> Result<Value> {
         tangent_edges: request.tangent_edges.map(|edges| edges.0),
         occurrences: chosen.map(occurrence_paths),
         hide: request.hide.as_deref().map(occurrence_paths),
+        line_group: None,
+        exploded: request.exploded.as_ref().map(|chosen| exploded_of(s, chosen, BASE)).transpose()?,
+        pose: request.pose.as_ref().map(|chosen| pose_of(s, chosen, BASE)).transpose()?,
+        configuration: request.configuration.as_ref().map(|chosen| configuration_of(s, chosen, BASE)).transpose()?,
     };
     let place = ViewPlace::At([position.x, position.y]);
     let kind = ViewKind::Base { source, view: direction };
@@ -782,8 +1059,9 @@ fn base(s: &mut Session, p: &Value) -> Result<Value> {
         ..view.clone()
     })]);
     staged.validate().map_err(|e| bad(BASE, e.to_string()))?;
+    check_apart(&staged, std::iter::once(id), BASE)?;
     let resolved = staged.resolve_view(id).map_err(|e| bad(BASE, e.to_string()))?;
-    let shown = crate::drawing_view::shown(s);
+    let shown = crate::drawing_view::shown_by(&mut ViewSessions::new(s), &resolved);
     check_shows_bodies(&shown, &resolved, BASE)?;
     let mut fitted = false;
     if view.settings.scale.is_none() {

@@ -164,6 +164,10 @@ pub struct SheetSettings {
     #[serde(default, deserialize_with = "number", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "f64")]
     pub dpi: Option<f64>,
+    /// The ISO 128 line group its views are drawn in, by its wide line: `"0.25"`, `"0.35"`,
+    /// `"0.5"`, `"0.7"`, `"1"`, `"1.4"` or `"2"`; `null` for the drawing's. A view may choose another.
+    #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
+    pub line_group: Option<Option<super::drawing_view::LineGroupParam>>,
     /// The component it documents, `{"source": id, "component": id}` (component 0, the
     /// default, is the design itself), or `null` for none.
     #[serde(default, deserialize_with = "documents", skip_serializing_if = "Option::is_none")]

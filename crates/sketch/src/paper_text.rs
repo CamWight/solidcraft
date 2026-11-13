@@ -28,13 +28,15 @@
 //! - The search for those fonts reads whole files for the known ones and hashes the ones it finds,
 //!   so the window never waits for it: [`paper_text_now`] asks a thread (`font-search`) and refuses
 //!   with [`SketchError::FontPending`] until the answers are in. Answers, misses too, are kept for
-//!   the process. [`paper_text`] does the search where it is called.
+//!   the process. [`paper_text`] does the search where it is called. A sheet sets its texts through
+//!   [`PaperFonts`], which makes that choice once, and reads each answer as an [`Outcome`].
 //! - The browser has no font folders: there the web covers Arabic, Chinese, Japanese and Korean, a
 //!   font each ([`fallback`]). Text is refused with [`SketchError::FontPending`], whichever way it's
 //!   asked for, until each font it asked the web app for has come or failed.
-//! - Lines break at `\n`, a line pitch apart, and are aligned as sketch text's are. A line with
-//!   right-to-left characters is a run per direction, shaped. Every run of a line starts where the
-//!   line does, its glyphs placed along the whole line.
+//! - Lines break at `\n` (and between words, to a width: [`paper_lines`]), a line pitch apart,
+//!   and are aligned as sketch text's are. A line with right-to-left characters is a run per
+//!   direction, shaped. Every run of a line starts where the line does, its glyphs placed along the
+//!   whole line. A text is measured once ([`PaperLines`]) and set from what was measured.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -117,16 +119,160 @@ fn set_text(
     style: &TextStyle,
     wait: bool,
 ) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
+    measure(dirs, text, family, language, height, None, style, wait)?.set(at, angle)
+}
+
+/// A text measured for paper: the lines it is set in, each with its width (mm), and the distance
+/// between their baselines, with its runs and fonts, so [`PaperLines::set`] only places them.
+#[derive(Clone)]
+pub struct PaperLines {
+    /// Each line's text and its width (mm), top to bottom.
+    pub lines: Vec<(String, f64)>,
+    /// The distance between two lines' baselines (mm).
+    pub pitch: f64,
+    /// Each run with its line's start along and down from the first line's (mm, before turning).
+    runs: Vec<((f64, f64), TextRun)>,
+    /// Each font once, in order of id, holding the glyphs its runs place.
+    fonts: Vec<Font>,
+}
+
+impl std::fmt::Debug for PaperLines {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaperLines").field("lines", &self.lines).field("pitch", &self.pitch).finish_non_exhaustive()
+    }
+}
+
+impl PaperLines {
+    /// The lines on paper, the first line's baseline starting at `at` (sheet mm) and turned `angle`
+    /// radians about it, each aligned on it as the style said: their runs, and the fonts they use
+    /// (each once, in order of id, holding the glyphs its runs place); None when they set no glyph
+    /// (empty lines only).
+    pub fn set(&self, at: Vec2, angle: f64) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
+        if !(angle.is_finite() && at.is_finite()) {
+            return Err(SketchError::Invalid("the text's place and angle must be finite".into()));
+        }
+        if self.runs.is_empty() {
+            return Ok(None);
+        }
+        let (sin, cos) = angle.sin_cos();
+        let place = |((along, down), run): &((f64, f64), TextRun)| TextRun {
+            origin: at + Vec2::new(along * cos + down * sin, along * sin - down * cos),
+            angle,
+            ..run.clone()
+        };
+        Ok(Some((self.runs.iter().map(place).collect(), self.fonts.clone())))
+    }
+}
+
+/// `text` measured for paper in the font `family` (None or empty: the built-in font, as
+/// [`paper_text`] chooses), in the drawing's `language`, at a capital height of `height` mm, set in
+/// `style` (which follows no path on paper): broken at each line break, and with `wrap` (a width,
+/// mm) also between words, each line holding as many of its words as fit. Words are the text
+/// between spaces, put back one space apart on a wrapped line. A word is never cut, so a line of
+/// one word may be wider than `wrap`. Fonts to fall back to are searched for here.
+pub fn paper_lines(text: &str, family: Option<&str>, language: &str, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
+    paper_lines_in(&font_dirs(), text, family, language, height, wrap, style)
+}
+
+/// [`paper_lines`] with the fonts installed in `dirs`.
+pub fn paper_lines_in(
+    dirs: &[PathBuf],
+    text: &str,
+    family: Option<&str>,
+    language: &str,
+    height: f64,
+    wrap: Option<f64>,
+    style: &TextStyle,
+) -> Result<PaperLines> {
+    measure(dirs, text, family, language, height, wrap, style, true)
+}
+
+/// [`paper_lines_in`] for the window's thread, as [`paper_text_now`] is [`paper_text_in`]'s: it refuses
+/// with [`SketchError::FontPending`] until the search for fonts to fall back to has answered.
+pub fn paper_lines_now(
+    dirs: &[PathBuf],
+    text: &str,
+    family: Option<&str>,
+    language: &str,
+    height: f64,
+    wrap: Option<f64>,
+    style: &TextStyle,
+) -> Result<PaperLines> {
+    measure(dirs, text, family, language, height, wrap, style, false)
+}
+
+/// A drawing's lettering for its sheet's texts: the font `family` (empty: the built-in font) and
+/// `language`, with the font folders listed once. `wait`: fonts to fall back to are searched for
+/// where a text is set (an export, `drawing.inspect`); else the search's thread is asked, for the
+/// window's sheet, as [`paper_text_now`] does. The one place a sheet's text chooses its way in.
+pub struct PaperFonts {
+    family: String,
+    language: String,
+    dirs: Vec<PathBuf>,
+    wait: bool,
+}
+
+impl PaperFonts {
+    pub fn new(family: &str, language: &str, wait: bool) -> PaperFonts {
+        PaperFonts::in_dirs(font_dirs(), family, language, wait)
+    }
+
+    /// [`PaperFonts::new`] with the fonts installed in `dirs`.
+    pub fn in_dirs(dirs: Vec<PathBuf>, family: &str, language: &str, wait: bool) -> PaperFonts {
+        PaperFonts { family: family.to_string(), language: language.to_string(), dirs, wait }
+    }
+
+    /// `text` measured as [`paper_lines`] measures it.
+    pub fn lines(&self, text: &str, height: f64, wrap: Option<f64>, style: &TextStyle) -> Result<PaperLines> {
+        measure(&self.dirs, text, Some(&self.family), &self.language, height, wrap, style, self.wait)
+    }
+
+    /// `text` set as [`paper_text`] sets it.
+    pub fn text(&self, text: &str, at: Vec2, height: f64, angle: f64, style: &TextStyle) -> Result<Option<(Vec<TextRun>, Vec<Font>)>> {
+        set_text(&self.dirs, text, Some(&self.family), &self.language, (at, height, angle), style, self.wait)
+    }
+}
+
+/// What became of a text set on a sheet: set; pending until the search for a font to fall back to
+/// answers (the window's sheet only); or refused, with why.
+#[derive(Debug)]
+pub enum Outcome<T> {
+    Set(T),
+    Pending,
+    Refused(String),
+}
+
+impl<T> From<Result<T>> for Outcome<T> {
+    fn from(set: Result<T>) -> Outcome<T> {
+        match set {
+            Ok(set) => Outcome::Set(set),
+            Err(SketchError::FontPending) => Outcome::Pending,
+            Err(why) => Outcome::Refused(why.to_string()),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn measure(
+    dirs: &[PathBuf],
+    text: &str,
+    family: Option<&str>,
+    language: &str,
+    height: f64,
+    wrap: Option<f64>,
+    style: &TextStyle,
+    wait: bool,
+) -> Result<PaperLines> {
     if text.chars().count() > MAX_TEXT_CHARS {
         return Err(SketchError::TooLarge);
     }
     check_height(height)?;
-    if !(angle.is_finite() && at.is_finite()) {
-        return Err(SketchError::Invalid("the text's place and angle must be finite".into()));
-    }
     check_spacing(style)?;
     if style.path.is_some() {
         return Err(SketchError::Invalid("text on paper follows no path".into()));
+    }
+    if wrap.is_some_and(|w| !w.is_finite()) {
+        return Err(SketchError::Invalid("a width to wrap text to must be finite".into()));
     }
     let (data, font, family) = paper_face(dirs, family, style.bold, style.italic)?;
     let metrics = TextMetrics::new(&data, style)?;
@@ -141,30 +287,52 @@ fn set_text(
     // Every font takes the same em size.
     let own_em = f64::from(records[0].units_per_em);
     let scales: Vec<f64> = records.iter().map(|font| k * own_em / f64::from(font.units_per_em)).collect();
-    let (sin, cos) = angle.sin_cos();
-    let lean = SLANT_DEG.to_radians().tan();
-    let mut placed: Vec<(usize, TextRun)> = Vec::new();
-    for (row, line) in text.split('\n').enumerate() {
-        let laid = if metrics.missing(line).is_empty() {
-            metrics.laid_out(line, k)
+    let lay = |line: &str| {
+        if metrics.missing(line).is_empty() {
+            Ok(metrics.laid_out(line, k))
         } else {
-            mixed_line(line, &faces, &found, &scales, language, &family, dirs.is_empty())?
+            mixed_line(line, &faces, &found, &scales, language, &family, dirs.is_empty())
+        }
+    };
+    let mut laid: Vec<(String, LaidLine)> = Vec::new();
+    for paragraph in text.split('\n') {
+        let Some(wrap) = wrap else {
+            laid.push((paragraph.to_string(), lay(paragraph)?));
+            continue;
         };
+        let mut words = paragraph.split(' ').filter(|w| !w.is_empty());
+        let Some(first) = words.next() else {
+            laid.push((String::new(), lay("")?));
+            continue;
+        };
+        let mut line = (first.to_string(), lay(first)?);
+        for word in words {
+            let longer = format!("{} {word}", line.0);
+            let wider = lay(&longer)?;
+            if wider.width <= wrap {
+                line = (longer, wider);
+            } else {
+                laid.push(std::mem::replace(&mut line, (word.to_string(), lay(word)?)));
+            }
+        }
+        laid.push(line);
+    }
+    let lean = SLANT_DEG.to_radians().tan();
+    let mut placed: Vec<(usize, (f64, f64), TextRun)> = Vec::new();
+    for (row, (line, laid)) in laid.iter().enumerate() {
         // The line's start: along the baseline by its alignment, then down a pitch a row.
-        let (along, down) = (style.align.start(laid.width), row as f64 * pitch);
-        let origin = at + Vec2::new(along * cos + down * sin, along * sin - down * cos);
+        let start = (style.align.start(laid.width), row as f64 * pitch);
         for run in laid.runs.iter().filter(|run| !run.glyphs.is_empty()) {
-            let (glyphs, text, clusters) = run_records(&laid, run, line)?;
+            let (glyphs, text, clusters) = run_records(laid, run, line)?;
             let record = records.get(run.face).ok_or_else(|| SketchError::Invalid("a run in a font it wasn't given".into()))?;
             let slant = if style.italic && !record.metrics.flags.italic { lean } else { 0.0 };
-            let run_record = TextRun { font: record.id, scale: scales[run.face], origin, angle, slant, glyphs, text, clusters, rtl: run.rtl };
-            placed.push((run.face, run_record));
+            // Placed by `PaperLines::set`.
+            let origin = Vec2::new(0.0, 0.0);
+            let run_record = TextRun { font: record.id, scale: scales[run.face], origin, angle: 0.0, slant, glyphs, text, clusters, rtl: run.rtl };
+            placed.push((run.face, start, run_record));
         }
     }
-    if placed.is_empty() {
-        return Ok(None);
-    }
-    for (face, run) in &placed {
+    for (face, _, run) in &placed {
         let (record, metrics) = (&mut records[*face], faces[*face]);
         for g in &run.glyphs {
             let id = ttf_parser::GlyphId(g.id);
@@ -176,8 +344,9 @@ fn set_text(
     for record in records.into_iter().filter(|record| !record.glyphs.is_empty()) {
         fonts.entry(record.id).or_insert(record);
     }
-    let runs = placed.into_iter().map(|(_, run)| run).collect();
-    Ok(Some((runs, fonts.into_values().collect())))
+    let lines = laid.iter().map(|(line, laid)| (line.clone(), laid.width)).collect();
+    let runs = placed.into_iter().map(|(_, start, run)| (start, run)).collect();
+    Ok(PaperLines { lines, pitch, runs, fonts: fonts.into_values().collect() })
 }
 
 /// The fonts `lacking` falls back to, each with its record, and the font (by its place among

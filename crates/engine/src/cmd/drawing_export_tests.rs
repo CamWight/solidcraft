@@ -65,6 +65,22 @@ fn a_sheet_exports_as_its_scenes_svg() {
     assert_ne!(other["svg"], reply["svg"]);
 }
 
+/// A sheet with the built-in title block exports its labels and values as text: in SVG one path of
+/// filled outlines for each run of the scene, and in PNG its pixels (#4890 B3).
+#[test]
+fn a_title_blocks_text_is_written_as_filled_outlines() {
+    let (mut s, sheet, _) = front_and_top();
+    let block = serde_json::to_value(solidcraft_geom::title_block::default_block()).unwrap();
+    run(&mut s, "drawing.sheet.set", json!({"sheet": ids::encode(sheet), "title_block": block}));
+    let scene = sheet_scene(&s, sheet);
+    let runs = scene.groups.iter().flat_map(|g| &g.items).filter(|item| matches!(item, solidcraft_geom::paper::Item::Text(_))).count();
+    let svg = run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}))["svg"].as_str().unwrap().to_string();
+    assert!(runs > 12, "each label and value: {runs}");
+    assert_eq!(svg.matches("<path fill=\"#000\" stroke=\"none\" d=\"M").count(), runs);
+    let reply = run(&mut s, CMD, json!({"sheet": ids::encode(sheet), "format": "png", "dpi": 50}));
+    assert_eq!(reply["data"].as_str().and_then(base64_decode), Some(scene_png(&s, sheet, PngOptions { dpi: 50.0, colour: PngColour::Grey })));
+}
+
 /// With a path the file holds the same SVG and the reply names it instead.
 #[test]
 fn a_path_gets_the_svg_written_to_it() {
@@ -79,6 +95,36 @@ fn a_path_gets_the_svg_written_to_it() {
         (Some(path.as_str()), None, Some(written.len() as u64)),
         "{reply}"
     );
+}
+
+/// A PNG export stopped part way (the window's background export, cancelled once its first band is
+/// drawn) is refused and writes no file: the file is written only once the whole sheet is drawn.
+#[test]
+fn a_cancelled_png_export_writes_no_file() {
+    /// Cancels as soon as the sheet PNG has reported a band, so nothing before it is stopped.
+    #[derive(Default)]
+    struct AfterABand(std::sync::atomic::AtomicBool);
+    impl solidcraft_kernel::watch::Watch for AfterABand {
+        fn cancelled(&self) -> bool {
+            self.0.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn progress(&self, stage: &'static str, _: usize, _: usize) {
+            if stage == "sheet_png" {
+                self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+    }
+    let (mut s, sheet, _) = front_and_top();
+    let folder = Folder::new("drawing-export-cancelled");
+    let path = folder.path("sheet.png");
+    // A3 at 300 dpi draws in 5 bands.
+    let p = json!({"sheet": ids::encode(sheet), "format": "png", "path": path});
+    let watch = std::sync::Arc::new(AfterABand::default());
+    let why = solidcraft_kernel::watch::watching(watch.clone(), || s.execute(CMD, &p)).unwrap_err().to_string();
+    assert!(why.contains("the sheet PNG: cancelled") && watch.0.load(std::sync::atomic::Ordering::Relaxed), "{why}");
+    assert!(!std::path::Path::new(&path).exists());
+    run(&mut s, CMD, p);
+    assert!(std::path::Path::new(&path).exists(), "unwatched, it is written");
 }
 
 /// A view drawing hidden lines exports with the rest of its sheet, dashed: a style that used to
@@ -119,6 +165,41 @@ fn a_failed_view_is_named_and_nothing_is_written() {
     let reply = run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}));
     let statuses: Vec<_> = reply["views"].as_array().unwrap().iter().map(|v| v["status"].clone()).collect();
     assert_eq!(statuses, [json!("placeholder"), json!("placeholder")], "{reply}");
+    assert_eq!(reply["svg"].as_str().map(str::as_bytes), Some(scene_svg(&s, sheet).as_slice()));
+}
+
+/// A view of a configuration row is exported as the row builds it (#13048): nothing has drawn it before
+/// the export, so its copy is made for the export, on an automatic drawing and on a deferred one. A
+/// view of a row the design no longer has, and the view that follows it, are placeholders that say
+/// why, and the sheet is written all the same.
+#[test]
+fn a_view_of_a_configuration_row_exports_as_the_row_builds_it() {
+    let (mut s, sheet, [front, _], _) = crate::drawing_scene::tests::configured_front_and_top();
+    let wide = |shown: &crate::drawing_scene::SheetScene| shown.objects.iter().find(|o| o.object == front).map(|o| o.bounds_mm.size().x);
+    let statuses = |reply: &Value| reply["views"].as_array().unwrap().iter().map(|v| (v["status"].clone(), v["reason"].clone())).collect::<Vec<_>>();
+    let drawn = vec![(json!("drawn"), Value::Null); 2];
+    run(&mut s, "drawing.view.edit", json!({"view": ids::encode(front), "set": {"configuration": "Long"}}));
+    let reply = run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}));
+    assert_eq!(statuses(&reply), drawn, "{reply}");
+    assert_eq!(reply["svg"].as_str().map(str::as_bytes), Some(scene_svg(&s, sheet).as_slice()));
+    let d = s.drawing("test").unwrap().clone();
+    assert!(wide(&crate::drawing_scene::build(&s, &d, sheet).unwrap()).is_some_and(|w| (w - 60.0).abs() < 1e-6));
+    // Deferred and updated: the export draws it from the model as its update left it.
+    run(&mut s, "drawing.set", json!({"updates": "deferred"}));
+    run(&mut s, "drawing.update", json!({}));
+    let reply = run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}));
+    assert_eq!(statuses(&reply), drawn, "{reply}");
+    let d = s.drawing("test").unwrap().clone();
+    assert!(wide(&crate::drawing_scene::as_shown(&mut s, &d, sheet).unwrap()).is_some_and(|w| (w - 60.0).abs() < 1e-6));
+    // Its row deleted.
+    run(&mut s, "drawing.set", json!({"updates": "automatic"}));
+    let drawing = ids::encode(s.open_drawing.unwrap());
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "config.row", json!({"name": "Long", "delete": true}));
+    run(&mut s, "drawing.open", json!({"drawing": drawing}));
+    let reply = run(&mut s, CMD, json!({"sheet": ids::encode(sheet)}));
+    let why = json!("the configuration it draws is no longer in the design");
+    assert_eq!(statuses(&reply), vec![(json!("placeholder"), why); 2], "{reply}");
     assert_eq!(reply["svg"].as_str().map(str::as_bytes), Some(scene_svg(&s, sheet).as_slice()));
 }
 

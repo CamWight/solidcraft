@@ -86,7 +86,7 @@ impl Drop for Folder {
 }
 
 fn gothic() -> Vec<u8> {
-    std::fs::read(repo_fonts()[0].join("biz-udp-gothic/BIZUDPGothic-Regular.ttf")).unwrap()
+    std::fs::read(repo_font("biz-udp-gothic/BIZUDPGothic-Regular.ttf")).unwrap()
 }
 
 /// The runs on an A3 sheet as one group, with their font: what `Scene::validate` holds them to.
@@ -105,10 +105,16 @@ fn err(text: &str, family: Option<&str>, style: &TextStyle) -> String {
     paper_text_in(&repo_fonts(), text, family, "", AT, 5.0, 0.0, style).unwrap_err().to_string()
 }
 
-/// The repository's fonts as the only installed ones: Liberation Sans, IBM Plex Mono, BIZ
-/// UDPGothic and IBM Plex Sans (a variable face).
+/// The repository's fonts as the only installed ones: Liberation Sans (this crate's), IBM Plex
+/// Mono and IBM Plex Sans (a variable face; the shared look crate's), and BIZ UDPGothic.
 fn repo_fonts() -> Vec<PathBuf> {
-    vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets/fonts")]
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    vec![root.join("../../assets/fonts"), root.join("../look/fonts"), root.join("assets/fonts")]
+}
+
+/// A repository font file, `family-dir/file`, from whichever folder of [`repo_fonts`] holds it.
+fn repo_font(file: &str) -> PathBuf {
+    repo_fonts().into_iter().map(|dir| dir.join(file)).find(|p| p.exists()).unwrap_or_else(|| panic!("no repository font {file}"))
 }
 
 fn set_in(text: &str, family: &str) -> (Vec<TextRun>, Font) {
@@ -408,6 +414,67 @@ fn a_miss_is_kept() {
     assert_eq!(folder.found(Han::Japanese, '\u{30b9}').as_deref(), Some("a.ttf"), "another character is another search");
 }
 
+/// What the window's way in `now` gives once the search has answered, failing the test if it hasn't
+/// in 120 s.
+fn answered<T>(now: impl Fn() -> std::result::Result<T, SketchError>) -> std::result::Result<T, SketchError> {
+    let started = std::time::Instant::now();
+    loop {
+        match now() {
+            Err(SketchError::FontPending) => assert!(started.elapsed().as_secs() < 120, "the search never answered"),
+            other => return other,
+        }
+        std::thread::yield_now();
+    }
+}
+
+/// Measuring lines for the window searches no more than setting text does: pending until the search
+/// answers, then the lines the waiting way in measures.
+#[test]
+fn the_windows_lines_wait_for_no_search() {
+    let folder = Folder::new("lines-now", &["a.ttf"]);
+    let dirs = folder.dirs();
+    let plain = TextStyle::default();
+    let now = || paper_lines_now(&dirs, "A \u{30c6}", None, "", 5.0, Some(4.0), &plain);
+    assert!(matches!(now(), Err(SketchError::FontPending)));
+    assert!(paper_lines_now(&dirs, "A", None, "", 5.0, None, &plain).is_ok(), "nothing to fall back to is never pending");
+    let answer = answered(now);
+    let waited = paper_lines_in(&dirs, "A \u{30c6}", None, "", 5.0, Some(4.0), &plain).unwrap();
+    assert_eq!(answer.unwrap().lines, waited.lines);
+}
+
+/// A search that stops part-way (a panic on its thread) leaves nothing waiting: what it held is
+/// answered as a miss, and a character asked for while it ran is searched next, not missed.
+#[test]
+fn a_search_that_stops_part_way_leaves_nothing_waiting() {
+    use crate::fonts::fallback::{Running, answers};
+    let folder = Folder::new("stopped", &["a.ttf"]);
+    let dirs = folder.dirs();
+    let held = Query::new(&dirs, Han::Japanese, false, false, '\u{30c6}');
+    let next = Query::new(&dirs, Han::Japanese, false, false, '\u{30b9}');
+    let stopped = std::thread::spawn({
+        let (held, next) = (held.clone(), next.clone());
+        move || {
+            let mut running = Running::start();
+            running.held = vec![held];
+            // Asked while the search runs, so it waits for it (the stop below is this thread's end, so
+            // nothing here is asserted).
+            let _ = answers(std::slice::from_ref(&next), false);
+            std::panic::panic_any("a search stopped part-way")
+        }
+    });
+    assert!(stopped.join().is_err());
+    assert_eq!(answers(std::slice::from_ref(&held), false), Some(vec![None]), "a miss, not waiting");
+    let started = std::time::Instant::now();
+    let found = loop {
+        match answers(std::slice::from_ref(&next), false) {
+            Some(found) => break found,
+            None => assert!(started.elapsed().as_secs() < 120, "nothing searched again"),
+        }
+        std::thread::yield_now();
+    };
+    assert_eq!(found[0].as_ref().and_then(|(path, _)| path.file_name()).map(|name| name.to_string_lossy().into_owned()).as_deref(), Some("a.ttf"));
+}
+
 /// The window's way in never searches: it says the fonts are being looked for until they are found.
 #[test]
 fn the_windows_way_in_waits_for_no_search() {
@@ -418,14 +485,35 @@ fn the_windows_way_in_waits_for_no_search() {
     assert!(matches!(now(), Err(SketchError::FontPending)));
     // Nothing to fall back to is never pending.
     assert!(paper_text_now(&dirs, "A", None, "", AT, 5.0, 0.0, &plain).unwrap().is_some());
-    let answer = loop {
-        match now() {
-            Err(SketchError::FontPending) => std::thread::yield_now(),
-            other => break other,
-        }
-    };
+    let answer = answered(now);
     let (runs, fonts) = mixed(answer.unwrap().unwrap());
     assert_eq!((runs.len(), fonts.len()), (2, 2));
+}
+
+/// A sheet's texts take one of three outcomes, the same rule whichever way in: asking is pending
+/// until the search answers, then sets what waiting sets; waiting is never pending; a character no
+/// font has is refused with why.
+#[test]
+fn a_sheets_text_is_set_pending_or_refused() {
+    let folder = Folder::new("outcomes", &["a.ttf"]);
+    let (asking, waiting) = (PaperFonts::in_dirs(folder.dirs(), "", "", false), PaperFonts::in_dirs(folder.dirs(), "", "", true));
+    let plain = TextStyle::default();
+    assert!(matches!(Outcome::from(asking.lines("A \u{30c6}", 5.0, None, &plain)), Outcome::Pending));
+    let Outcome::Set(asked) = Outcome::from(answered(|| asking.lines("A \u{30c6}", 5.0, None, &plain))) else { panic!("not set") };
+    let Outcome::Set(waited) = Outcome::from(waiting.lines("A \u{30c6}", 5.0, None, &plain)) else { panic!("not set") };
+    assert_eq!(asked.lines, waited.lines);
+    let set = |text: std::result::Result<Option<(Vec<TextRun>, Vec<Font>)>, SketchError>| match Outcome::from(text) {
+        Outcome::Set(Some((runs, _))) => runs.len(),
+        _ => 0,
+    };
+    assert_eq!(set(answered(|| asking.text("A\u{30c6}", AT, 5.0, 0.0, &plain))), 2);
+    assert_eq!(set(waiting.text("A\u{30c6}", AT, 5.0, 0.0, &plain)), 2);
+    let refused = |text: std::result::Result<Option<(Vec<TextRun>, Vec<Font>)>, SketchError>| match Outcome::from(text) {
+        Outcome::Refused(why) => why,
+        _ => String::new(),
+    };
+    assert!(refused(answered(|| asking.text("Size \u{1200}", AT, 5.0, 0.0, &plain))).contains("no glyph for '\u{1200}'"));
+    assert!(refused(waiting.text("Size \u{1200}", AT, 5.0, 0.0, &plain)).contains("no glyph for '\u{1200}'"));
 }
 
 #[test]
@@ -436,7 +524,7 @@ fn a_font_fallen_back_to_takes_its_nearest_style() {
     assert!(runs.iter().all(|r| r.slant > 0.0), "{runs:?}");
     // Each font's own: a chosen face that is italic doesn't lean, the one fallen back to does.
     let leaning = Folder::new("italic", &["a.ttf"]);
-    let mut mono = std::fs::read(repo_fonts()[0].join("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
+    let mut mono = std::fs::read(repo_font("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
     os2(&mut mono, 62, 0x01);
     std::fs::write(leaning.0.join("mono.ttf"), mono).unwrap();
     let (runs, _) = mixed(paper_text_in(&leaning.dirs(), "A\u{30c6}", Some("IBM Plex Mono"), "", AT, 5.0, 0.0, &style).unwrap().unwrap());
@@ -445,7 +533,7 @@ fn a_font_fallen_back_to_takes_its_nearest_style() {
     let bold = TextStyle { bold: true, ..TextStyle::default() };
     // A bold face to choose: IBM Plex Mono, marked bold in its OS/2 fsSelection.
     let folder = Folder::new("bold", &["a.ttf"]);
-    let mut mono = std::fs::read(repo_fonts()[0].join("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
+    let mut mono = std::fs::read(repo_font("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
     os2(&mut mono, 62, 0x20);
     std::fs::write(folder.0.join("mono.ttf"), mono).unwrap();
     let (runs, fonts) = mixed(paper_text_in(&folder.dirs(), "A\u{30c6}", Some("IBM Plex Mono"), "", AT, 5.0, 0.0, &bold).unwrap().unwrap());
@@ -484,7 +572,7 @@ fn on_the_web_each_script_waits_for_its_own_font() {
     };
     let provide = |font: WebFont| {
         let asset = if font == WebFont::Japanese { "biz-udp-gothic/BIZUDPGothic-Regular.ttf" } else { font.file() };
-        provide_web_font(font, std::fs::read(repo_fonts()[0].join(asset)).unwrap());
+        provide_web_font(font, std::fs::read(repo_font(asset)).unwrap());
     };
     // A script the web has no font for asks for nothing, and text its own font sets neither.
     let e = refused("\u{e01}", "");
@@ -594,7 +682,7 @@ fn fuzz_fallback_is_a_scene_or_a_refusal() {
 #[test]
 fn a_family_is_found_by_name_among_the_installed_fonts() {
     let (runs, font) = set_in("Title 12", "ibm plex mono");
-    let file = std::fs::read(repo_fonts()[0].join("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
+    let file = std::fs::read(repo_font("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
     let id: [u8; 32] = Sha256::new().chain_update(&file).chain_update(0u32.to_le_bytes()).finalize().into();
     assert_eq!((font.postscript_name.as_str(), font.id), ("IBMPlexMono-Regular", id));
     assert!(*font.bytes == *file, "the file's own bytes");
@@ -653,7 +741,7 @@ fn collection(files: &[Vec<u8>]) -> Vec<u8> {
 /// none.
 #[test]
 fn a_fonts_family_is_its_own_faces() {
-    let read = |file: &str| std::fs::read(repo_fonts()[0].join(file)).unwrap();
+    let read = |file: &str| std::fs::read(repo_font(file)).unwrap();
     let mono = read("ibm-plex-mono/IBMPlexMono-Regular.ttf");
     // The collection alone in its folder: a family is looked for there.
     let folder = Patched::new("collection", |_| {});
@@ -691,7 +779,7 @@ struct Patched(PathBuf);
 
 impl Patched {
     fn new(name: &str, patch: impl FnOnce(&mut Vec<u8>)) -> Patched {
-        let mut bytes = std::fs::read(repo_fonts()[0].join("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
+        let mut bytes = std::fs::read(repo_font("ibm-plex-mono/IBMPlexMono-Regular.ttf")).unwrap();
         patch(&mut bytes);
         let dir = std::env::temp_dir().join(format!("solidcraft-paper-fonts-{}-{name}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -920,6 +1008,126 @@ fn hostile_numbers_and_sizes_are_refused() {
     }
     assert!(matches!(paper_text(&"A".repeat(MAX_TEXT_CHARS + 1), None, "", AT, 5.0, 0.0, &plain), Err(SketchError::TooLarge)));
     assert!(paper_text("A", None, "", AT, 5.0, 0.0, &TextStyle { letter_spacing: f64::NAN, ..TextStyle::default() }).is_err());
+}
+
+/// The marks dimensions and tolerances write that the built-in font has are set as its own glyphs,
+/// never its missing-glyph box: Ø ° ± ′ ″ × ≤ ≥ (#4890 B3b).
+#[test]
+fn dimension_marks_are_the_built_in_fonts_own_glyphs() {
+    let (runs, font) = set("\u{d8}12 30\u{b0} \u{b1}0.1 5\u{2032} 7\u{2033} 2\u{d7} \u{2264} \u{2265}", &TextStyle::default());
+    assert!(runs.iter().flat_map(|r| &r.glyphs).all(|g| g.id != 0), "{runs:?}");
+    scene(&runs, &font).validate().unwrap();
+}
+
+fn texts(lines: &PaperLines) -> Vec<&str> {
+    lines.lines.iter().map(|(l, _)| l.as_str()).collect()
+}
+
+/// A text measured before it is set: broken at each line break, and given a width between words,
+/// each line as many words as fit, a word never cut; set as measured (#4890 B3b).
+#[test]
+fn lines_wrap_between_words_to_a_width_and_never_cut_one() {
+    let plain = TextStyle::default();
+    let lines = |text: &str, wrap| paper_lines(text, None, "", 5.0, wrap, &plain).unwrap();
+    let text = "Bracket for the left hand side";
+    let wrapped = lines(text, Some(40.0));
+    assert!(wrapped.lines.len() > 1, "{wrapped:?}");
+    for (i, (line, w)) in wrapped.lines.iter().enumerate() {
+        assert_eq!(*w, width(line), "{line}");
+        assert!(*w <= 40.0, "{line}: {w}");
+        // Each line holds as many words as fit: the next line's first word would take it past the width.
+        if let Some((next, _)) = wrapped.lines.get(i + 1) {
+            let first = next.split(' ').next().unwrap();
+            assert!(width(&format!("{line} {first}")) > 40.0, "{line} | {first}");
+        }
+    }
+    assert_eq!(texts(&wrapped).join(" "), text);
+    assert_eq!(wrapped.pitch, TextMetrics::new(&font_data(None).unwrap(), &plain).unwrap().line_pitch(5.0).unwrap());
+    // Set as measured: the runs `paper_text` sets for the same lines joined by breaks.
+    let joined = texts(&wrapped).join("\n");
+    assert_eq!(wrapped.set(AT, 0.3).unwrap(), paper_text(&joined, None, "", AT, 5.0, 0.3, &plain).unwrap());
+    // A line exactly the width fits; a hair less and its last word moves down.
+    let two = width("Bracket for");
+    assert_eq!(texts(&lines("Bracket for", Some(two))), ["Bracket for"]);
+    assert_eq!(texts(&lines("Bracket for", Some(two - 1e-9))), ["Bracket", "for"]);
+    // A word wider than the width is a line of its own, whole.
+    let long = lines("a Bracketforthelefthandside b", Some(20.0));
+    assert_eq!(texts(&long), ["a", "Bracketforthelefthandside", "b"]);
+    assert!(long.lines[1].1 > 20.0);
+    // Line breaks always break; spaces between words become one; without a width only the breaks do.
+    assert_eq!(texts(&lines("A  B\n\nC", Some(1000.0))), ["A B", "", "C"]);
+    assert_eq!(lines("A  B\nC", None).lines, vec![("A  B".to_string(), width("A  B")), ("C".to_string(), width("C"))]);
+    // No width to speak of: every word on its own line.
+    for wrap in [0.0, -5.0] {
+        assert_eq!(texts(&lines("A B C", Some(wrap))), ["A", "B", "C"], "{wrap}");
+    }
+}
+
+/// A wrapped line with words the text's font lacks measures them in the font they fall back to, so
+/// it is set as it was measured (#4890 B3b).
+#[test]
+fn a_wrapped_line_measures_its_fallback_words_in_their_font() {
+    let plain = TextStyle::default();
+    let text = "Plate \u{4e2d}\u{6587}\u{4e2d}\u{6587} for \u{4e2d}\u{6587} left side";
+    let wrapped = paper_lines_in(&repo_fonts(), text, None, "ja", 5.0, Some(25.0), &plain).unwrap();
+    assert!(wrapped.lines.len() > 1, "{wrapped:?}");
+    assert_eq!(texts(&wrapped).join(" "), text);
+    for (line, w) in &wrapped.lines {
+        let alone = paper_lines_in(&repo_fonts(), line, None, "ja", 5.0, None, &plain).unwrap();
+        assert_eq!(alone.lines, [(line.clone(), *w)], "{line}");
+        assert!(*w <= 25.0 || !line.contains(' '), "{line}: {w}");
+    }
+    let joined = texts(&wrapped).join("\n");
+    let measured = mixed(wrapped.set(AT, 0.0).unwrap().unwrap());
+    assert_eq!(measured, mixed(paper_text_in(&repo_fonts(), &joined, None, "ja", AT, 5.0, 0.0, &plain).unwrap().unwrap()));
+}
+
+/// Measuring refuses what setting would, and a width that isn't a number (#4890 B3b).
+#[test]
+fn measuring_refuses_what_setting_would() {
+    let plain = TextStyle::default();
+    for wrap in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(paper_lines("A", None, "", 5.0, Some(wrap), &plain).is_err(), "{wrap}");
+    }
+    assert!(paper_lines("A", None, "", f64::NAN, None, &plain).is_err());
+    assert!(matches!(paper_lines(&"A ".repeat(MAX_TEXT_CHARS), None, "", 5.0, Some(10.0), &plain), Err(SketchError::TooLarge)));
+    assert!(paper_lines_in(&repo_fonts(), "A \u{e000}", None, "", 5.0, Some(40.0), &plain).unwrap_err().to_string().contains("no glyph for"));
+    assert!(paper_lines("A", None, "", 5.0, None, &TextStyle { bold: true, ..plain.clone() }).is_err());
+    assert!(paper_lines("A", None, "", 5.0, None, &plain).unwrap().set(AT, f64::NAN).is_err());
+    assert_eq!(paper_lines("\n", None, "", 5.0, Some(10.0), &plain).unwrap().set(AT, 0.0).unwrap(), None);
+}
+
+/// Random lines of words in each font, wrapped to random widths: set as measured into runs a scene
+/// takes, or refused by name, never a panic (#4890 B3b).
+#[test]
+fn fuzz_wrapped_lines_are_set_as_measured() {
+    let chars: Vec<char> = "Ab9 .  \n\u{5e9}\u{5dc}\u{5b8}\u{301}\u{30c6}\u{4e2d}\u{d55c}\t".chars().collect();
+    let mut seed = 0x51ed_270b_27c1_9f3du64;
+    let mut next = |n: usize| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        (seed % n as u64) as usize
+    };
+    let plain = TextStyle::default();
+    for _ in 0..200 {
+        let text: String = (0..next(32)).map(|_| chars[next(chars.len())]).collect();
+        let wrap = [None, Some(-5.0), Some(0.0), Some(3.0), Some(12.0), Some(40.0)][next(6)];
+        match paper_lines_in(&repo_fonts(), &text, None, ["", "ja"][next(2)], 3.5, wrap, &plain) {
+            Ok(lines) => {
+                let words = |t: &str| t.split([' ', '\n']).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+                assert_eq!(words(&texts(&lines).join("\n")), words(&text), "{text:?} {wrap:?}");
+                match lines.set(AT, 0.5).unwrap() {
+                    Some(set) => {
+                        mixed(set);
+                    }
+                    None => assert!(lines.lines.iter().all(|(l, _)| l.is_empty()), "{text:?}"),
+                }
+            }
+            Err(SketchError::Invalid(why)) => assert!(why.contains("no glyph for"), "{text:?}: {why}"),
+            Err(e) => panic!("{text:?}: {e}"),
+        }
+    }
 }
 
 /// Random lines of Latin, Hebrew with its points, digits, spaces and breaks, in random styles:
