@@ -338,9 +338,10 @@ pub fn write_atomic_no_follow(path: &Path, bytes: &[u8]) -> std::io::Result<()> 
 /// Publish a complete new file without replacing an existing destination, even if another
 /// writer creates it after this call starts. The whole file is written beside it, then moved to
 /// the name in one step that fails if anything has the name, so the name only ever holds the whole
-/// file. A drive that refuses that step too gets the file written in place with `create_new`: it
-/// still never replaces or follows anything at the name, but a crash part way can leave a short
-/// file there.
+/// file. Only a drive without that step (`refused_by_the_drive`) gets the file written in place
+/// with `create_new`: it still never replaces or follows anything at the name, but a crash part way
+/// can leave a short file there. Any other refusal is reported, after the waits a save gives a file
+/// another program holds on Windows.
 pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if cfg!(target_arch = "wasm32") {
         let name = path.to_string_lossy();
@@ -354,8 +355,8 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     // From here the temporary file is the rename's: moved to the name, or removed when refused.
     let result = match rename_no_replace(&tmp, path) {
         // Written at the name itself; `create_new` refuses a file, folder or link already there.
-        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => write_synced(path, bytes, false),
-        renamed => renamed,
+        Err(e) if refused_by_the_drive(&e) => write_synced(path, bytes, false),
+        published => published.map_err(|e| explain_refusal(e, cfg!(windows), false)),
     };
     if result.is_ok() {
         sync_dir(path);
@@ -363,20 +364,50 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     result
 }
 
+/// Whether `error` says the drive lacks the step itself (the no-replace rename, or the hard link
+/// tempfile tries where the system lacks the rename's flag), not that it refuses this file now: the
+/// system's "not supported" (`Unsupported`: ENOSYS), EOPNOTSUPP or ENOTSUP, Windows'
+/// ERROR_NOT_SUPPORTED, and os error 1 (EPERM from Linux's `link` on a file system without links,
+/// ERROR_INVALID_FUNCTION from a Windows share without the call). A held file, a missing folder or a
+/// full or read-only drive are not.
+fn refused_by_the_drive(error: &std::io::Error) -> bool {
+    // EOPNOTSUPP on Linux and Android; ENOTSUP on Apple systems and the BSDs; ERROR_NOT_SUPPORTED.
+    const NOT_SUPPORTED: i32 = if cfg!(any(target_os = "linux", target_os = "android")) {
+        95
+    } else if cfg!(unix) {
+        45
+    } else {
+        50
+    };
+    error.kind() == std::io::ErrorKind::Unsupported || matches!(error.raw_os_error(), Some(1 | NOT_SUPPORTED))
+}
+
 /// Give `tmp` the name `path` in one step that fails if anything has the name: tempfile's
 /// no-replace rename (`MoveFileExW` without replacing on Windows, `renameat2(RENAME_NOREPLACE)` on
 /// Linux and Android, `renameatx_np(RENAME_EXCL)` on Apple systems, a hard link where those are
-/// missing). A rename needs no hard link, so exFAT, FAT32 and ReFS drives take it (#16243). The
-/// temporary file is moved, or removed when the rename is refused (the error's `TempPath` is
-/// dropped).
+/// missing). A rename needs no hard link, so exFAT, FAT32 and ReFS drives take it (#16243). A
+/// rename Windows refuses while another program holds the file is tried again, as a save's is
+/// ([`rename_with_retry`]). The temporary file is moved, or removed when the rename is refused (the
+/// last refusal's `TempPath` is dropped).
 #[cfg(not(target_arch = "wasm32"))]
 fn rename_no_replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
-    let tmp = tempfile::TempPath::from_path(tmp);
-    #[cfg(test)]
-    if let Some(e) = tests::no_replace_fails() {
-        return Err(e);
-    }
-    tmp.persist_noclobber(path).map_err(|e| e.error)
+    let mut pending = Some(tempfile::TempPath::try_from_path(tmp).inspect_err(|_| {
+        let _ = fs::remove_file(tmp);
+    })?);
+    // A refused attempt hands the temporary file back, so the next one can try again.
+    let attempt = || -> std::io::Result<()> {
+        let Some(tmp) = pending.take() else { return Err(std::io::ErrorKind::NotFound.into()) };
+        #[cfg(test)]
+        if let Some(e) = tests::no_replace_fails() {
+            pending = Some(tmp);
+            return Err(e);
+        }
+        tmp.persist_noclobber(path).map_err(|refused| {
+            pending = Some(refused.path);
+            refused.error
+        })
+    };
+    rename_with_retry(attempt, cfg!(windows), std::thread::sleep)
 }
 
 /// The browser's host stores files itself; [`create_atomic`] never gets here.
