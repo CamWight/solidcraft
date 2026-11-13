@@ -7,11 +7,15 @@
 //! A drawing saved as a template ([`from_drawing`]) keeps its format and leaves its model behind; a
 //! template file reads as a drawing does, then is held to the template rules ([`read`]).
 //!
-//! A template keeps what sits on its sheets, such as a note or a revision table; what sits on a view
-//! goes with the view. A new drawing has them on its sheets' new ids.
+//! A template keeps what sits on its sheets, such as a note, a revision table or a placed symbol (a
+//! company mark in a corner), and its symbols (#13063); what sits on a view goes with the view. A new
+//! drawing has them on its sheets' new ids, each symbol and placement with an id of its own and each
+//! placement naming its symbol's new id.
 //!
 //! A template applied to a drawing ([`apply`]) gives each sheet its paper, drawing border and title
 //! block, and moves nothing on it. A logo in a block travels with it, its file brought into the drawing.
+//! Its symbols come in too: one with the name of the drawing's own replaces it where it stands, so an
+//! updated company mark reaches every place the old one sat.
 //!
 //! The built-ins ([`BUILT_INS`]) are made in code when asked for, never stored: ISO A4 to A0, each
 //! for a part and for an assembly, one sheet with the ISO border and the built-in title block
@@ -32,8 +36,10 @@ use solidcraft_geom::revision::RevisionRecord;
 use solidcraft_geom::title_block::{self, CellKind, TitleBlock};
 
 use super::Drawing;
+use super::by_id::ById;
 use super::image::ImageFile;
 use super::note::Anchor;
+use super::symbol::{PlacedSymbol, Symbol};
 use crate::format::DRAWING;
 use crate::ids::{self, IdSource};
 use crate::{DocError, Document, Result};
@@ -96,8 +102,9 @@ pub fn check(template: &Drawing) -> Result<()> {
 }
 
 /// A new drawing named `name` from `template`: a copy with the format this build writes, an id
-/// none of `taken` has (its design's drawings'), and each sheet an id of its own, all from
-/// `id_source` and none of the template's. What sits on a sheet names the sheet's new id.
+/// none of `taken` has (its design's drawings'), and each sheet, symbol and placement an id of its
+/// own, all from `id_source` and none of the template's. Each placement names its symbol's new id,
+/// and what sits on a sheet names the sheet's.
 pub fn instantiate(template: &Drawing, name: &str, taken: &BTreeSet<u64>, id_source: &mut IdSource) -> Result<Drawing> {
     check(template)?;
     let mut in_use: BTreeSet<u64> = template.ids().chain(taken.iter().copied()).collect();
@@ -108,9 +115,23 @@ pub fn instantiate(template: &Drawing, name: &str, taken: &BTreeSet<u64>, id_sou
     };
     let id = fresh()?;
     let sheets: BTreeMap<u64, u64> = template.sheets.iter().map(|sheet| Ok((sheet.id, fresh()?))).collect::<Result<_>>()?;
+    let symbols: BTreeMap<u64, u64> = template.symbols.iter().map(|symbol| Ok((symbol.id, fresh()?))).collect::<Result<_>>()?;
+    let mut placed = Vec::with_capacity(template.placed_symbols.len());
+    for p in &template.placed_symbols {
+        placed.push(Arc::new(PlacedSymbol {
+            id: fresh()?,
+            symbol: new_id(&symbols, p.symbol),
+            anchor: on_new_sheet(&p.anchor, &sheets),
+            ..(**p).clone()
+        }));
+    }
     let format = DRAWING.format_string(DRAWING.current());
     let mut d = Drawing { format, format_pending: DRAWING.pending_names(), id, name: name.into(), ..template.clone() };
     d.sheets = template.sheets.iter().map(|sheet| Arc::new(super::Sheet { id: new_id(&sheets, sheet.id), ..(**sheet).clone() })).collect();
+    d.symbols = ById::default();
+    d.symbols.add(template.symbols.iter().map(|s| Arc::new(Symbol { id: new_id(&symbols, s.id), ..(**s).clone() })));
+    d.placed_symbols = ById::default();
+    d.placed_symbols.add(placed);
     // A template holds nothing else on a sheet ([`check`]): no views, placed images or revision tags.
     for note in d.notes.iter_mut() {
         Arc::make_mut(note).anchor = on_new_sheet(&note.anchor, &sheets);
@@ -141,12 +162,14 @@ fn on_new_sheet(anchor: &Anchor, sheets: &BTreeMap<u64, u64>) -> Anchor {
 /// nor its number, which drawings made from it get their own of. Its other properties, its revision
 /// numbering, its logos and the text typed over its cells of plain text stay; text typed over a cell
 /// that shows a field (a parameter, a value or a reference) goes with the design that field reads.
-/// The notes on its sheets stay; those on a view, or on a view's model, go with the views.
+/// Its symbols stay, and so do the placements and notes on its sheets; those on a view, or on a view's
+/// model, go with the views.
 pub fn from_drawing(drawing: &Drawing) -> Result<Drawing> {
     let mut template = drawing.clone();
     template.sources.clear();
     template.views.clear();
     template.notes.retain(|note| note.anchor.view().is_none());
+    template.placed_symbols.retain(|placed| placed.anchor.view().is_none());
     template.dimensions.clear();
     template.balloons.clear();
     template.sheet_images.clear();
@@ -189,14 +212,28 @@ pub struct Restyled {
     pub lost: Vec<String>,
 }
 
+/// What applying a template did with one of its symbols ([`apply`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Brought {
+    /// Its id in the drawing.
+    pub symbol: u64,
+    pub name: String,
+    /// It replaced the drawing's symbol of its name, keeping that one's id, so its placements show it.
+    pub replaced: bool,
+    /// The prompts the placements answered that it doesn't ask for: those answers are dropped.
+    pub lost: Vec<String>,
+}
+
 /// `drawing` in `template`'s sheet formats: each sheet takes the paper, drawing border and title
 /// block of the template's sheet in its place (its last for the sheets past its own), and keeps the
-/// text typed over a cell while the new block has a text cell of that name. Nothing on a sheet
-/// moves. Answers the drawing, and what changed on each sheet that did.
-pub fn apply(drawing: &Drawing, template: &Drawing, id_source: &mut IdSource) -> Result<(Drawing, Vec<Restyled>)> {
+/// text typed over a cell while the new block has a text cell of that name. The template's symbols
+/// come in (`symbols_in`). Nothing on a sheet moves, and no placement comes. Answers the drawing,
+/// what changed on each sheet that did, and each symbol brought.
+pub fn apply(drawing: &Drawing, template: &Drawing, id_source: &mut IdSource) -> Result<(Drawing, Vec<Restyled>, Vec<Brought>)> {
     check(template)?;
     let mut d = drawing.clone();
     let logos = logos_in(&mut d, template, id_source)?;
+    let brought = symbols_in(&mut d, template, id_source)?;
     let mut changed = Vec::new();
     for at in 0..d.sheets.len() {
         let Some(from) = template.sheets.get(at).or(template.sheets.last()) else { continue };
@@ -217,7 +254,45 @@ pub fn apply(drawing: &Drawing, template: &Drawing, id_source: &mut IdSource) ->
     // A logo goes with the block that showed it.
     d.drop_unused_images();
     d.validate()?;
-    Ok((d, changed))
+    Ok((d, changed, brought))
+}
+
+/// Each symbol `template` defines, brought into `d` (#13063, Q3): one with the name of one of `d`'s
+/// replaces that one's pieces where it stands, so its placements show it, and drops their answers to
+/// prompts it doesn't ask for; one `d` hasn't got comes with an id of its own; one the same as `d`'s
+/// changes nothing.
+fn symbols_in(d: &mut Drawing, template: &Drawing, id_source: &mut IdSource) -> Result<Vec<Brought>> {
+    let named: BTreeMap<String, u64> = d.symbols.iter().map(|own| (own.name.clone(), own.id)).collect();
+    // Collected once, not per new symbol as `allocate_id` would.
+    let mut in_use: BTreeSet<u64> = d.ids().collect();
+    let mut brought = Vec::new();
+    for symbol in &template.symbols {
+        let (id, replaced) = match named.get(&symbol.name) {
+            Some(&own) if d.symbols.by_id(own).is_some_and(|own| own.pieces == symbol.pieces) => continue,
+            Some(&own) => (own, true),
+            None => {
+                let id = id_source.next(&in_use)?;
+                in_use.insert(id);
+                (id, false)
+            }
+        };
+        let new = Symbol { id, ..(**symbol).clone() };
+        let prompts = new.prompts();
+        let mut lost = BTreeSet::new();
+        for placed in d.placed_symbols.iter_mut().filter(|placed| placed.symbol == id) {
+            let stale: Vec<String> = placed.answers.keys().filter(|key| !prompts.contains(key.as_str())).cloned().collect();
+            if !stale.is_empty() {
+                Arc::make_mut(placed).answers.retain(|key, _| prompts.contains(key.as_str()));
+                lost.extend(stale);
+            }
+        }
+        match d.symbols.index_of(id).and_then(|at| d.symbols.get_mut(at)) {
+            Some(own) => *own = Arc::new(new),
+            None => d.symbols.add([Arc::new(new)]),
+        }
+        brought.push(Brought { symbol: id, name: symbol.name.clone(), replaced, lost: lost.into_iter().collect() });
+    }
+    Ok(brought)
 }
 
 /// Each logo file `template` shows, brought into `d` once however many of its sheets show it: the

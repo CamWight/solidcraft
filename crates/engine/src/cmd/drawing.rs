@@ -25,8 +25,8 @@ use solidcraft_sketch::PaperFonts;
 use super::CommandSpec;
 use crate::params::{bad, str_};
 use crate::schema::drawing::{
-    DrawingCreateParams, DrawingSetParams, SheetTemplateChange, TemplateApplyParams, TemplateApplyResult, TemplateEntry, TemplateListParams,
-    TemplateListResult, TemplateSaveParams, TemplateSaveResult,
+    DrawingCreateParams, DrawingSetParams, SheetTemplateChange, SymbolTemplateChange, TemplateApplyParams, TemplateApplyResult, TemplateEntry,
+    TemplateListParams, TemplateListResult, TemplateSaveParams, TemplateSaveResult,
 };
 use crate::schema::drawing_view::LineGroupParam;
 use crate::schema::{TypedContract, output_schema_for};
@@ -52,7 +52,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&TEMPLATE_APPLY_CONTRACT)
         .output(output_schema_for::<TemplateApplyResult>)
         .params(
-            "template: a built-in's name (drawing.template.list) or a .json template file (drawing.template.save); dry_run?: true to answer without changing anything. Each sheet takes the paper, drawing border and title block of the template's sheet in its place (its last for sheets past its own); text typed over a cell stays while the new block has a text cell of that name. Nothing moves → changed: [{sheet, paper, border, title_block, lost: [cells whose typed text is dropped]}] for each sheet that changes, outside: the views on a restyled sheet that fall outside its drawing space or over its title block (as drawing.sheet.set lists them), dry_run. One undo step, none when nothing changes.",
+            "template: a built-in's name (drawing.template.list) or a .json template file (drawing.template.save); dry_run?: true to answer without changing anything. Each sheet takes the paper, drawing border and title block of the template's sheet in its place (its last for sheets past its own); text typed over a cell stays while the new block has a text cell of that name. Each symbol of the template comes in: one with the name of one of the drawing's replaces it where it stands, so its placements show the template's, and their answers to prompts it doesn't ask for are dropped; one the same as the drawing's is left. Nothing moves, and no placement comes → changed: [{sheet, paper, border, title_block, lost: [cells whose typed text is dropped]}] for each sheet that changes, symbols: [{symbol, name, replaced, lost: [prompts whose answers are dropped]}] for each symbol that comes in, outside: the views on a restyled sheet that fall outside its drawing space or over its title block (as drawing.sheet.set lists them), dry_run. One undo step, none when nothing changes.",
         ),
     CommandSpec::new("drawing.template.save", "Save as Drawing Template", crate::checked!("drawing.template.save", template_save))
         .in_drawing()
@@ -62,7 +62,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&TEMPLATE_SAVE_CONTRACT)
         .output(output_schema_for::<TemplateSaveResult>)
         .params(
-            "path: a .json file → {path, bytes}. Writes the drawing open as a template: its sheets, borders, title blocks and the text typed over their cells, its projection, units, language and properties but its number, what sits on its sheets (notes, revision tables), and nothing it draws or documents (its sources, views and what sits on them, dimensions, balloons, revision rows, and the component each sheet documents). drawing.create and drawing.template.apply take the file as their template; a drawing made from it keeps its own copy, so a later save changes no drawing.",
+            "path: a .json file → {path, bytes}. Writes the drawing open as a template: its sheets, borders, title blocks and the text typed over their cells, its projection, units, language and properties but its number, its symbols and what sits on its sheets (placed symbols, notes, revision tables), and nothing it draws or documents (its sources, views and what sits on them, dimensions, balloons, revision rows, and the component each sheet documents). drawing.create and drawing.template.apply take the file as their template; a drawing made from it keeps its own copy, so a later save changes no drawing.",
         ),
     CommandSpec::new("drawing.template.list", "List Drawing Templates", crate::checked!("drawing.template.list", template_list))
         .any_part()
@@ -196,7 +196,7 @@ fn template_apply(s: &mut Session, p: &Value) -> Result<Value> {
         Some(_) => return Err(bad(cmd, "`dry_run` is true or false")),
     };
     let record = s.drawing(cmd)?.clone();
-    let (applied, changed) = template::apply(&record, &chosen, &mut s.ids).map_err(fail)?;
+    let (applied, changed, brought) = template::apply(&record, &chosen, &mut s.ids).map_err(fail)?;
     // The views on a sheet whose room changed: listed when they fall outside or over the block, never moved.
     let views: Vec<u64> = changed.iter().filter(|c| c.paper || c.border || c.title_block).flat_map(|c| applied.on_sheet(c.sheet).views).collect();
     let outside = super::drawing_view::outside_results(crate::drawing_view::outside(s, &applied, &views, cmd)?);
@@ -210,13 +210,17 @@ fn template_apply(s: &mut Session, p: &Value) -> Result<Value> {
             lost: c.lost.clone(),
         })
         .collect();
-    if !dry_run && !changed.is_empty() {
+    let symbols: Vec<SymbolTemplateChange> = brought
+        .into_iter()
+        .map(|b| SymbolTemplateChange { symbol: ids::encode(b.symbol), name: b.name, replaced: b.replaced, lost: b.lost })
+        .collect();
+    if !dry_run && !(changed.is_empty() && symbols.is_empty()) {
         s.edit_drawing(cmd, |d| {
             *d = applied;
             Ok(())
         })?;
     }
-    let reply = TemplateApplyResult { changed: listed, outside, dry_run, param_warnings: Vec::new() };
+    let reply = TemplateApplyResult { changed: listed, symbols, outside, dry_run, param_warnings: Vec::new() };
     serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
 }
 

@@ -161,11 +161,27 @@ pub struct SheetTemplateChange {
     pub lost: Vec<String>,
 }
 
+/// A symbol a template brings into the drawing.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct SymbolTemplateChange {
+    /// Its id in the drawing.
+    pub symbol: String,
+    pub name: String,
+    /// It replaced the drawing's symbol of its name, keeping that one's id, so its placements show
+    /// the template's.
+    pub replaced: bool,
+    /// The prompts its placements answered that it doesn't ask for: those answers are dropped.
+    pub lost: Vec<String>,
+}
+
 /// What `drawing.template.apply` returns.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct TemplateApplyResult {
     /// Each sheet that changes, in order.
     pub changed: Vec<SheetTemplateChange>,
+    /// Each symbol of the template that comes in, new or replacing one of the drawing's, in the
+    /// template's order. One the same as the drawing's is left out.
+    pub symbols: Vec<SymbolTemplateChange>,
     /// The views on a restyled sheet that fall outside its drawing space or over its title block.
     /// None is moved.
     pub outside: Vec<super::drawing_view::OutsideResult>,
@@ -177,8 +193,8 @@ pub struct TemplateApplyResult {
 }
 
 /// Write the drawing open as a template file: its sheets, borders, title blocks and the text typed
-/// over their cells, its projection, units, language and properties, what sits on its sheets, and
-/// nothing it draws or documents.
+/// over their cells, its projection, units, language and properties, its symbols and what sits on its
+/// sheets, and nothing it draws or documents.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct TemplateSaveParams {

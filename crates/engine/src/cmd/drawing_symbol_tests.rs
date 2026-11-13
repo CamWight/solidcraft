@@ -456,3 +456,51 @@ fn random_placements_are_kept_or_refused() {
     }
     assert!(kept > 10 && refusals > 10, "{kept} kept, {refusals} refused");
 }
+
+// Templates (Y3): a symbol saved in a template comes with every drawing made from it.
+
+/// A symbol saved in a template comes with every drawing made from it: its definition and its
+/// placement on the sheet, with the placement's answer, but not the one on the view. Applying the
+/// template to another drawing brings the symbol in, listed in the reply, as one undo step, though no
+/// sheet changes; a dry run lists it and changes nothing.
+#[test]
+fn a_template_carries_symbols_to_new_drawings_and_brings_them_in() {
+    let (mut s, view, _, mark) = viewed();
+    place_one(&mut s, json!({"symbol": mark, "anchor": {"sheet": "Sheet 1"}, "at": [380, 20], "answers": {"rev": "C"}}));
+    place_one(&mut s, json!({"symbol": mark, "anchor": {"view": ids::encode(view)}, "at": [0, 30]}));
+    let folder = crate::tests::Folder::new("symbol-template");
+    let path = folder.path("marked.json");
+    run(&mut s, "drawing.template.save", json!({"path": path}));
+    run(&mut s, "drawing.close", json!({}));
+    for name in ["First", "Second"] {
+        run(&mut s, "drawing.create", json!({"name": name, "template": path}));
+        let listed = run(&mut s, "drawing.inspect", json!({}));
+        assert_eq!(
+            listed["symbols"].as_array().map(|symbols| symbols.iter().map(|s| s["name"].clone()).collect()),
+            Some(vec![json!("Mark")]),
+            "{name}"
+        );
+        let placed = listed["placed_symbols"].as_array().unwrap();
+        assert_eq!(placed.len(), 1, "{name}: only the sheet's placement: {placed:?}");
+        assert_eq!((&placed[0]["symbol"], &placed[0]["answers"]), (&listed["symbols"][0]["id"], &json!({"rev": "C"})), "{name}");
+        assert_ne!(listed["symbols"][0]["id"], mark, "{name}: an id of its own");
+        run(&mut s, "drawing.close", json!({}));
+    }
+    run(&mut s, "drawing.create", json!({"name": "Plain"}));
+    let steps = s.undo.len();
+    let schema = output_schema_for::<crate::schema::drawing::TemplateApplyResult>();
+    let dry = run(&mut s, "drawing.template.apply", json!({"template": path, "dry_run": true}));
+    assert!(conforms(schema.as_value(), schema.as_value(), &dry), "{dry}");
+    assert_eq!((dry["changed"].clone(), s.undo.len()), (json!([]), steps), "{dry}");
+    assert!(s.drawing("test").unwrap().symbols.is_empty(), "a dry run changes nothing");
+    let applied = run(&mut s, "drawing.template.apply", json!({"template": path}));
+    assert!(conforms(schema.as_value(), schema.as_value(), &applied), "{applied}");
+    let d = s.drawing("test").unwrap().clone();
+    let brought = json!([{"symbol": ids::encode(d.symbols[0].id), "name": "Mark", "replaced": false, "lost": []}]);
+    assert_eq!(applied["symbols"], brought, "{applied}");
+    assert_eq!((&dry["symbols"][0]["name"], &dry["symbols"][0]["replaced"]), (&json!("Mark"), &json!(false)), "{dry}");
+    assert!(d.placed_symbols.is_empty(), "no placement comes");
+    assert_eq!(s.undo.len(), steps + 1, "one undo step");
+    run(&mut s, "edit.undo", json!({}));
+    assert!(s.drawing("test").unwrap().symbols.is_empty(), "undone in one step");
+}
