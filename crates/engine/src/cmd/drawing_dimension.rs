@@ -450,7 +450,8 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         Some(targets) => {
             // A set's targets change what it measures. Their numbers and their count are checked
             // first, so a refused edit looks nothing up; then the added ones are named as add names
-            // them, on a copy that is read before it is kept, as add reads a new dimension.
+            // them, on a copy that is read before it is kept, as add reads a new dimension: where its
+            // view draws its parts (#13048).
             let record = s.drawing(EDIT)?;
             let kind = &record.dimension(id).ok_or_else(|| no_dimension(EDIT, id))?.kind;
             let Some(set) = kind.set() else { return Err(bad(EDIT, "`targets` is a set's")) };
@@ -464,10 +465,11 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
             let added = targets.add.iter().map(name).collect::<Result<Vec<_>>>()?;
             let mut copy = Drawing::clone(s.drawing(EDIT)?);
             let changed = change(&mut copy, id, &request.set, Some(kept.into_iter().chain(added).collect()))?;
-            if let Some(dimension) = copy.dimension(id) {
-                check_drawn(&copy, dimension.view, dimension.kind.paths(), EDIT)?;
-            }
-            let read = s.doc.resolve_dimensions(&s.model, &copy, &[id]).map_err(|e| bad(EDIT, e.to_string()))?;
+            let dimension = copy.dimension(id).ok_or_else(|| no_dimension(EDIT, id))?;
+            check_drawn(&copy, dimension.view, dimension.kind.paths(), EDIT)?;
+            let read = crate::drawing_view::ViewSessions::new(s)
+                .read_on(&copy, &[(id, dimension.view)], solidcraft_doc::Document::resolve_dimensions)
+                .map_err(|e| bad(EDIT, e.to_string()))?;
             if let Some(Status::Unmeasurable(why)) = read.first().map(|r| &r.status) {
                 return Err(bad(EDIT, why.clone()));
             }
