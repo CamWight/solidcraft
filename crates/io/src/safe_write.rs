@@ -706,6 +706,21 @@ mod tests {
         fs::remove_dir_all(d).unwrap();
     }
 
+    /// A new file whose watch asks it to stop (Cancel on a large render export) stops at the next
+    /// piece, as a save does: refused as cancelled, nothing at the name and no temporary file left.
+    #[test]
+    fn create_cancelled_while_it_writes_makes_no_file() {
+        let d = dir("create-cancelled");
+        let p = d.join("render.exr");
+        let watch = watched(usize::MAX);
+        watch.cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+        let result = solidcraft_kernel::watch::watching(watch, || create_atomic(&p, &vec![5u8; 2 * CHUNK]));
+        assert_eq!(result.map_err(|e| e.kind()), Err(std::io::ErrorKind::Interrupted));
+        assert!(!p.exists(), "nothing has the name");
+        assert!(stale_temps(&p).is_empty(), "no temporary file is left");
+        fs::remove_dir_all(d).unwrap();
+    }
+
     fn dir(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("solidcraft-safe-write-{tag}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&d);
