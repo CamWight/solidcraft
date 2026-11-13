@@ -36,22 +36,34 @@ pub(crate) fn cancelled() -> bool {
 }
 
 /// Write `bytes` to a new file at `path` and flush it, a piece at a time: a watched write
-/// ([`solidcraft_kernel::watch`]) reports how far it is (`report`) and stops when cancelled.
+/// ([`solidcraft_kernel::watch`]) reports how far it is (`report`) and stops when cancelled. A write
+/// that fails or is cancelled removes the file it made; a name it could not create (`create_new`
+/// refuses anything already there) is left as it is.
 fn write_synced(path: &Path, bytes: &[u8], report: bool) -> std::io::Result<()> {
     let watch = solidcraft_kernel::watch::current();
-    let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
-    let mut done = 0usize;
-    for chunk in bytes.chunks(CHUNK) {
-        if watch.as_ref().is_some_and(|w| w.cancelled()) {
-            return Err(cancelled_error());
-        }
-        f.write_all(chunk)?;
-        done = done.saturating_add(chunk.len());
-        if report && let Some(w) = &watch {
-            w.progress("writing", done, bytes.len());
-        }
+    // The file closes at the end of this block, before a failed one is removed.
+    let written = {
+        let mut f = OpenOptions::new().write(true).create_new(true).open(path)?;
+        let mut done = 0usize;
+        bytes
+            .chunks(CHUNK)
+            .try_for_each(|chunk| {
+                if watch.as_ref().is_some_and(|w| w.cancelled()) {
+                    return Err(cancelled_error());
+                }
+                f.write_all(chunk)?;
+                done = done.saturating_add(chunk.len());
+                if report && let Some(w) = &watch {
+                    w.progress("writing", done, bytes.len());
+                }
+                Ok(())
+            })
+            .and_then(|_| flush(&f))
+    };
+    if written.is_err() {
+        let _ = fs::remove_file(path);
     }
-    flush(&f)
+    written
 }
 
 /// Flush a written file to the disk. On Apple systems `sync_all` asks the drive itself to flush
@@ -338,19 +350,11 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
         return crate::vfs::write(&name, bytes);
     }
     let tmp = temp_beside(path, "create");
-    // The file closes at the end of this block, before it is moved into place.
-    let written = {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-        file.write_all(bytes).and_then(|_| flush(&file))
-    };
-    if let Err(e) = written {
-        // Only a temporary file this call made.
-        let _ = fs::remove_file(&tmp);
-        return Err(e);
-    }
+    write_synced(&tmp, bytes, false)?;
     // From here the temporary file is the rename's: moved to the name, or removed when refused.
     let result = match rename_no_replace(&tmp, path) {
-        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => write_in_place(path, bytes),
+        // Written at the name itself; `create_new` refuses a file, folder or link already there.
+        Err(e) if e.kind() != std::io::ErrorKind::AlreadyExists => write_synced(path, bytes, false),
         renamed => renamed,
     };
     if result.is_ok() {
@@ -380,20 +384,6 @@ fn rename_no_replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
 fn rename_no_replace(tmp: &Path, _: &Path) -> std::io::Result<()> {
     let _ = fs::remove_file(tmp);
     Err(std::io::ErrorKind::Unsupported.into())
-}
-
-/// Write a new file at `path` itself, for a drive that takes no no-replace rename: `create_new`
-/// refuses a file, folder or link already there. A failed write removes the file this call made.
-fn write_in_place(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    // The file closes at the end of this block, before a failed one is removed.
-    let written = {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
-        file.write_all(bytes).and_then(|_| flush(&file))
-    };
-    if written.is_err() {
-        let _ = fs::remove_file(path);
-    }
-    written
 }
 
 /// Leftover temporary files of saves that never finished (a crash part way), next to `path`
