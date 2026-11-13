@@ -454,8 +454,7 @@ fn metric_size(major_diameter: f64, pitch: f64) -> TappedThread {
 }
 
 /// The rule an ISO metric tapped hole's tolerance class follows (ISO 965-1's internal classes).
-const METRIC_CLASS: &str =
-    "an ISO metric tapped hole's class is a grade 4 to 8 and G or H, such as 6H, or a pitch diameter class then a minor diameter class such as 5H6H (ISO 965-1)";
+const METRIC_CLASS: &str = "an ISO metric tapped hole's class is a grade 4 to 8 and G or H, such as 6H, or a pitch diameter class then a minor diameter class such as 5H6H (ISO 965-1)";
 
 /// How much larger than the tap maker's drill a tapped hole may be drilled: 5%.
 pub const DRILL_ALLOWANCE: f64 = 0.05;
