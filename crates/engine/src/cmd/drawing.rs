@@ -62,7 +62,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&TEMPLATE_SAVE_CONTRACT)
         .output(output_schema_for::<TemplateSaveResult>)
         .params(
-            "path: a .json file → {path, bytes}. Writes the drawing open as a template: its sheets, borders, title blocks and the text typed over their cells, its projection, units, language and properties but its number, and nothing it draws or documents (its sources, views, dimensions, balloons, revision rows, and the component each sheet documents). drawing.create and drawing.template.apply take the file as their template; a drawing made from it keeps its own copy, so a later save changes no drawing.",
+            "path: a .json file → {path, bytes}. Writes the drawing open as a template: its sheets, borders, title blocks and the text typed over their cells, its projection, units, language and properties but its number, what sits on its sheets (notes, revision tables), and nothing it draws or documents (its sources, views and what sits on them, dimensions, balloons, revision rows, and the component each sheet documents). drawing.create and drawing.template.apply take the file as their template; a drawing made from it keeps its own copy, so a later save changes no drawing.",
         ),
     CommandSpec::new("drawing.template.list", "List Drawing Templates", crate::checked!("drawing.template.list", template_list))
         .any_part()
