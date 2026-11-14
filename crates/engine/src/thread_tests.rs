@@ -938,7 +938,7 @@ fn a_tapped_holes_class_is_saved_and_kept_through_an_edit() {
     let classed = json!({"position": [20, 30, 12], "thread": "M8", "depth": 10, "thread_class": "6H"});
     run(&mut s, "timeline.redefine", json!({"feature": hole, "command": "solid.hole", "params": classed}));
     assert_eq!(class_of(&s, hole).as_deref(), Some("6H"));
-    assert!(s.doc.to_json().contains(r#""thread_class":"6H""#));
+    assert!(s.doc.to_json().contains(r#""thread_class": "6H""#), "saved as given (the design file is pretty-printed)");
     assert!((volume(&mut s, "Plate") - untouched).abs() < 1e-6, "the class changes no geometry");
     // The Hole window sends no class: an edit without one keeps it while the thread takes it.
     let deeper = json!({"position": [20, 30, 12], "thread": "M8", "depth": 11});
