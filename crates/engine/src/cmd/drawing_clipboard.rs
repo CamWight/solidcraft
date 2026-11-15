@@ -195,7 +195,7 @@ fn paste(s: &mut Session, p: &Value) -> Result<Value> {
     }
 
     let mut reply = PasteResult {
-        pasted: made.ids.iter().map(|(kind, from, id)| PastedResult { from: ids::encode(*from), id: ids::encode(*id), kind: *kind }).collect(),
+        pasted: made.ids.iter().map(|(kind, from, id)| PastedResult { from: ids::encode(*from), id: ids::encode(*id), kind }).collect(),
         kept: Vec::new(),
         lost: Vec::new(),
         dropped_hide: Vec::new(),
