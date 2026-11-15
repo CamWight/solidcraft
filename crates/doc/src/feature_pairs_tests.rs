@@ -43,7 +43,7 @@ fn an_edge_moves_through_the_pairs() {
 #[test]
 fn an_edge_with_no_pair_doesnt_move() {
     let p = pairs();
-    for name in ["F5:blend:F2:top|F3:side:l4", "F2:top|F5:end", "F2:top@F5.1", "F2:top#[F3:side:l1,F5:end]|F3:side:l2"] {
+    for name in ["F5:blend(F2:top|F3:side:l4)", "F2:top|F5:end", "F2:top@F5.1", "F2:top#[F3:side:l1,F5:end]|F3:side:l2"] {
         assert_eq!(p.edge(&edge(name, 2, "Plate", &[7]), &[7], &[9]), None, "{name}");
     }
     assert_eq!(p.edge(&edge("F2:top|F3:side:l4", 5, "Plate", &[7]), &[7], &[9]), None, "made by F5");
@@ -81,12 +81,12 @@ fn seeded_names_rewrite_exactly_their_feature_ids() {
             1 => format!("{}:face:{n}", body("Plate")),
             2 => format!("F{}:top", f(1)),
             3 => format!(
-                "F{}:blend:{}|{}",
+                "F{}:blend({}|{})",
                 f(1),
                 face(pick, seed, salt * 3 + 11, depth - 1, id, body),
                 face(pick, seed, salt * 3 + 12, depth - 1, id, body)
             ),
-            _ => format!("F{}:inner:{}", f(1), face(pick, seed, salt * 3 + 13, depth - 1, id, body)),
+            _ => format!("F{}:inner({})", f(1), face(pick, seed, salt * 3 + 13, depth - 1, id, body)),
         };
         match pick(seed, salt + 9, 4) {
             0 => format!("{base}@F{}.{n}", f(2)),
