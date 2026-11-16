@@ -51,8 +51,8 @@ pub struct PasteParams {
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "String")]
     pub sheet: Option<String>,
-    /// Where the first copied view's centre goes, in paper millimetres; the others keep their
-    /// spacing. Left out, every view keeps its place.
+    /// Where the centre of the first view `drawing.copy` listed goes, in paper millimetres; the
+    /// others keep their spacing. Left out, every view keeps its place.
     #[serde(default, deserialize_with = "super::present", skip_serializing_if = "Option::is_none")]
     #[schemars(with = "Point2")]
     pub position_mm: Option<Point2>,

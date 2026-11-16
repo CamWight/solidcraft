@@ -58,7 +58,8 @@ pub static COMMANDS: &[CommandSpec] = &[
         .output(output_schema_for::<PasteResult>)
         .params(
             "sheet?: id or name, where copied views and tables go (default: the first sheet); position_mm?: [x, y] for the \
-             first view's centre, the others keeping their spacing (default: each keeps its place); every view centre and \
+             centre of the first view drawing.copy listed, the others keeping their spacing (default: each keeps its place); \
+             every view centre and \
              table place must be on the paper. Copied sheets come whole, as new sheets, keeping their names when free (else \
              the next Sheet N), so they take neither. to?: {component, path?}, as drawing.source.replace's: the part the \
              views show (default: the parts they showed; from another design, this design itself); from_design?: true to \

@@ -15,7 +15,9 @@
 //! - an image file with the same bytes as one this drawing has is used again;
 //! - a sheet keeps its name when no sheet has it, else gets the next free one, and names this
 //!   drawing's design; a parts list too;
-//! - revision tags are never pasted: each shows a row of its own drawing's revision record.
+//! - revision tags are never pasted: each shows a row of its own drawing's revision record;
+//! - each kind's copies keep their originals' order, which is their id order: the copies' new ids
+//!   are in that order too, so they paint as the originals do.
 //!
 //! The model references stay as they were: moving them onto another part is the caller's.
 
@@ -94,7 +96,11 @@ impl Drawing {
             ("table", tables),
         ];
         let count = kinds.iter().map(|(_, list)| list.len()).sum();
-        let mut fresh = self.allocate_ids(count, id_source)?.into_iter();
+        // Given out in order, and each kind's list is in id order, so the copies keep their
+        // originals' order: a drawing keeps its records, and paints them, in id order.
+        let mut fresh = self.allocate_ids(count, id_source)?;
+        fresh.sort_unstable();
+        let mut fresh = fresh.into_iter();
         let mut made = Pasted::default();
         for (kind, old) in kinds.iter().flat_map(|(kind, list)| list.iter().map(move |old| (*kind, *old))) {
             let id = fresh.next().ok_or_else(|| DocError::Invalid("no free id".into()))?;

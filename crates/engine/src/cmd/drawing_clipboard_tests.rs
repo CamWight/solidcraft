@@ -250,17 +250,20 @@ fn pasted_views_keep_their_spacing_and_stay_on_the_paper() {
     let mut s = plate(false);
     let (_, front, right) = front_and_right(&mut s, "third");
     let d = open_drawing(&s);
-    let gap = d.view_centre(right).unwrap() - d.view_centre(front).unwrap();
-    run(&mut s, COPY, json!({"views": [ids::encode(front), ids::encode(right)]}));
+    let copied = run(&mut s, COPY, json!({"views": [ids::encode(front), ids::encode(right)]}));
+    // `position_mm` is for the first view the copy lists; the other keeps its offset from it.
+    let first = copied["views"][0].as_str().and_then(ids::decode).unwrap();
+    let second = if first == front { right } else { front };
+    let gap = d.view_centre(second).unwrap() - d.view_centre(first).unwrap();
     let before = saved(&s);
     let why = refused(&mut s, PASTE, json!({"position_mm": [-500, 100]}));
     assert!(why.contains("off the paper"), "{why}");
     assert_eq!(saved(&s), before);
     let made = copies(&run(&mut s, PASTE, json!({"position_mm": [100, 120]})));
     let d = open_drawing(&s);
-    let at = d.view_centre(made[&front]).unwrap();
+    let at = d.view_centre(made[&first]).unwrap();
     assert_eq!((at.x, at.y), (100.0, 120.0));
-    assert_eq!(d.view_centre(made[&right]).unwrap() - at, gap);
+    assert_eq!(d.view_centre(made[&second]).unwrap() - at, gap);
     let lone = run(&mut s, COPY, json!({"views": [ids::encode(right)]}));
     assert_eq!(lone["views"], json!([ids::encode(right)]), "{lone}");
     let reply = run(&mut s, PASTE, json!({}));

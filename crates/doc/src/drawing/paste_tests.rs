@@ -159,3 +159,25 @@ fn every_pasted_record_gets_a_new_id_and_a_refusal_changes_nothing() {
     );
     assert_eq!(d, from);
 }
+
+/// The copies keep their originals' order: a drawing keeps its records, and paints them, in id
+/// order, so each kind's copies take their new ids in the order of the ids they copy. Ten views
+/// (the sheet's three and seven more like its front view) keep that order by chance about once
+/// in 3.6 million.
+#[test]
+fn copies_keep_their_originals_order() {
+    let mut d = plate();
+    let (front, _) = front_and_right(&d);
+    let like_front = d.view(front).unwrap().clone();
+    let more = d.allocate_ids(7, &mut IdSource::seeded(13065)).unwrap();
+    d.add_views(more.into_iter().map(|id| Arc::new(View { id, ..like_front.clone() })));
+    let from = d.clone();
+    let views: Vec<u64> = from.views.iter().filter(|v| v.sheet == from.sheets[0].id).map(|v| v.id).collect();
+    assert_eq!(views.len(), 10);
+    let made = d.paste_records(&from, &from.with_contents(views), &[], here(&from), &mut IdSource::seeded(9)).unwrap();
+    for kind in ["view", "dimension"] {
+        let new: Vec<u64> = made.ids.iter().filter(|(k, _, _)| *k == kind).map(|(_, _, id)| *id).collect();
+        assert!(made.ids.iter().filter(|(k, _, _)| *k == kind).map(|(_, old, _)| *old).is_sorted(), "{kind}: the copy lists by id");
+        assert!(new.is_sorted(), "{kind}: the copies' ids are in their originals' order: {new:?}");
+    }
+}
