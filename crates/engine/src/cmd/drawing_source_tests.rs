@@ -35,18 +35,11 @@ pub(crate) struct Plates {
 }
 
 pub(crate) fn plates() -> Plates {
-    plates_with(|_| ()).0
-}
-
-/// [`plates`], with `inside_a` run in plate A before B is copied from it, so B has its copy too;
-/// with what `inside_a` returns.
-fn plates_with<T>(inside_a: impl FnOnce(&mut Session) -> T) -> (Plates, T) {
     let mut s = Session::default();
     let made = run(&mut s, "component.create", json!({"name": "Plate A"}));
     let (a, a_at) = (made["component"].as_u64().unwrap(), made["occurrence"].as_u64().unwrap());
     run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 10, "body_name": "Plate"}));
     run(&mut s, "solid.cylinder", json!({"radius": 5, "height": 20, "base": [50, 30, -5], "operation": "cut", "targets": ["Plate"]}));
-    let extra = inside_a(&mut s);
     run(&mut s, "component.activate", json!({"component": 0}));
     let copy = run(&mut s, "component.paste_new", json!({"component": a, "translate": [0, -100, 0]}));
     let (b, b_at) = (copy["component"].as_u64().unwrap(), copy["occurrence"].as_u64().unwrap());
@@ -64,7 +57,7 @@ fn plates_with<T>(inside_a: impl FnOnce(&mut Session) -> T) -> (Plates, T) {
     d.add_views([Arc::new(View { id: view, sheet, kind, place: ViewPlace::At([200.0, 150.0]), settings, reference_shown_percent: 0.0 })]);
     d.validate().unwrap();
     s.doc_mut().put_drawing(Arc::new(d));
-    (Plates { s, a, b, a_at, b_at, view }, extra)
+    Plates { s, a, b, a_at, b_at, view }
 }
 
 /// On A's front view: its bottom front edge's length (100), a note on the hole's top edge, a
@@ -179,20 +172,31 @@ fn a_dry_run_changes_nothing() {
 }
 
 /// The views projected from a replaced view follow it, and a hide path under the old part is
-/// dropped from each view that sets one, and listed.
+/// dropped from each view that sets one, and listed. The path is left from a part since deleted
+/// from A: while A holds a part, the replace refuses it as more than one part.
 #[test]
 fn projected_views_follow_and_drop_their_hide_under_the_old_part() {
-    // A part inside A, and so inside B, for the projected view to hide: a path under the old part
-    // that names an occurrence (an edit refuses a path no occurrence makes).
-    let (mut p, pin) = plates_with(|s| {
-        let pin = run(s, "component.create", json!({"name": "Pin"}))["occurrence"].as_u64().unwrap();
-        run(s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [0, 0, 10], "operation": "new", "body_name": "Pin"}));
-        pin
-    });
+    let mut p = plates();
     let v = ids::encode(p.view);
     let projected = run(&mut p.s, "drawing.view.projected", json!({"parent": v, "side": "right"}))["view"].as_str().unwrap().to_string();
-    let under = [p.a_at, pin];
+    // The model changes only while the drawing is closed.
+    let drawing = json!({"drawing": ids::encode(p.s.drawing("test").unwrap().id)});
+    let in_model = |s: &mut Session, change: &dyn Fn(&mut Session) -> Value| {
+        run(s, "drawing.close", json!({}));
+        let out = change(s);
+        run(s, "drawing.open", drawing.clone());
+        out
+    };
+    let pin = in_model(&mut p.s, &|s| {
+        run(s, "component.activate", json!({"component": p.a}));
+        let pin = run(s, "component.create", json!({"name": "Pin"}));
+        run(s, "solid.box", json!({"length": 5, "width": 5, "height": 5, "corner": [0, 0, 10], "operation": "new", "body_name": "Pin"}));
+        run(s, "component.activate", json!({"component": 0}));
+        pin
+    });
+    let under = [p.a_at, pin["occurrence"].as_u64().unwrap()];
     run(&mut p.s, "drawing.view.edit", json!({"view": projected, "set": {"hide": [under]}}));
+    in_model(&mut p.s, &|s| run(s, "component.delete", json!({"component": pin["component"]})));
     let reply = run(&mut p.s, REPLACE, json!({"view": v, "to": {"component": p.b}}));
     let mut views: Vec<String> = serde_json::from_value(reply["views"].clone()).unwrap();
     views.sort();
