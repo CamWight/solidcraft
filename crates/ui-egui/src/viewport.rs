@@ -6981,6 +6981,24 @@ pub fn show(app: &mut SolveApp, ui: &mut egui::Ui) {
         {
             app.edit_feature_of_face(&body, index, point);
         }
+        // Double-click empty space with a component active: go back to its parent, as the
+        // ribbon's Activate Parent does. The same preference as a double-click on a face.
+        if resp.double_clicked()
+            && hits.is_empty()
+            && !pen_select
+            && !held
+            && !dim_edit
+            && !reference_pick
+            && !joint_handle_pointer
+            && mods.is_none()
+            && app.tool.is_none()
+            && app.dialog.is_none()
+            && app.session.active_sketch.is_none()
+            && app.session.active_component != 0
+            && app.preferences.double_click_components
+        {
+            let _ = app.run("component.activate.parent", json!({}));
+        }
         // A right-click, unless the same press opened the mouse gestures' ring: it finishes a
         // tool, confirms a dialog's input (when that preference is on), or opens the menu. egui's
         // click already allows the pointer a few points of travel, as a mouse moves while it is
