@@ -1189,3 +1189,16 @@ fn a_double_click_in_empty_space_returns_to_the_parent() {
     assert_eq!(h.app.session.active_component, 0);
     assert!(h.app.messages.iter().all(|m| !m.error), "no refusal is shown for the design");
 }
+
+/// While the view moves, the pick under the pointer isn't taken, so nothing is under it as far as
+/// the view knows: a double-click then is not one in empty space, and the part stays active (#18516).
+#[test]
+fn a_double_click_while_the_view_moves_keeps_the_part_active() {
+    let (mut h, _, part) = nested_part_active();
+    let still = solidcraft_viewport::CameraAnim::new(h.app.cam, h.app.cam, h.app.now);
+    h.app.cam_anim = Some(solidcraft_viewport::CameraAnim { duration: 1e9, ..still });
+    h.step(&json!({"click":{"world":[10,10,0]},"double":true})).unwrap();
+    crate::test_support::play(&mut h);
+    assert!(h.app.cam_anim.is_some(), "the view is still moving");
+    assert_eq!(h.app.session.active_component, part, "a double-click on the sketch while the view moves");
+}
