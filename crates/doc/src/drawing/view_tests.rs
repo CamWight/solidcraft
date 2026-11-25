@@ -1390,9 +1390,16 @@ fn a_turned_views_rules_are_kept() {
     let at = |d: &Drawing, id: u64| file(d)["views"].as_array().unwrap().iter().position(|view| view["id"] == json!(ids::encode(id))).unwrap();
     let top_at = at(&d, top);
     // (A number past the reader's range, such as 1e308, is refused before the view's rules.)
-    for bad in [json!(-1.0), json!(360.0), json!(400.0), json!(1e6)] {
+    // Off the 0.01° steps too: 359.999 would read 360° and 0.001 would read 0°.
+    for bad in [json!(-1.0), json!(360.0), json!(400.0), json!(1e6), json!(359.999), json!(0.001), json!(30.005)] {
         let error = refused(&d, |v| v["views"][top_at]["rotation"] = bad.clone());
-        assert!(error.contains("its rotation is 0 up to 360 degrees"), "{bad}: {error}");
+        assert!(error.contains("its rotation is 0 up to 360 degrees, kept to 0.01°"), "{bad}: {error}");
+    }
+    for good in [30.0, 22.5, 359.99, 0.01] {
+        let mut v = file(&d);
+        v["views"][top_at]["rotation"] = json!(good);
+        let read = Drawing::from_json(&v.to_string()).unwrap_or_else(|e| panic!("{good}: {e}"));
+        assert_eq!(read.view(top).unwrap().rotation, good);
     }
     assert!(refused(&d, |v| v["views"][top_at]["rotation"] = json!("30")).contains("invalid type"));
     let why = |d: &Drawing| d.validate().unwrap_err().to_string();

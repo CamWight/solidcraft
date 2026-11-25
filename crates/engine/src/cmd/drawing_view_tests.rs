@@ -4396,7 +4396,7 @@ fn bends_up_and_down_draw_in_two_line_types_and_end_on_the_outline() {
     let drawn = |dashes: &Option<Vec<f64>>| strokes.iter().filter(|(_, d)| d == dashes).map(|(path, _)| path).collect::<Vec<_>>();
     assert_eq!((drawn(&up).len(), drawn(&down).len()), (1, 1), "{strokes:?}");
     // Unturned at 1:1, the flat only moves onto the sheet: its box's corner goes to the boundary's.
-    let flat = crate::drawing_view::flat_from(&reply, QuarterTurn::None, FLAT).unwrap().model;
+    let flat = crate::drawing_view::flat_from(&reply, QuarterTurn::None, 0.0, FLAT).unwrap().model;
     let on_sheet = |p: &Value| point(p) - flat.min + point(&view["boundary_mm"]["min"]);
     for bend in bends {
         let dashes = if bend["direction"] == "up" { &up } else { &down };
@@ -4695,7 +4695,7 @@ fn an_auxiliary_view_inspects_lists_and_copies() {
 fn a_quarter_turn_turns_a_flat_view() {
     let mut s = sheet_plate();
     let reply = flat_pattern(&mut s);
-    let turned = |turn| crate::drawing_view::flat_from(&reply, turn, FLAT).unwrap().model;
+    let turned = |turn| crate::drawing_view::flat_from(&reply, turn, 0.0, FLAT).unwrap().model;
     let flat = turned(QuarterTurn::None);
     // A box centred on the plane's origin would turn to the same box at 90 and 270 degrees.
     assert!(flat.min.x != -flat.max.x || flat.min.y != -flat.max.y, "{flat:?}");
@@ -4719,6 +4719,37 @@ fn a_quarter_turn_turns_a_flat_view() {
     }
     let error = s.execute(FLAT, &json!({"sheet": "Sheet 1", "scale": "1:1", "turn": 45})).unwrap_err().to_string();
     assert!(error.contains("0, 90, 180 or 270"), "{error}");
+}
+
+/// A flat view turned on its sheet (#13044) turns its lines and its box, not only its label. Turned 90
+/// degrees, its box is the one its flat's own quarter turn gives; turned 30 degrees, it is the box of
+/// the flat's outline points turned 30 degrees anticlockwise, and its drawn lines fill that box. Turned
+/// back, it is as it was.
+#[test]
+fn a_turned_flat_view_turns_its_lines_and_its_box() {
+    let mut s = sheet_plate();
+    let reply = flat_pattern(&mut s);
+    let size = |s: &mut Session, view: u64| boundary(&inspect_view(s, view)).0;
+    let (quarter, _) = flat_view(&mut s, json!({"sheet": "Sheet 1", "scale": "1:1", "turn": 90}));
+    let (id, _) = flat_view(&mut s, json!({"sheet": "Sheet 1", "scale": "1:1"}));
+    let unturned = size(&mut s, id);
+    edit_view(&mut s, id, json!({"rotation": 90}));
+    let (turned, want) = (size(&mut s, id), size(&mut s, quarter));
+    assert!((turned - want).len() < EPS, "{turned:?}, want {want:?}");
+
+    edit_view(&mut s, id, json!({"rotation": 30}));
+    let (sin, cos) = 30f64.to_radians().sin_cos();
+    let points = reply["outline"].as_array().unwrap().iter().flat_map(|ring| ring.as_array().unwrap().iter().map(point));
+    let want: Aabb2 = points.map(|p| Vec2::new(p.x * cos - p.y * sin, p.x * sin + p.y * cos)).collect();
+    let turned = size(&mut s, id);
+    assert!((turned - (want.max - want.min)).len() < EPS, "{turned:?}, want {want:?}");
+    let (strokes, status) = flat_strokes(&s, id);
+    assert_eq!(status.name(), "drawn", "{status:?}");
+    let drawn = strokes.iter().flat_map(|(path, _)| path).fold(Aabb2::EMPTY, |b, seg| b.union(&seg.bounds()));
+    assert!(((drawn.max - drawn.min) - turned).len() < EPS, "{drawn:?}, want {turned:?}");
+
+    edit_view(&mut s, id, json!({"rotation": 0}));
+    assert!((size(&mut s, id) - unturned).len() < EPS);
 }
 
 /// A body that isn't sheet metal is refused in `sheet.flat_pattern`'s words, and so is a design with
@@ -5410,6 +5441,45 @@ fn a_turned_view_turns_its_box_and_what_lines_up_with_it_is_placed_apart() {
     }
     let why = edit_refused(&mut s, top, json!({"rotation": "30"}));
     assert!(why.contains("rotation"), "{why}");
+}
+
+/// A turn changes a view's box, so the edit lists the view when the turn takes it off its sheet, as a
+/// new scale or place does. The top view, 25 mm wide and 50 mm high, fits by the right edge of the A3
+/// drawing space (x 410); turned 90 degrees it is 50 mm wide and reaches x 420. Turned back, it fits.
+#[test]
+fn a_turn_that_takes_a_view_off_its_sheet_lists_it() {
+    let (mut s, [_, _, top]) = three_views();
+    let placed = edit_view(&mut s, top, json!({"place": {"at": [395.0, 250.0]}}));
+    assert!(outside(&placed).1.is_empty(), "{placed}");
+    let turned = edit_view(&mut s, top, json!({"rotation": 90}));
+    let (listed, views) = outside(&turned);
+    assert_eq!(views, [top], "{turned}");
+    assert_box(&listed[0], [370.0, 237.5], [420.0, 262.5]);
+    let back = edit_view(&mut s, top, json!({"rotation": 0}));
+    assert!(outside(&back).1.is_empty(), "{back}");
+}
+
+/// A view's notes and balloons turn with it: their places are paper offsets from its centre, so a turn
+/// of 90 degrees takes one at (40, 25) to (-25, 40), turning back takes it home, and an edit that
+/// keeps the same turn (450 degrees is 90) moves nothing. A note on the sheet stays where it is.
+#[test]
+fn a_turned_views_notes_and_balloons_turn_with_it() {
+    let (mut s, view, [_, second], _) = exploded_pair();
+    let (on_view, edge) = (ids::encode(view), json!({"point": [35, 0, 0], "path": [second]}));
+    let sheet = ids::encode(s.drawing("test").unwrap().sheets[0].id);
+    let id = |reply: Value, key: &str| ids::decode(reply[key].as_str().unwrap()).unwrap();
+    let balloon = id(run(&mut s, "drawing.balloon.add", json!({"view": on_view, "edge": edge, "at": [40, 25]})), "balloon");
+    let note = json!({"anchor": {"edge": {"view": on_view, "edge": edge}}, "at": [40, 25], "content": "Deburr"});
+    let note = id(run(&mut s, "drawing.note.add", note), "note");
+    let on_sheet = id(run(&mut s, "drawing.note.add", json!({"anchor": {"sheet": sheet}, "at": [100, 100], "content": "Sheet"})), "note");
+    let places = |s: &Session| {
+        let d = s.drawing("test").unwrap();
+        [d.balloons.by_id(balloon).unwrap().at, d.notes.by_id(note).unwrap().at, d.notes.by_id(on_sheet).unwrap().at]
+    };
+    for (rotation, want) in [(90, [-25.0, 40.0]), (450, [-25.0, 40.0]), (0, [40.0, 25.0])] {
+        edit_view(&mut s, view, json!({"rotation": rotation}));
+        assert_eq!(places(&s), [want, want, [100.0, 100.0]], "{rotation}");
+    }
 }
 
 /// A view that has an auxiliary view isn't turned, as its side is drawn on its paper: the edit is

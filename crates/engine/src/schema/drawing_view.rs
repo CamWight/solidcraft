@@ -586,8 +586,9 @@ pub struct ViewSet {
     #[schemars(with = "f64")]
     pub reference_shown_percent: Option<f64>,
     /// How far it is turned on its sheet about its centre, in degrees anticlockwise (#13044): any angle,
-    /// kept as 0 up to 360; 0 turns it back. Its lines and dimensions turn with it, the way it looks
-    /// doesn't, and a view lined up with it, or it with its parent, is placed apart where it is.
+    /// kept as 0 up to 360 to 0.01°; 0 turns it back. Its lines, dimensions, notes and balloons turn with
+    /// it, the way it looks doesn't, and a view lined up with it, or it with its parent, is placed apart
+    /// where it is.
     #[serde(deserialize_with = "super::present")]
     #[schemars(with = "f64")]
     pub rotation: Option<f64>,

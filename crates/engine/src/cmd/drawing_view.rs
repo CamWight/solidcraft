@@ -58,7 +58,8 @@ use solidcraft_doc::drawing::measure::{self, AngleFrom, LinearDirection, Measure
 use solidcraft_doc::drawing::note::Note;
 use solidcraft_doc::drawing::thread_lines::{ThreadPiece, ThreadStroke};
 use solidcraft_doc::drawing::view::{
-    Beside, DetailBoundary, ResolvedView, SetBy, Setting, View, ViewKind, ViewLabel, ViewPlace, check_occurrence_paths, check_pose,
+    Beside, DetailBoundary, ResolvedView, SetBy, Setting, View, ViewKind, ViewLabel, ViewPlace, check_occurrence_paths, check_pose, kept_turn,
+    turn_sin_cos,
 };
 use solidcraft_doc::drawing::{Owner, SheetSketch};
 use solidcraft_doc::drawing_view::{
@@ -761,8 +762,10 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         change(&mut staged, id, set, &found)?;
         check_apart(&staged, std::iter::once(id).chain(descendants.iter().copied()), EDIT)?;
     }
-    // What changes a view's size or place can take it, or the views lined up with it, off the sheet.
-    let resized = set.scale.is_some()
+    // What changes a view's size or place can take it, or the views lined up with it, off the sheet: a
+    // turn changes its box.
+    let resized = set.rotation.is_some()
+        || set.scale.is_some()
         || set.place.is_some()
         || set.view.is_some()
         || set.source.is_some()
@@ -896,10 +899,11 @@ fn change(d: &mut Drawing, id: u64, set: &ViewSet, found: &Found) -> Result<Vec<
         view.place = place.0;
     }
     if let Some(degrees) = set.rotation {
-        // Kept to 0.01°, as its label prints it, so a view drawn turned never reads 0° or 360°; one that
-        // rounds to a whole turn isn't turned. JSON carries only finite numbers (NaN would become 0).
-        let kept = (degrees.rem_euclid(360.0) * 100.0).round() / 100.0;
-        view.rotation = if kept < 360.0 { kept } else { 0.0 };
+        let was = view.rotation;
+        view.rotation = kept_turn(degrees);
+        // Both kept to 0.01°, so their difference kept is exact: a quarter turn stays exact.
+        let by = kept_turn(view.rotation - was);
+        turn_placed_on(d, id, by);
         turned_apart(d, id)?;
     }
     // Placed apart, it needs a letter; then its label is typed over.
@@ -909,6 +913,25 @@ fn change(d: &mut Drawing, id: u64, set: &ViewSet, found: &Found) -> Result<Vec<
         type_over(label.ok_or_else(|| bad(EDIT, "it has no label: a view placed apart from its projection place has one"))?, parts);
     }
     Ok(d.view(id).map(|after| changed_fields(&before, after)).unwrap_or_default())
+}
+
+/// The notes and balloons on view `id` of `d`, turned `degrees` anticlockwise about its centre with it:
+/// their places are paper offsets from that centre, so they stay where they were on its picture. A
+/// note on the sheet stays.
+fn turn_placed_on(d: &mut Drawing, id: u64, degrees: f64) {
+    if degrees == 0.0 {
+        return;
+    }
+    let (sin, cos) = turn_sin_cos(degrees);
+    let turned = |[x, y]: [f64; 2]| [x * cos - y * sin, x * sin + y * cos];
+    for note in d.notes.iter_mut().filter(|note| note.anchor.view() == Some(id)) {
+        let note = Arc::make_mut(note);
+        note.at = turned(note.at);
+    }
+    for balloon in d.balloons.iter_mut().filter(|balloon| balloon.view == id) {
+        let balloon = Arc::make_mut(balloon);
+        balloon.at = turned(balloon.at);
+    }
 }
 
 /// View `id` of `d`, when turned, and the views lined up with it, each placed apart where it is, with
@@ -1846,7 +1869,7 @@ fn flat(s: &mut Session, p: &Value) -> Result<Value> {
     staged.add_views([Arc::new(view.clone())]);
     staged.validate().map_err(|e| bad(FLAT, e.to_string()))?;
     // The flat is read once, for the fit and the reply both: a large flat takes seconds to read.
-    let flat = crate::drawing_view::flat_from(&reply, turn, FLAT)?;
+    let flat = crate::drawing_view::flat_from(&reply, turn, view.rotation, FLAT)?;
     if request.scale.is_none() {
         let model = flat.model;
         let room = Room::on(crate::drawing_view::sheet(&staged, sheet, FLAT)?, FLAT)?;

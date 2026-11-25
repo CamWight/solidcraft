@@ -825,7 +825,7 @@ pub(crate) fn dimension_view_on_sheet(s: &Session, d: &Drawing, dimension: &Dime
 pub fn on_sheet_from(sessions: &mut ViewSessions, drawing: &Drawing, id: u64, cmd: &str) -> Result<OnSheet> {
     let view = drawing.resolve_view(id).map_err(|e| bad(cmd, e.to_string()))?;
     if let Some(of) = &view.flat {
-        return flat_on_sheet(drawing, id, &flat(sessions.placed, of, cmd), cmd);
+        return flat_on_sheet(drawing, id, &flat(sessions.placed, of, view.rotation, cmd), cmd);
     }
     let centre = drawing.view_centre(id).map_err(|e| bad(cmd, e.to_string()))?;
     let shown = shown_by(sessions, &view);

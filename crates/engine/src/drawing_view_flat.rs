@@ -7,7 +7,7 @@
 
 use serde_json::Value;
 use solidcore_record::{Seg2, Vec2};
-use solidcraft_doc::drawing::view::{FlatOf, QuarterTurn};
+use solidcraft_doc::drawing::view::{FlatOf, QuarterTurn, turn_sin_cos};
 use solidcraft_geom::Aabb2;
 use solidcraft_geom::drawing_view::ViewFrame;
 use solidcraft_geom::paper::line::{LineGroup, LineKind};
@@ -29,16 +29,18 @@ pub struct Flat {
     pub model: Aabb2,
 }
 
-/// The flat of `of`'s body in `s`'s design, turned as `of` is; refused in `sheet.flat_pattern`'s
-/// words when the body is no sheet metal, or its flat doesn't match it.
-pub fn flat(s: &Session, of: &FlatOf, cmd: &str) -> Result<Flat> {
-    flat_from(&crate::cmd::flat_reply(s, Some(&of.body), cmd)?, of.turn, cmd)
+/// The flat of `of`'s body in `s`'s design, turned as `of` is, then by its view's `rotation`; refused
+/// in `sheet.flat_pattern`'s words when the body is no sheet metal, or its flat doesn't match it.
+pub fn flat(s: &Session, of: &FlatOf, rotation: f64, cmd: &str) -> Result<Flat> {
+    flat_from(&crate::cmd::flat_reply(s, Some(&of.body), cmd)?, of.turn, rotation, cmd)
 }
 
-/// The flat `reply` (`sheet.flat_pattern`'s) reports, turned `turn`.
-pub fn flat_from(reply: &Value, turn: QuarterTurn, cmd: &str) -> Result<Flat> {
+/// The flat `reply` (`sheet.flat_pattern`'s) reports, turned `turn`, then `rotation` degrees
+/// anticlockwise, its view's turn on its sheet. A flat is already 2D on its plane, so the view's
+/// turned basis (`ResolvedView::drawn`) never reaches it: it turns here.
+pub fn flat_from(reply: &Value, turn: QuarterTurn, rotation: f64, cmd: &str) -> Result<Flat> {
     let unread = |key: &str| bad(cmd, format!("the flat pattern's `{key}` can't be read"));
-    let turn = Turn::new(turn);
+    let turn = Turn::new(turn, rotation);
     let outlines = list(reply, "outline").ok_or_else(|| unread("outline"))?;
     let outlines = outlines.iter().map(|ring| points(ring, &turn).map(|ring| closed(&ring))).collect::<Option<Vec<_>>>();
     let outlines = outlines.ok_or_else(|| unread("outline"))?;
@@ -50,8 +52,9 @@ pub fn flat_from(reply: &Value, turn: QuarterTurn, cmd: &str) -> Result<Flat> {
     Ok(Flat { loops: outlines.into_iter().chain(cut_outs).collect(), bends, model })
 }
 
-/// A [`QuarterTurn`] on the flat's own plane: each point through the turn's basis, whose axes are
-/// signed unit axes, so it maps exactly; an arc's angles turn by its degrees.
+/// A [`QuarterTurn`] on the flat's own plane, then its view's turn: each point through the turn's
+/// basis, whose axes are signed unit axes, so it maps exactly, then turned by the view's turn
+/// ([`turn_sin_cos`], exact at the quarter turns too); an arc's angles turn by both.
 struct Turn {
     x: Vec2,
     y: Vec2,
@@ -59,9 +62,13 @@ struct Turn {
 }
 
 impl Turn {
-    fn new(turn: QuarterTurn) -> Turn {
+    fn new(turn: QuarterTurn, rotation: f64) -> Turn {
         let basis = turn.basis();
-        Turn { x: Vec2::new(basis.x.x, basis.x.y), y: Vec2::new(basis.y.x, basis.y.y), angle: f64::from(u16::from(turn)).to_radians() }
+        let (x, y) = (Vec2::new(basis.x.x, basis.x.y), Vec2::new(basis.y.x, basis.y.y));
+        // A point's coordinates turn anticlockwise, so the axes they are read along turn back.
+        let (sin, cos) = turn_sin_cos(rotation);
+        let angle = (f64::from(u16::from(turn)) + rotation).to_radians();
+        Turn { x: x * cos - y * sin, y: x * sin + y * cos, angle }
     }
 
     fn apply(&self, p: Vec2) -> Vec2 {

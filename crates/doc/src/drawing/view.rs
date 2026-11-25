@@ -31,9 +31,9 @@
 //! lined up with its parent is on the parent's sheet; a section view is placed at a point, and its
 //! cutting line keeps [`CuttingLine::new`]'s rules; a view's place is on paper
 //! ([`is_paper_coordinate`]); a view's occurrence paths keep [`check_occurrence_paths`]; a view's
-//! turn is 0 up to 360 degrees, a turned view is placed at a point, no view lines up with a turned
-//! view, and no section or auxiliary view is made from one yet; at most [`MAX_VIEWS`] views, listed by
-//! id ([`Drawing::add_views`]).
+//! turn is 0 up to 360 degrees in steps of 0.01° ([`kept_turn`]), a turned view is placed at a point,
+//! no view lines up with a turned view, and no section or auxiliary view is made from one yet; at most
+//! [`MAX_VIEWS`] views, listed by id ([`Drawing::add_views`]).
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -90,8 +90,9 @@ pub struct View {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<ViewLabel>,
     /// How far it is turned on its sheet about its centre, in degrees anticlockwise, 0 up to 360
-    /// (#13044): its picture and what is placed on it turn, the way it looks doesn't, and the views made
-    /// from it don't ([`ResolvedView::drawn`]).
+    /// ([`kept_turn`], #13044): its picture and what is placed on it turn, the way it looks doesn't, and
+    /// the views made from it don't ([`ResolvedView::drawn`]). Its notes and balloons keep their places
+    /// as paper offsets from its centre, so an edit of its turn turns those offsets with it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub rotation: f64,
 }
@@ -542,6 +543,14 @@ pub fn turn_sin_cos(degrees: f64) -> (f64, f64) {
     }
 }
 
+/// A turn of `degrees` as a view keeps it: 0 up to 360, to 0.01° as its label prints it, so a view
+/// drawn turned never reads 0° or 360°; one that rounds to a whole turn isn't turned, nor is one that
+/// isn't a number. The one rule the edit keeps a turn by and a saved drawing is checked against.
+pub fn kept_turn(degrees: f64) -> f64 {
+    let kept = (degrees.rem_euclid(360.0) * 100.0).round() / 100.0;
+    if kept < 360.0 { kept } else { 0.0 }
+}
+
 /// A detail view's region of its parent, in the parent's plane coordinates (model millimetres
 /// along the view's x and y), as saved.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -729,7 +738,8 @@ impl Drawing {
             ViewPlace::Aligned(along) => is_paper_coordinate(along),
         };
         require(place, || format!("its place is at most {MAX_SIDE_MM} mm from the sheet's origin"))?;
-        require((0.0..360.0).contains(&view.rotation), || "its rotation is 0 up to 360 degrees".into())?;
+        // Refused, not rounded, as a turn out of range is: every turn the edit keeps passes as saved.
+        require(view.rotation == kept_turn(view.rotation), || "its rotation is 0 up to 360 degrees, kept to 0.01°".into())?;
         let apart = view.rotation == 0.0 || matches!(view.place, ViewPlace::At(_));
         require(apart, || "a turned view is placed at a point: it no longer lines up with its parent".into())?;
         check_occurrence_paths(view.settings.occurrences.as_deref().unwrap_or_default(), view.settings.hide.as_deref().unwrap_or_default())?;

@@ -1079,7 +1079,7 @@ fn hatch_items(hatched: &[crate::drawing_view::BodyHatch], group: LineGroup) -> 
 /// Flat pattern view `id`, drawing as `view` does, of its body's flat `of` ([`crate::drawing_view::flat`]):
 /// centred on the view as [`draw`]'s lines are. Its lines name no body, so nothing is picked on them.
 fn draw_flat(s: &Session, id: u64, view: &ResolvedView, of: &FlatOf) -> Drawn {
-    let flat = crate::drawing_view::flat(s, of, CMD);
+    let flat = crate::drawing_view::flat(s, of, view.rotation, CMD);
     let placing = crate::drawing_view::flat_measured(&flat);
     let boundary = crate::drawing_view::placed(view, placing, Vec2::ZERO, CMD).ok().map(|placed| placed.boundary);
     let none = |status| Drawn { group: None, status, stats: None, boundary, frame: None, owners: None, why: None, hatches: Vec::new() };
