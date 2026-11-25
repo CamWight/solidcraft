@@ -59,7 +59,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use solidcore_record::Vec2;
 use solidcraft_geom::Aabb2;
-use solidcraft_geom::cell::Projection;
+use solidcraft_geom::cell::{PaperText, Projection};
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile};
 use solidcraft_geom::paper::line::LineGroup;
 use solidcraft_geom::revision::RevisionRecord;
@@ -317,9 +317,10 @@ pub struct Sheet {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title_block: Option<TitleBlock>,
     /// Text shown in place of a title block cell's value, by the cell's name: the value is still
-    /// worked out, so it can be shown beside it.
+    /// worked out, so it can be shown beside it. Typed text, or a built-in message that prints in the
+    /// drawing's language (a built-in template's note and document type, #19884).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub title_block_overrides: BTreeMap<String, String>,
+    pub title_block_overrides: BTreeMap<String, PaperText>,
     /// The resolution its pictures (its shaded views) are rendered at, in dots per inch.
     #[serde(default = "default_dpi")]
     pub dpi: f64,
@@ -833,8 +834,11 @@ impl Drawing {
             let named = || format!("its title block has no text cell `{name}` to override");
             require(fields::overridable(sheet.title_block.as_ref(), name), named)?;
         }
-        let texts = sheet.title_block_overrides.values().map(String::as_str);
-        solidcraft_geom::cell::check_text(texts).map_err(|e| DocError::Invalid(e.to_string()))?;
+        // Typed text by a cell's rule, a message by its id's; both count toward a cell's bytes.
+        let overrides = sheet.title_block_overrides.values();
+        let saved = overrides.clone().filter_map(|text| text.typed_text().or(text.message()));
+        solidcraft_geom::cell::check_text(saved).map_err(|e| DocError::Invalid(e.to_string()))?;
+        overrides.filter(|text| text.message().is_some()).try_for_each(PaperText::check).map_err(|e| DocError::Invalid(e.to_string()))?;
         require((MIN_DPI..=MAX_DPI).contains(&sheet.dpi), || format!("its pictures are {MIN_DPI} to {MAX_DPI} dpi"))?;
         match sheet.documents {
             Some(SheetComponent { source, .. }) => {

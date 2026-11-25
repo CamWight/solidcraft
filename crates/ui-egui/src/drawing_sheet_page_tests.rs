@@ -784,7 +784,10 @@ fn double_click_edits_a_title_block_cells_text_in_place() {
         let (x, y) = ((rect.min.x + rect.max.x) / 2.0, (rect.min.y + rect.max.y) / 2.0);
         [paper.left() + paper.width() * x as f32 / 420.0, paper.bottom() - paper.height() * y as f32 / 297.0]
     };
-    let typed = |h: &Harness| h.app.session.drawing("drawing.inspect").unwrap().sheets[0].title_block_overrides.get("title").cloned();
+    let typed = |h: &Harness| {
+        let overrides = &h.app.session.drawing("drawing.inspect").unwrap().sheets[0].title_block_overrides;
+        overrides.get("title").and_then(|text| text.typed_text()).map(str::to_owned)
+    };
     let type_over = |h: &mut Harness, text: &str| {
         h.step(&json!({"click": centre(h, true), "double": true})).unwrap();
         h.frames(4);
@@ -845,8 +848,8 @@ fn double_click_edits_each_iso_7200_cell_in_place() {
         h.step(&json!({"key": "Enter"})).unwrap();
         h.frames(4);
         assert!(!crate::dim_view::editing());
-        let typed = h.app.session.drawing("drawing.inspect").unwrap().sheets[0].title_block_overrides.get(name).cloned();
-        assert_eq!(typed.as_deref(), Some(text), "{name}");
+        let overrides = &h.app.session.drawing("drawing.inspect").unwrap().sheets[0].title_block_overrides;
+        assert_eq!(overrides.get(name).and_then(|typed| typed.typed_text()), Some(text), "{name}");
     }
 }
 

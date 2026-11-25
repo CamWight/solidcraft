@@ -21,15 +21,16 @@ fn shop(name: &str, text: &str) -> Drawing {
     d
 }
 
-/// The general tolerances typed over a template's first sheet's block.
-fn note(d: &Drawing) -> Option<&str> {
-    d.sheets[0].title_block_overrides.get("general_tolerances").map(String::as_str)
+/// The general tolerances given over a template's first sheet's block.
+fn note(d: &Drawing) -> Option<&PaperText> {
+    d.sheets[0].title_block_overrides.get("general_tolerances")
 }
 
 /// Every built-in is a template on its ISO paper (A4 upright, the rest flat) with the ISO border
-/// and the built-in title block, a part's with the part note typed over its general tolerances and
-/// an assembly's with the assembly note, the same bytes each time it is made. Each size comes as
-/// both. Another name is none.
+/// and the built-in title block, a part's with the part note over its general tolerances and an
+/// assembly's with the assembly note, the same bytes each time it is made. Each size comes as both.
+/// The notes and document types are built-in messages, saved as `{"message": id}` (#19884), so they
+/// print in the drawing's language. Another name is none.
 #[test]
 fn every_built_in_is_a_template_on_its_paper() {
     let mut seen = BTreeSet::new();
@@ -40,10 +41,13 @@ fn every_built_in_is_a_template_on_its_paper() {
         assert_eq!(d.sheets.len(), 1, "{name}");
         let sheet = &d.sheets[0];
         let (size, kind) = name.strip_prefix("iso-").unwrap().split_once('-').unwrap();
-        let want = if kind == "assembly" { ASSEMBLY_NOTE } else { PART_NOTE };
-        assert_eq!((note(&d), assembly(name)), (Some(want), Some(kind == "assembly")), "{name}");
-        let want = if kind == "assembly" { ASSEMBLY_TYPE } else { PART_TYPE };
-        assert_eq!(d.sheets[0].title_block_overrides.get("document_type").map(String::as_str), Some(want), "{name}: its document type");
+        let want = PaperText::built_in(if kind == "assembly" { ASSEMBLY_NOTE } else { PART_NOTE });
+        assert_eq!((note(&d), assembly(name)), (Some(&want), Some(kind == "assembly")), "{name}");
+        let want = PaperText::built_in(if kind == "assembly" { ASSEMBLY_TYPE } else { PART_TYPE });
+        assert_eq!(d.sheets[0].title_block_overrides.get("document_type"), Some(&want), "{name}: its document type");
+        let saved: serde_json::Value = serde_json::from_str(&d.to_json().unwrap()).unwrap();
+        let saved = &saved["sheets"][0]["title_block_overrides"]["document_type"];
+        assert_eq!(*saved, serde_json::json!({"message": want.message()}), "{name}: saved as its message");
         let SheetSize::Standard(paper) = sheet.sheet.size else { panic!("{name}: a standard size") };
         assert_eq!(serde_json::to_value(paper).unwrap(), serde_json::json!(size), "{name}");
         let upright = if size == "a4" { Orientation::Portrait } else { Orientation::Landscape };
@@ -73,7 +77,8 @@ fn a_part_starts_on_a3_and_an_assembly_on_a2() {
     }
     // A template saved from a built-in keeps its note, and so does a drawing made from it.
     let d = instantiate(&made("iso-a2-assembly"), "Frame drawing", &BTreeSet::new(), &mut IdSource::seeded(1)).unwrap();
-    assert_eq!((note(&d), note(&from_drawing(&d).unwrap())), (Some(ASSEMBLY_NOTE), Some(ASSEMBLY_NOTE)));
+    let built_in = PaperText::built_in(ASSEMBLY_NOTE);
+    assert_eq!((note(&d), note(&from_drawing(&d).unwrap())), (Some(&built_in), Some(&built_in)));
 }
 
 /// A template is saved and read as a drawing is, and is still a template.
@@ -111,7 +116,7 @@ fn a_template_applied_gives_each_sheet_its_format() {
     let id = d.allocate_id(&mut IdSource::seeded(2)).unwrap();
     d.sheets.push(Arc::new(Sheet { id, name: "Sheet 2".into(), ..(*d.sheets[0]).clone() }));
     for (cell, text) in [("material", "See note 3"), ("finish", "Black oxide")] {
-        Arc::make_mut(&mut d.sheets[0]).title_block_overrides.insert(cell.into(), text.into());
+        Arc::make_mut(&mut d.sheets[0]).title_block_overrides.insert(cell.into(), PaperText::typed(text));
     }
     assert_eq!(apply(&d, &made("iso-a3-part"), &mut IdSource::seeded(1)).unwrap(), (d.clone(), Vec::new()), "the same template changes nothing");
     let (applied, changed) = apply(&d, &shop("iso-a2-part", "ISO 13920-B"), &mut IdSource::seeded(1)).unwrap();
@@ -131,7 +136,7 @@ fn a_template_applied_gives_each_sheet_its_format() {
     let (applied, changed) = apply(&d, &renamed, &mut IdSource::seeded(1)).unwrap();
     assert_eq!(changed[0], Restyled { sheet: ids[0], paper: false, border: false, title_block: true, lost: vec!["finish".into()] });
     let kept: Vec<&str> = applied.sheets[0].title_block_overrides.keys().map(String::as_str).collect();
-    assert_eq!(kept, ["document_type", "general_tolerances", "material"], "the template's note is typed text too, and its cell is still there");
+    assert_eq!(kept, ["document_type", "general_tolerances", "material"], "the template's built-in note stays too: its cell is still there");
     assert!(apply(&d, &plate(), &mut IdSource::seeded(1)).unwrap_err().to_string().starts_with("a template draws no design"));
 }
 
@@ -179,7 +184,7 @@ fn a_drawing_saved_as_a_template_keeps_only_its_format() {
     let sheet = Arc::make_mut(&mut d.sheets[0]);
     sheet.set_title_block(Some(title_block::default_block()));
     for (cell, text) in [("general_tolerances", "ISO 2768-m"), ("material", "See note 3"), ("title", "Plate, left")] {
-        sheet.title_block_overrides.insert(cell.into(), text.into());
+        sheet.title_block_overrides.insert(cell.into(), PaperText::typed(text));
     }
     let kept: Vec<String> = from_drawing(&d).unwrap().sheets[0].title_block_overrides.keys().cloned().collect();
     assert_eq!(kept, ["general_tolerances"]);
@@ -214,7 +219,7 @@ fn a_drawing_from_a_template_has_ids_of_its_own() {
     let mut template = made("iso-a1-part");
     let first = (*template.sheets[0]).clone();
     template.sheets.push(Arc::new(Sheet { id: 5, name: "Sheet 2".into(), ..first }));
-    Arc::make_mut(&mut template.sheets[1]).title_block_overrides.insert("material".into(), "See note 3".into());
+    Arc::make_mut(&mut template.sheets[1]).title_block_overrides.insert("material".into(), PaperText::typed("See note 3"));
     check(&template).unwrap();
     let taken = BTreeSet::from([template.id]);
     let d = instantiate(&template, "Bracket drawing", &taken, &mut IdSource::seeded(9)).unwrap();

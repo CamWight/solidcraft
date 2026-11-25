@@ -14,6 +14,7 @@ use std::sync::Arc;
 use serde_json::Value;
 use solidcraft_doc::drawing::{Drawing, Excluded, OnSheet, Sheet, SheetComponent};
 use solidcraft_doc::ids;
+use solidcraft_geom::cell::PaperText;
 use solidcraft_geom::drawing_sheet::{Orientation, SheetSize};
 use solidcraft_geom::title_block::{self, TitleBlock};
 
@@ -159,7 +160,7 @@ fn apply(cmd: &str, sheet: &mut Sheet, p: &Value) -> Result<Vec<String>> {
             for (cell, text) in cells {
                 match text {
                     Value::Null => sheet.title_block_overrides.remove(cell),
-                    Value::String(text) => sheet.title_block_overrides.insert(cell.clone(), text.clone()),
+                    Value::String(text) => sheet.title_block_overrides.insert(cell.clone(), PaperText::typed(text.clone())),
                     _ => return Err(bad(cmd, format!("`title_block_overrides.{cell}` is text or null"))),
                 };
             }

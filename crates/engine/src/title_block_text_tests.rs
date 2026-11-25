@@ -322,24 +322,86 @@ fn the_built_in_labels_print_in_the_drawings_language_and_typed_ones_as_typed() 
     assert_eq!(saved["cells"].as_array().unwrap().iter().find(|cell| cell["name"] == "title").unwrap()["label"]["text"], "Benennung");
 }
 
-/// A drawing saved by 0.49.0 prints exactly as before (#19884): its block's labels were saved as
-/// English text, so they read as typed text and print in English whatever the drawing's language,
-/// and the block saves again byte for byte. It is still the built-in block to the sheet panel.
+/// A drawing saved by 0.49.0 prints exactly as before (#19884): its block's labels, and the note and
+/// document type its part template typed over their cells, were saved as English text. So they read
+/// as typed text, print in English whatever the drawing's language, and save again byte for byte. It
+/// is still the built-in block to the sheet panel.
 #[test]
-fn a_block_saved_before_built_in_labels_prints_and_saves_as_it_did() {
+fn a_sheet_saved_before_built_in_words_prints_and_saves_as_it_did() {
+    use solidcraft_doc::drawing::template::{PART_NOTE, PART_TYPE};
+
     crate::paper_words::install_test_catalogs();
     let (mut s, sheet) = drawing();
     let english = crate::paper_words::in_english(&solidcraft_geom::title_block::default_block());
     let old = serde_json::to_string(&english).unwrap();
     assert!(old.contains(r#""text":"Title""#) && !old.contains("drawing.paper"), "a 0.49.0 block: {old}");
-    run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block": serde_json::from_str::<Value>(&old).unwrap()}));
+    let words = |id: &str| crate::paper_words::english(id).unwrap();
+    let old_cells = json!({"document_type": words(PART_TYPE), "general_tolerances": words(PART_NOTE)});
+    let old_block = serde_json::from_str::<Value>(&old).unwrap();
+    run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block": old_block, "title_block_overrides": old_cells.clone()}));
     let before = runs(&s, sheet);
     run(&mut s, "drawing.set", json!({"language": "fr"}));
     let after = runs(&s, sheet);
     find(&after, "Title");
-    assert!(!after.iter().any(|r| r.text == "Titre"));
+    find(&after, "Part drawing");
+    assert!(!after.iter().any(|r| r.text == "Titre" || r.text == "Plan de pièce" || r.text.starts_with("Sauf")));
     assert_eq!(after, before, "the same runs in French as in English");
-    let block = s.drawing("test").unwrap().sheets[0].title_block.clone().unwrap();
-    assert_eq!(serde_json::to_string(&block).unwrap(), old);
-    assert_eq!(crate::paper_words::in_english(&block), english);
+    let record = s.drawing("test").unwrap().sheets[0].clone();
+    assert_eq!(serde_json::to_string(record.title_block.as_ref().unwrap()).unwrap(), old);
+    assert_eq!(serde_json::to_value(&record.title_block_overrides).unwrap(), old_cells, "saved as the strings 0.49.0 wrote");
+    assert_eq!(crate::paper_words::in_english(record.title_block.as_ref().unwrap()), english);
+}
+
+/// A built-in template's general tolerances and document type print in the drawing's language
+/// (#19884) on a drawing from each built-in template, and a change of the language reprints them, on
+/// the window's sheet as on an export's. A note someone typed over the cell prints as typed in every
+/// language and saves as plain text; the document type beside it stays the built-in message.
+#[test]
+fn a_templates_note_and_type_print_in_the_drawings_language_and_typed_ones_as_typed() {
+    use solidcraft_doc::drawing::template::{self, ASSEMBLY_NOTE, ASSEMBLY_TYPE};
+
+    crate::paper_words::install_test_catalogs();
+    let (mut s, _) = drawing();
+    let shown = |s: &mut Session, name: &str| cells(s).into_iter().find(|c| c["name"] == name).unwrap()["text"].clone();
+    // The open drawing's first sheet's block, its runs one space apart: a note wraps to several runs.
+    let sheet = |s: &Session| s.drawing("test").unwrap().sheets[0].id;
+    let printed = |s: &Session| runs(s, sheet(s)).into_iter().map(|r| r.text).collect::<Vec<_>>().join(" ");
+    for name in template::BUILT_INS {
+        run(&mut s, "drawing.close", json!({}));
+        run(&mut s, "drawing.create", json!({"template": name, "name": name, "language": "fr"}));
+        let (note, kind) = if template::assembly(name) == Some(true) {
+            let note =
+                "Sauf indication contraire : positions d'assemblage ±0.5 mm, angles ±1°. Les tolérances des pièces figurent sur les plans de pièces.";
+            (note, "Plan d'assemblage")
+        } else {
+            ("Sauf indication contraire : linéaire ±0.2 mm, angles ±0.5°. Casser les arêtes vives 0.2 mm.", "Plan de pièce")
+        };
+        assert_eq!((shown(&mut s, "general_tolerances"), shown(&mut s, "document_type")), (json!(note), json!(kind)), "{name}");
+        let text = printed(&s);
+        assert!(text.contains(note) && text.contains(kind) && !text.contains("Unless stated"), "{name}: {text}");
+    }
+    let window = |s: &mut Session| {
+        let at = sheet(s);
+        let scene = extract(s, at).unwrap().scene;
+        let block = scene.groups.iter().find(|g| g.kind == ObjectKind::TitleBlock).unwrap().clone();
+        block.items.into_iter().filter_map(|item| if let Item::Text(run) = item { Some(run.text) } else { None }).collect::<Vec<_>>().join(" ")
+    };
+    assert_eq!(window(&mut s), printed(&s), "the window's sheet is the export's");
+    // The last drawing made, an assembly's: back in English, then a note typed over the built-in one.
+    assert!(template::BUILT_INS.last().is_some_and(|name| template::assembly(name) == Some(true)));
+    let last = (ASSEMBLY_NOTE, ASSEMBLY_TYPE);
+    let english = |id: &str| json!(crate::paper_words::english(id).unwrap());
+    run(&mut s, "drawing.set", json!({"language": "en"}));
+    assert_eq!((shown(&mut s, "general_tolerances"), shown(&mut s, "document_type")), (english(last.0), english(last.1)), "reprinted");
+    assert!(window(&mut s).contains(english(last.1).as_str().unwrap()), "reprinted on the window's sheet");
+    typed(&mut s, json!({"general_tolerances": "ISO 2768-mK"}));
+    for language in ["fr", "de", "en"] {
+        run(&mut s, "drawing.set", json!({"language": language}));
+        assert_eq!(shown(&mut s, "general_tolerances"), json!("ISO 2768-mK"), "{language}");
+        assert!(printed(&s).contains("ISO 2768-mK"), "{language}");
+    }
+    run(&mut s, "drawing.set", json!({"language": "fr"}));
+    assert_eq!(shown(&mut s, "document_type"), json!("Plan d'assemblage"), "the type beside it is still built in");
+    let saved = serde_json::to_value(&s.drawing("test").unwrap().sheets[0].title_block_overrides).unwrap();
+    assert_eq!(saved, json!({"document_type": {"message": last.1}, "general_tolerances": "ISO 2768-mK"}));
 }

@@ -1143,7 +1143,7 @@ fn a_plate_with_a_grid_of_holes_exports_as_dxf() {
 fn every_word_a_drawing_prints_comes_from_its_language() {
     use std::collections::{BTreeMap, BTreeSet};
 
-    use solidcraft_doc::drawing::template::{self, ASSEMBLY_NOTE, ASSEMBLY_TYPE, PART_NOTE, PART_TYPE};
+    use solidcraft_doc::drawing::template;
     use solidcraft_geom::drawing_sheet::{PaperSize, SheetSize};
     use solidcraft_geom::paper::{Group, Item};
     use solidcraft_geom::table::BALLOONED;
@@ -1155,6 +1155,9 @@ fn every_word_a_drawing_prints_comes_from_its_language() {
     const TYPED: [&str; 5] = ["Plate", "Bolt", "First issue", "JS", "AB"];
     /// Allowed: the drawing's language as its Language cell writes it, an identifier.
     const LANGUAGE_CELL: &str = "QPS-PLOC";
+    /// Allowed: design data a sheet reads, printed as the screen shows it: the default material's
+    /// name, in the Material cell and the parts list's MATERIAL.
+    const DESIGN_DATA: [(&str, &str); 1] = [("Default", "design data: the screen doesn't translate it either; #<new issue>")];
     /// Allowed: unit symbols.
     const SYMBOLS: [&str; 3] = ["x", "mm", "kg"];
 
@@ -1202,15 +1205,9 @@ fn every_word_a_drawing_prints_comes_from_its_language() {
     let sizes: Vec<&str> = PaperSize::ALL.iter().map(|size| size.label()).collect();
     // Still to translate: words SolidCraft gives a drawing that print in English whatever its language,
     // each a named follow-up of #19884 (review.md, "Slice 3 build (G2)").
-    let to_translate = [
-        (PART_NOTE, "a part template's general tolerances, typed over their cell (slice 2, deviation 1)"),
-        (ASSEMBLY_NOTE, "an assembly template's general tolerances, typed over their cell (slice 2, deviation 1)"),
-        (PART_TYPE, "a part template's document type, typed over its cell (slice 2, deviation 1)"),
-        (ASSEMBLY_TYPE, "an assembly template's document type, typed over its cell (slice 2, deviation 1)"),
-        ("Untitled", "the design's default name, in the Title and Identification number cells (plan §4, slice 4)"),
-        ("Default", "the default material's name, in the Material cell and the parts list's MATERIAL (plan §9)"),
-    ];
-    let listed: Vec<&str> = to_translate.iter().map(|(phrase, _)| *phrase).chain(TYPED).chain(sizes.iter().copied()).chain([LANGUAGE_CELL]).collect();
+    let to_translate = [("Untitled", "the design's default name, in the Title and Identification number cells (plan §4, slice 4)")];
+    let listed: Vec<&str> =
+        to_translate.iter().chain(&DESIGN_DATA).map(|(phrase, _)| *phrase).chain(TYPED).chain(sizes.iter().copied()).chain([LANGUAGE_CELL]).collect();
     let (mut wrapped, mut found, mut stray) = (BTreeSet::new(), BTreeSet::new(), BTreeMap::new());
     let mut walk = |at: &str, groups: &[Group]| {
         for group in groups {

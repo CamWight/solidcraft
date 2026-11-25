@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::json;
-use solidcraft_geom::cell::Format;
+use solidcraft_geom::cell::{Format, PaperText};
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile, Orientation, PaperSize};
 use solidcraft_geom::drawing_view::{NamedView, ProjectedSide};
 use solidcraft_geom::title_block::default_block;
@@ -274,14 +274,22 @@ fn unknown_fields_and_overrides_are_refused() {
     let refusal = Drawing::from_json(&v.to_string()).unwrap_err().to_string();
     assert!(refusal.contains("cell `mass`: the component has no field `weight`"), "{refusal}");
     // Overrides: a cell's name, a cell's text.
-    Arc::make_mut(&mut d.sheets[0]).title_block_overrides.insert("material".into(), "See note 3".into());
+    Arc::make_mut(&mut d.sheets[0]).title_block_overrides.insert("material".into(), PaperText::typed("See note 3"));
     let saved = d.to_json().unwrap();
     assert_eq!(Drawing::from_json(&saved).unwrap(), d);
-    let refusals =
-        [("weight", "x", "no text cell `weight`"), ("projection", "x", "no text cell `projection`"), ("material", "a\u{7}", "control character")];
+    // A built-in message (#19884) is held to an id's rule, and its id counts toward a cell's bytes.
+    let id = "a built-in message's id is lowercase letters, digits, underscores and dots, at most 128 in all";
+    let refusals = [
+        ("weight", PaperText::typed("x"), "no text cell `weight`"),
+        ("projection", PaperText::typed("x"), "no text cell `projection`"),
+        ("material", PaperText::typed("a\u{7}"), "control character"),
+        ("material", PaperText::built_in("Drawing.Paper"), id),
+        ("material", PaperText::built_in(&"a".repeat(129)), id),
+        ("material", PaperText::built_in(&"a".repeat(4097)), "a cell's text is at most 4096 bytes"),
+    ];
     for (cell, text, why) in refusals {
         let mut wrong = d.clone();
-        Arc::make_mut(&mut wrong.sheets[0]).title_block_overrides.insert(cell.into(), text.into());
+        Arc::make_mut(&mut wrong.sheets[0]).title_block_overrides.insert(cell.into(), text);
         let refusal = wrong.validate().unwrap_err().to_string();
         assert!(refusal.contains(why), "{refusal}");
     }

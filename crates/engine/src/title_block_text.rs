@@ -2,7 +2,8 @@
 //! labels and values set on paper by the cell text rule ([`solidcraft_geom::cell`]), in the
 //! drawing's font and language.
 //!
-//! - [`shown`] works out each text cell's text: the text typed over it on the sheet, or its content
+//! - [`shown`] works out each text cell's text: the text given over it on the sheet (typed, or a
+//!   built-in template's words in the drawing's language, [`crate::paper_words`]), or its content
 //!   with each field read ([`read`], [`Values::text`]). `drawing.inspect` lists it, and the sheet scene
 //!   sets it. A note's text reads its fields by the same [`read`].
 //! - [`lay`] measures each label as one line at its place (a built-in one in the drawing's
@@ -76,8 +77,8 @@ impl Set {
 }
 
 /// The text cells of sheet `at`'s title block as the sheet shows them, in the block's order: each
-/// the text typed over it, or its content as [`read`] reads it. A cell that shows a logo shows no
-/// text (`TextCell::image`).
+/// the text given over it, in the drawing's language when it is a built-in message, or its content
+/// as [`read`] reads it. A cell that shows a logo shows no text (`TextCell::image`).
 pub fn shown(s: &Session, tree: &mut Tree<'_>, d: &Drawing, at: usize) -> Vec<CellText> {
     let mut out = Vec::new();
     shown_with(s, tree, d, at, |cell, _, _| out.push(cell));
@@ -101,7 +102,10 @@ pub fn shown_with(s: &Session, tree: &mut Tree<'_>, d: &Drawing, at: usize, mut 
         for &(name, content) in &texts {
             let value = values.text(content);
             let cell = match sheet.title_block_overrides.get(name) {
-                Some(typed) => CellText { name: name.clone(), text: typed.clone(), replaced: Some(value) },
+                Some(over) => {
+                    let text = crate::paper_words::resolve(&d.language, over).into_owned();
+                    CellText { name: name.clone(), text, replaced: Some(value) }
+                }
                 None => CellText { name: name.clone(), text: value, replaced: None },
             };
             each(cell, content, values);

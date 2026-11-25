@@ -1,7 +1,8 @@
 //! The words a drawing prints that SolidCraft gives it (#19884): its title blocks' labels, its
-//! tables' headings and its view labels' words, saved as built-in messages ([`PaperText`]) and
-//! printed in the drawing's language wherever a sheet is laid out, so a change of the language
-//! reprints them. Text someone typed prints as typed, in every language.
+//! tables' headings, its view labels' words and a built-in template's note and document type, saved
+//! as built-in messages ([`PaperText`]) and printed in the drawing's language wherever a sheet is
+//! laid out, so a change of the language reprints them. Text someone typed prints as typed, in every
+//! language.
 //!
 //! - [`resolve`] is the one rule every layout calls: typed text as it is; a message in the
 //!   drawing's language, from the catalog the host installed (exact tag, then its base language),
@@ -20,8 +21,9 @@ use solidcraft_geom::cell::PaperText;
 use solidcraft_geom::title_block::TitleBlock;
 
 /// The built-in paper messages and their English text: the labels of the built-in title blocks
-/// (`drawing.paper.cell.<cell>`), the headings of a new table (`drawing.paper.heading.<column>`) and
-/// the words of a new view label (`drawing.paper.view_label.*`).
+/// (`drawing.paper.cell.<cell>`), the headings of a new table (`drawing.paper.heading.<column>`), the
+/// words a built-in template gives its cells (`drawing.paper.template.*`) and the words of a new view
+/// label (`drawing.paper.view_label.*`).
 pub const MESSAGES: &[(&str, &str)] = &[
     ("drawing.paper.cell.approved_by", "Approved by"),
     ("drawing.paper.cell.created_by", "Created by"),
@@ -52,6 +54,10 @@ pub const MESSAGES: &[(&str, &str)] = &[
     ("drawing.paper.heading.name", "NAME"),
     ("drawing.paper.heading.quantity", "QTY"),
     ("drawing.paper.heading.revision", "REV"),
+    ("drawing.paper.template.assembly_note", "Unless stated: assembled positions ±0.5 mm, angles ±1°. Part tolerances are on the part drawings."),
+    ("drawing.paper.template.assembly_type", "Assembly drawing"),
+    ("drawing.paper.template.part_note", "Unless stated: linear ±0.2 mm, angles ±0.5°. Break sharp edges 0.2 mm."),
+    ("drawing.paper.template.part_type", "Part drawing"),
     ("drawing.paper.view_label.detail", "DETAIL"),
     ("drawing.paper.view_label.scale", "SCALE"),
     ("drawing.paper.view_label.view", "VIEW"),
@@ -122,7 +128,10 @@ pub(crate) fn install_test_catalogs() {
         r#"{"drawing.paper.cell.title": "Titre", "drawing.paper.cell.legal_owner": "Propriétaire légal",
             "drawing.paper.heading.item": "REP", "drawing.paper.heading.quantity": "QTÉ",
             "drawing.paper.view_label.view": "VUE", "drawing.paper.view_label.detail": "DÉTAIL",
-            "drawing.paper.view_label.scale": "ÉCHELLE"}"#,
+            "drawing.paper.view_label.scale": "ÉCHELLE",
+            "drawing.paper.template.part_note": "Sauf indication contraire : linéaire ±0.2 mm, angles ±0.5°. Casser les arêtes vives 0.2 mm.",
+            "drawing.paper.template.assembly_note": "Sauf indication contraire : positions d'assemblage ±0.5 mm, angles ±1°. Les tolérances des pièces figurent sur les plans de pièces.",
+            "drawing.paper.template.part_type": "Plan de pièce", "drawing.paper.template.assembly_type": "Plan d'assemblage"}"#,
     );
     static GERMAN: Catalog = Catalog::new(
         "de",
@@ -147,14 +156,16 @@ pub(crate) fn install_test_catalogs() {
 mod tests {
     use solidcraft_doc::drawing::SheetComponent;
     use solidcraft_doc::drawing::table::{Kind, MassFormat, PartsList};
+    use solidcraft_doc::drawing::template::{BUILT_INS, built_in};
     use solidcraft_doc::drawing::view::{DETAIL_WORDS, ViewLabel};
     use solidcraft_geom::title_block::{compact_block, default_block};
 
     use super::*;
 
-    /// Every built-in message the built-in blocks, a new table and a new view label name has its
-    /// English here (G1): a message without it would print its id in the CLI. The app's tests keep
-    /// this English equal to the catalog's and check every language has the words.
+    /// Every built-in message the built-in blocks, a new table, a new view label and the built-in
+    /// templates' cells name has its English here (G1): a message without it would print its id in
+    /// the CLI. The app's tests keep this English equal to the catalog's and check every language has
+    /// the words.
     #[test]
     fn every_built_in_paper_word_has_its_english() {
         let list = Kind::PartsList(PartsList {
@@ -170,7 +181,12 @@ mod tests {
         named.extend(default_block().cells.into_iter().chain(compact_block().cells).filter_map(|cell| cell.label).map(|label| label.text));
         named.extend([list, Kind::Revision].iter().flat_map(|kind| kind.default_table().columns).map(|column| column.heading));
         named.extend([label.words, label.scale_words, PaperText::built_in(DETAIL_WORDS)]);
-        assert_eq!(named.len(), 18 + 12 + 12 + 3);
+        // Each template's note and document type, over its first sheet's cells.
+        for name in BUILT_INS {
+            let template = built_in(name).unwrap_or_else(|| panic!("no built-in {name}")).unwrap();
+            named.extend(template.sheets.iter().flat_map(|sheet| sheet.title_block_overrides.values().cloned()));
+        }
+        assert_eq!(named.len(), 18 + 12 + 12 + 3 + 10 * 2);
         for text in &named {
             let id = text.message().unwrap_or_else(|| panic!("{text:?} is typed: a built-in word is a message"));
             assert!(english(id).is_some(), "{id} has no English");

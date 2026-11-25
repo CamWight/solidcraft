@@ -12,9 +12,10 @@
 //!
 //! The built-ins ([`BUILT_INS`]) are made in code when asked for, never stored: ISO A4 to A0, each
 //! for a part and for an assembly, one sheet with the ISO border and the built-in title block
-//! ([`default_block`](title_block::default_block)), the kind's general tolerances typed over its
-//! cell ([`PART_NOTE`], [`ASSEMBLY_NOTE`]) and its document type over its type cell ([`PART_TYPE`],
-//! [`ASSEMBLY_TYPE`]). A part's drawing starts from ISO A3 and an assembly's from
+//! ([`default_block`](title_block::default_block)), the kind's general tolerances over its cell
+//! ([`PART_NOTE`], [`ASSEMBLY_NOTE`]) and its document type over its type cell ([`PART_TYPE`],
+//! [`ASSEMBLY_TYPE`]), each a built-in message that prints in the drawing's language (#19884) until
+//! someone types over it. A part's drawing starts from ISO A3 and an assembly's from
 //! ISO A2 ([`default_for`]). A drawing saved as a template replaces or changes them: a copy of a
 //! built-in with a company's changes, its own note among them, is a template like any other. A later
 //! built-in never changes a drawing made from an earlier one: a drawing keeps copies, never names.
@@ -24,7 +25,7 @@ use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use solidcraft_geom::cell::Part;
+use solidcraft_geom::cell::{PaperText, Part};
 use solidcraft_geom::drawing_sheet::{self, DrawingBorderProfile, Orientation, PaperSize};
 use solidcraft_geom::revision::RevisionRecord;
 use solidcraft_geom::title_block::{self, CellKind, TitleBlock};
@@ -54,15 +55,17 @@ const BUILT_IN_SEED: u64 = 3875;
 const SIZES: [(PaperSize, &str); 5] =
     [(PaperSize::A4, "A4"), (PaperSize::A3, "A3"), (PaperSize::A2, "A2"), (PaperSize::A1, "A1"), (PaperSize::A0, "A0")];
 
-/// The general tolerances a part's built-ins carry.
-pub const PART_NOTE: &str = "Unless stated: linear ±0.2 mm, angles ±0.5°. Break sharp edges 0.2 mm.";
-/// The general tolerances an assembly's built-ins carry.
-pub const ASSEMBLY_NOTE: &str = "Unless stated: assembled positions ±0.5 mm, angles ±1°. Part tolerances are on the part drawings.";
-/// The title block cell the notes are typed over.
+/// The built-in message of the general tolerances a part's built-ins carry ("Unless stated: linear
+/// ±0.2 mm, …" in English).
+pub const PART_NOTE: &str = "drawing.paper.template.part_note";
+/// The built-in message of the general tolerances an assembly's built-ins carry.
+pub const ASSEMBLY_NOTE: &str = "drawing.paper.template.assembly_note";
+/// The title block cell the notes are given over.
 const TOLERANCES_CELL: &str = "general_tolerances";
-/// What a part's built-ins and an assembly's call their document, typed over the block's type cell.
-pub const PART_TYPE: &str = "Part drawing";
-pub const ASSEMBLY_TYPE: &str = "Assembly drawing";
+/// The built-in messages a part's built-ins and an assembly's call their document by ("Part drawing",
+/// "Assembly drawing"), over the block's type cell.
+pub const PART_TYPE: &str = "drawing.paper.template.part_type";
+pub const ASSEMBLY_TYPE: &str = "drawing.paper.template.assembly_type";
 const TYPE_CELL: &str = "document_type";
 
 /// The built-in a new drawing starts from when nothing else is chosen: ISO A3 for a part, ISO A2 for
@@ -265,16 +268,16 @@ pub fn built_in(name: &str) -> Option<Result<Drawing>> {
     Some(made(&title, drawing_sheet::Sheet::standard(size, orientation), note, kind))
 }
 
-/// One sheet of `paper` with the ISO border and the built-in title block, `note` typed over its
-/// general tolerances and `kind` over its document type.
+/// One sheet of `paper` with the ISO border and the built-in title block, the built-in messages
+/// `note` over its general tolerances and `kind` over its document type.
 fn made(title: &str, paper: drawing_sheet::Sheet, note: &str, kind: &str) -> Result<Drawing> {
     let mut id_source = IdSource::seeded(BUILT_IN_SEED);
     let mut d = Drawing::new(title, "en", "Sheet 1", paper, Some(DrawingBorderProfile::iso()), &BTreeSet::new(), &mut id_source)?;
     if let Some(first) = d.sheets.first_mut() {
         let first = Arc::make_mut(first);
         first.title_block = Some(title_block::default_block());
-        first.title_block_overrides.insert(TOLERANCES_CELL.into(), note.into());
-        first.title_block_overrides.insert(TYPE_CELL.into(), kind.into());
+        first.title_block_overrides.insert(TOLERANCES_CELL.into(), PaperText::built_in(note));
+        first.title_block_overrides.insert(TYPE_CELL.into(), PaperText::built_in(kind));
     }
     check(&d)?;
     Ok(d)

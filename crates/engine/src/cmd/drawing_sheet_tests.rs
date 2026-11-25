@@ -341,7 +341,7 @@ fn the_title_block_has_the_iso_7200_cells() {
     let own = |name: &str| shown.get(name).unwrap_or_else(|| panic!("no cell {name}")).clone();
     assert_eq!(own("scale"), ("1:2".into(), None));
     assert_eq!(own("language"), ("EN".into(), None));
-    assert_eq!(own("document_type").0, solidcraft_doc::drawing::template::PART_TYPE);
+    assert_eq!(Some(own("document_type").0.as_str()), crate::paper_words::english(solidcraft_doc::drawing::template::PART_TYPE));
     assert_eq!((own("document_status").0.as_str(), own("department").0.as_str(), own("revision").0.as_str()), ("", "", ""));
     run(&mut s, "drawing.revision.add", json!({"set": {"revision": "B"}}));
     assert_eq!(cells(&mut s)["revision"].0, "B");
@@ -395,7 +395,8 @@ fn a_title_blocks_cells_read_the_model() {
     let read = ["title", "identification_number", "material", "finish", "mass", "sheet", "general_tolerances", "legal_owner"];
     // The design places components, so its general tolerances are the assembly's note; with no number
     // of its own, the drawing is numbered by the component's name.
-    let expected = ["Block", "Block", "Steel", "Zinc plated", "0.40 kg", "1/1", solidcraft_doc::drawing::template::ASSEMBLY_NOTE, ""];
+    let note = crate::paper_words::english(solidcraft_doc::drawing::template::ASSEMBLY_NOTE).unwrap();
+    let expected = ["Block", "Block", "Steel", "Zinc plated", "0.40 kg", "1/1", note, ""];
     assert_eq!(shown(&mut s, &read), expected);
     in_the_model(&mut s, "component.metadata.set", json!({"component": "Gauge", "bom_type": "reference"}));
     in_the_model(&mut s, "component.metadata.set", json!({"component": "Block", "properties": {"finish": null}}));
@@ -425,7 +426,7 @@ fn a_title_blocks_cells_read_the_model() {
     let title = json!({"sheet": "Sheet 1", "title_block_overrides": {"title": "Bracket, left"}});
     run(&mut s, "drawing.sheet.set", title.clone());
     run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block": block()}));
-    assert_eq!(overrides(&s), BTreeMap::from([("title".to_string(), "Bracket, left".to_string())]));
+    assert_eq!(overrides(&s), BTreeMap::from([("title".to_string(), solidcraft_geom::cell::PaperText::typed("Bracket, left"))]));
     run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block_overrides": {"title": null}}));
     assert!(overrides(&s).is_empty());
     run(&mut s, "drawing.sheet.set", title.clone());

@@ -27,6 +27,12 @@ fn tolerances(made: &Value) -> Value {
     cells.iter().find(|cell| cell["name"] == "general_tolerances").unwrap()["text"].clone()
 }
 
+/// A built-in template's note as these drawings print it: in English, the language of the engine's
+/// test catalogs for every language here but French (`paper_words::install_test_catalogs`).
+fn printed(note: &str) -> Value {
+    json!(crate::paper_words::english(note).unwrap())
+}
+
 /// A drawing starts from the template named, else its kind's: a part's on ISO A3 with the part
 /// note over its general tolerances, an assembly's on ISO A2 with the assembly note, which
 /// `drawing.template.list` marks for the design. It keeps the template's projection unless given
@@ -46,16 +52,16 @@ fn a_drawing_starts_from_a_template() {
     assert_eq!(marked, [json!({"name": "iso-a3-part", "title": "ISO A3", "assembly": false, "default": true})]);
     let made = run(&mut s, "drawing.create", json!({}));
     assert_eq!((&made["sheets"][0]["size_mm"], &made["projection"]), (&json!([420.0, 297.0]), &json!("third")));
-    assert_eq!(tolerances(&made), json!(template::PART_NOTE));
+    assert_eq!(tolerances(&made), printed(template::PART_NOTE));
     run(&mut s, "drawing.close", json!({}));
     let made = run(&mut s, "drawing.create", json!({"template": "iso-a4-assembly", "projection": "first", "language": "de"}));
     let sheet = &made["sheets"][0];
     assert_eq!((&sheet["size_mm"], &sheet["orientation"]), (&json!([210.0, 297.0]), &json!("portrait")), "the one named wins");
-    assert_eq!((&made["projection"], &made["language"], tolerances(&made)), (&json!("first"), &json!("de"), json!(template::ASSEMBLY_NOTE)));
+    assert_eq!((&made["projection"], &made["language"], tolerances(&made)), (&json!("first"), &json!("de"), printed(template::ASSEMBLY_NOTE)));
     assert_eq!(open_one(&s).sheets[0].title_block, Some(solidcraft_geom::title_block::default_block()), "the built-in block");
     run(&mut s, "drawing.close", json!({}));
     let made = run(&mut s, "drawing.create", json!({"template": "iso-a1"}));
-    assert_eq!((&made["sheets"][0]["size_mm"], tolerances(&made)), (&json!([841.0, 594.0]), json!(template::PART_NOTE)), "an older name");
+    assert_eq!((&made["sheets"][0]["size_mm"], tolerances(&made)), (&json!([841.0, 594.0]), printed(template::PART_NOTE)), "an older name");
     let (undo, before) = (s.undo.len(), s.doc.drawings.clone());
     for old in ["iso-b2", "iso-a3-parts", "iso-a5-part"] {
         assert!(refused(&mut s, "drawing.create", json!({"template": old})).contains(&format!("no template `{old}`")), "{old}");
@@ -75,7 +81,7 @@ fn a_drawing_starts_from_a_template() {
     assert_eq!(default(&mut s).1.iter().map(|t| t["name"].clone()).collect::<Vec<_>>(), [json!("iso-a2-assembly")]);
     let made = run(&mut s, "drawing.create", json!({}));
     assert_eq!((&made["sheets"][0]["size_mm"], &made["projection"]), (&json!([594.0, 420.0]), &json!("third")));
-    assert_eq!(tolerances(&made), json!(template::ASSEMBLY_NOTE));
+    assert_eq!(tolerances(&made), printed(template::ASSEMBLY_NOTE));
 }
 
 /// A one-part STEP draws as a part (#19753), rounded or not; two parts, or one beside a body, as an assembly.
@@ -89,8 +95,8 @@ fn an_opened_step_part_draws_from_the_part_template() {
         run(s, "drawing.close", json!({}));
         (made["sheets"][0]["size_mm"].clone(), tolerances(&made))
     };
-    let part = (json!([420.0, 297.0]), json!(template::PART_NOTE));
-    let assembly = (json!([594.0, 420.0]), json!(template::ASSEMBLY_NOTE));
+    let part = (json!([420.0, 297.0]), printed(template::PART_NOTE));
+    let assembly = (json!([594.0, 420.0]), printed(template::ASSEMBLY_NOTE));
 
     let mut s = Session::default();
     run(&mut s, "doc.open", json!({"path": step}));
