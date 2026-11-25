@@ -1046,7 +1046,9 @@ fn a_pictorial_view_saves_its_parent_and_diagonal_and_resolves_isometric() {
 /// A pictorial view saves its axonometry only when it isn't isometric (an older drawing's pictorial
 /// view is isometric): `"dimetric"` and `{"scales": [x, y, depth]}` read back as saved, the same
 /// bytes, and resolve to `pictorial_basis` in that axonometry. An unknown axonometry, scales that
-/// aren't three, or scales no view shows are refused, the last with the size that fits.
+/// aren't three, or scales no view shows are refused, the last with the size that fits. So are
+/// scales whose corner has no horizontal (1 : 1e-300 : 1), on reading and in memory, before such a
+/// view is ever drawn.
 #[test]
 fn a_pictorial_views_axonometry_is_saved_when_not_isometric() {
     let (mut d, _, [front, _, _, iso]) = four();
@@ -1081,6 +1083,11 @@ fn a_pictorial_views_axonometry_is_saved_when_not_isometric() {
         "{impossible}"
     );
     assert_eq!(refused(&d, |v| v["views"][at]["kind"]["pictorial"]["axonometry"] = json!("isometric")), "read");
+    let flat = refused(&d, |v| v["views"][at]["kind"]["pictorial"]["axonometry"] = json!({"scales": [1.0, 1e-300, 1.0]}));
+    assert!(flat.contains(&format!("view {iso_id}: no view from the corner")) && flat.contains("no horizontal"), "{flat}");
+    let axonometry = Axonometry::Scales([1.0, 1e-300, 1.0]);
+    view_mut(&mut d, iso).kind = ViewKind::Pictorial { parent: front, diagonal: Diagonal::AboveRight, axonometry };
+    assert!(d.validate().unwrap_err().to_string().contains("no horizontal"));
 }
 
 /// The record's rules for a pictorial view: it is placed at a point, its parent is one of the

@@ -41,7 +41,7 @@ use solidcore_record::{Plane, Vec2, Vec3};
 use solidcraft_geom::cell::{Projection, check_label};
 use solidcraft_geom::drawing_detail::Boundary;
 use solidcraft_geom::drawing_sheet::view_letter;
-use solidcraft_geom::drawing_view::{ProjectedSide, Scale, is_paper_coordinate, projected_basis};
+use solidcraft_geom::drawing_view::{NamedView, ProjectedSide, Scale, is_paper_coordinate, projected_basis};
 use solidcraft_geom::paper::MAX_SIDE_MM;
 use solidcraft_geom::paper::line::LineGroup;
 use solidcraft_render::VisualStyle;
@@ -730,7 +730,9 @@ impl Drawing {
             ViewKind::Pictorial { parent, axonometry, .. } => {
                 self.chain_of(view.id)?;
                 self.can_project_from(*parent)?;
-                axonometry.corner()?;
+                // The rule the view resolves with. Whether its corner has a horizontal depends only on
+                // the axonometry, not on the parent or the diagonal, so one unit frame decides it.
+                pictorial_basis(&NamedView::Front.basis(), (1.0, 1.0), self.projection, *axonometry)?;
                 require(matches!(view.place, ViewPlace::At(_)), || "a pictorial view is placed at a point: it isn't lined up with its parent".into())
             }
             ViewKind::Auxiliary { parent, toward } => {
