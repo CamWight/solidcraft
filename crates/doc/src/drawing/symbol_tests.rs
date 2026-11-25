@@ -392,6 +392,17 @@ fn the_placements_rules_are_kept_on_reading() {
     assert_eq!(set("answers", json!({"rev": "x".repeat(4096)})), "read");
     let line = rule("its answer to `rev`: a label is one line of at most 4096 bytes");
     assert_eq!([set("answers", json!({"rev": "a\nb"})), set("answers", json!({"rev": "x".repeat(4097)}))], [line.clone(), line]);
+    // An angle at exactly the bound, set in memory, is saved and opens again unchanged: the record's
+    // limit and the file's own number check agree at the bound itself.
+    for angle in [MAX_REAL, -MAX_REAL] {
+        let mut edge = d.clone();
+        let at = edge.placed_symbols.index_of(on_view).unwrap();
+        Arc::make_mut(edge.placed_symbols.get_mut(at).unwrap()).angle = angle;
+        edge.validate().unwrap();
+        let opened = Drawing::from_json(&edge.to_json().unwrap()).unwrap();
+        assert_eq!(opened, edge, "{angle}");
+        assert_eq!(opened.placed_symbols.iter().find(|p| p.id == on_view).unwrap().angle, angle);
+    }
     // An angle the file's own number check refuses on reading (NaN and infinity can't even be
     // written as JSON) is refused before it is saved, so a saved drawing always opens again.
     for angle in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, MAX_REAL * (1.0 + f64::EPSILON), -1e300] {
