@@ -122,7 +122,8 @@ pub fn read<'c>(s: &Session, tree: &mut Tree<'_>, d: &Drawing, at: usize, conten
 
 /// `answer` given what sheet `at` of `d` reads its fields from ([`Values`]), for `contents`: the
 /// component the sheet documents, in the design its source names ([`Session::drawn`]; one that
-/// can't be read has nothing to show), weighed in `tree`, the tree of `s`'s design, only when one of
+/// can't be read has nothing to show), its name as the drawing prints it
+/// ([`crate::paper_words::given_name`]), weighed in `tree`, the tree of `s`'s design, only when one of
 /// them reads its material or mass, and its sheet metal bodies read ([`sheet_metal`]) only when one
 /// reads a sheet metal field. [`read`] and a note's inspect read through this one rule.
 pub fn with_values<'c, R>(
@@ -161,6 +162,16 @@ pub fn with_values<'c, R>(
         }
         (Some(None), _) => Documented::Gone,
         _ => Documented::Nothing,
+    };
+    // Its name as the drawing prints it: a default name in the drawing's language, as the screen
+    // shows it (#19884), so an untitled design's Title cell reads "Sans titre" in French.
+    let name = match component {
+        Documented::Present(component) => Some(crate::paper_words::given_name(&d.language, component.name)),
+        Documented::Gone | Documented::Nothing => None,
+    };
+    let component = match (component, name.as_deref()) {
+        (Documented::Present(component), Some(name)) => Documented::Present(Component { name, ..component }),
+        (other, _) => other,
     };
     answer(&Values { drawing: d, sheet: at, component })
 }

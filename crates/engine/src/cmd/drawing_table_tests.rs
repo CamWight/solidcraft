@@ -420,6 +420,40 @@ fn a_tables_headings_print_in_the_drawings_language_and_typed_ones_as_typed() {
     assert_eq!(saved.as_array().unwrap().iter().find(|column| column["name"] == "quantity").unwrap()["heading"], "Stück");
 }
 
+/// A parts list of an untitled design names its one row by the design's default name in the drawing's
+/// language (#19884), as the design's tab shows it, and a change of the language reprints it. A name
+/// someone typed prints as typed, even another language's word for Untitled.
+#[test]
+fn a_parts_list_names_an_untitled_design_in_the_drawings_language_and_a_typed_name_as_typed() {
+    use solidcraft_geom::paper::Item;
+
+    crate::paper_words::install_test_catalogs();
+    let mut s = Session::default();
+    s.execute("solid.box", &json!({"length": 10, "width": 10, "height": 10, "body_name": "Block"})).unwrap();
+    s.execute("drawing.create", &json!({})).unwrap();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    let table = id_of(&run(&mut s, ADD, json!({"sheet": ids::encode(sheet), "kind": "parts_list"})));
+    let printed_in = |s: &mut Session, language: &str| {
+        s.execute("drawing.set", &json!({"language": language})).unwrap();
+        let d = s.drawing("test").unwrap().clone();
+        let scene = crate::drawing_scene::build(s, &d, sheet).unwrap().scene;
+        let group = scene.groups.iter().find(|g| g.object == table).unwrap();
+        group.items.iter().filter_map(|item| if let Item::Text(run) = item { Some(run.text.clone()) } else { None }).collect::<Vec<_>>()
+    };
+    let has = |words: &[String], word: &str| words.iter().any(|one| one == word);
+    assert_eq!(s.doc.name, "Untitled");
+    for (language, name) in [("fr", "Sans titre"), ("de", "Ohne Titel"), ("en", "Untitled")] {
+        let printed = printed_in(&mut s, language);
+        assert!(has(&printed, name), "{language}: {printed:?}");
+        assert!(["Sans titre", "Ohne Titel", "Untitled"].iter().filter(|other| has(&printed, other)).count() == 1, "{language}: {printed:?}");
+    }
+    s.doc_mut().name = "Sans titre".into();
+    for language in ["de", "en"] {
+        let printed = printed_in(&mut s, language);
+        assert!(has(&printed, "Sans titre") && !has(&printed, "Ohne Titel"), "{language}: {printed:?}");
+    }
+}
+
 /// A word no font can set is left off and its table says why; the table and the rest of its words
 /// still draw. Here an override puts an unassigned code point in one cell.
 #[test]

@@ -11,9 +11,14 @@
 //!   ([`MESSAGES`]), which a test keeps equal to the catalog's, as `plugin::messages` does.
 //! - [`in_english`] reads a title block as English prints it, so a block a drawing saved before
 //!   this change, its labels typed in English, still counts as the built-in one.
+//! - [`default_name`] is the one rule for the names SolidCraft gives a design and its parts
+//!   (`Untitled`, `Sketch1`, `Body2`, `Component3`), which the screen and paper both ask: the
+//!   screen in its display order, paper ([`given_name`]) in reading order. So a design never named
+//!   prints "Sans titre" in a French drawing's Title cell and parts list, as its tab says.
 //!
 //! **Cost:** a message is a search of the installed catalogs' list (about 40) and a map lookup, about
-//! 40 a sheet, each time a sheet's text is laid out, never per frame.
+//! 40 a sheet, each time a sheet's text is laid out, never per frame. A name is three prefix checks,
+//! and a lookup only when it is a default name.
 
 use std::borrow::Cow;
 
@@ -88,6 +93,45 @@ fn translated(language: &str, id: &str) -> Option<&'static str> {
     })
 }
 
+/// `text` in a language when it is a name SolidCraft gives by default, else none: `Untitled`, a new
+/// design's name, as `ui.untitled`, and `Sketch1`, `Body2` and `Component3` as their kind's message
+/// with the number. `message` reads a message in that language (the screen's display order, or
+/// paper's reading order, [`given_name`]); none when the language lacks it leaves `text`, which is
+/// its English, as it is. Only the whole name, exactly as SolidCraft gives it: "Untitled bracket",
+/// "untitled" and another language's word for it ("Sans titre") are names someone typed. A name typed
+/// as exactly "Untitled" reads as the default, as a design under it counts as never named.
+pub fn default_name<'m>(text: &str, message: impl FnOnce(&'static str) -> Option<&'m str>) -> Option<String> {
+    let (untitled, id) = UNTITLED;
+    if text == untitled {
+        return message(id).map(str::to_string);
+    }
+    for (prefix, id) in NUMBERED_NAMES {
+        if let Some(number) = text.strip_prefix(prefix)
+            && !number.is_empty()
+            && number.chars().all(|c| c.is_ascii_digit())
+        {
+            // The number is digits only.
+            return message(id).map(|template| template.replace(NUMBER, number));
+        }
+    }
+    None
+}
+
+/// A new design's name and the message that says it in a language.
+pub(crate) const UNTITLED: (&str, &str) = ("Untitled", "ui.untitled");
+/// The default names SolidCraft numbers (`Sketch1`, `Body2`, `Component3`): the name before its
+/// number, and the message that says it in a language, with [`NUMBER`] where the number goes.
+const NUMBERED_NAMES: [(&str, &str); 3] = [("Sketch", "browser.sketch_name"), ("Body", "browser.body_name"), ("Component", "browser.component_name")];
+/// The one placeholder of a [`NUMBERED_NAMES`] message.
+const NUMBER: &str = "{number}";
+
+/// A name of the design or a part of it as a drawing written in `language` prints it: a default
+/// name ([`default_name`]) in that language, in reading order, as the screen shows it; any other
+/// name as given.
+pub fn given_name<'t>(language: &str, text: &'t str) -> Cow<'t, str> {
+    default_name(text, |id| translated(language, id)).map_or(Cow::Borrowed(text), Cow::Owned)
+}
+
 /// `block` as it prints in English, each label typed: two blocks that print the same in English are
 /// the same block, whichever of them types its labels and whichever names built-in messages.
 pub fn in_english(block: &TitleBlock) -> TitleBlock {
@@ -98,9 +142,9 @@ pub fn in_english(block: &TitleBlock) -> TitleBlock {
     english
 }
 
-/// The pseudo-language of the engine's test catalogs (G2, #19884): every paper message is its
-/// English between [`PSEUDO_OPEN`] and [`PSEUDO_CLOSE`], so a word on paper that isn't wrapped
-/// didn't come through [`resolve`]. `qps-ploc` is a pseudo-locale tag (`qps` is in BCP 47's
+/// The pseudo-language of the engine's test catalogs (G2, #19884): every paper message and default
+/// name ([`default_name`]) is its English between [`PSEUDO_OPEN`] and [`PSEUDO_CLOSE`], so a word on
+/// paper that isn't wrapped didn't come through [`resolve`] or [`given_name`]. `qps-ploc` is a pseudo-locale tag (`qps` is in BCP 47's
 /// private-use range).
 #[cfg(test)]
 pub(crate) const PSEUDO: &str = "qps-ploc";
@@ -111,10 +155,11 @@ pub(crate) const PSEUDO_OPEN: char = '‹';
 #[cfg(test)]
 pub(crate) const PSEUDO_CLOSE: char = '›';
 
-/// Catalogs for the engine's tests, which no host installs: English, French, German, Chinese and
-/// Traditional Chinese with the paper words they read, and [`PSEUDO`] with every one of [`MESSAGES`],
-/// made from them. One list, installed once per process, so tests running side by side agree; the
-/// system language is pinned to English first, as the app's own tests pin it.
+/// Catalogs for the engine's tests, which no host installs: English; French and German with the
+/// paper words and default names they read; Chinese and Traditional Chinese with a paper word;
+/// Hebrew, right to left, with one name; and [`PSEUDO`] with every one of [`MESSAGES`] and the
+/// default names, made from them. One list, installed once per process, so tests running side by side agree; the system
+/// language is pinned to English first, as the app's own tests pin it.
 #[cfg(test)]
 pub(crate) fn install_test_catalogs() {
     use std::collections::BTreeMap;
@@ -128,7 +173,8 @@ pub(crate) fn install_test_catalogs() {
         r#"{"drawing.paper.cell.title": "Titre", "drawing.paper.cell.legal_owner": "Propriétaire légal",
             "drawing.paper.heading.item": "REP", "drawing.paper.heading.quantity": "QTÉ",
             "drawing.paper.view_label.view": "VUE", "drawing.paper.view_label.detail": "DÉTAIL",
-            "drawing.paper.view_label.scale": "ÉCHELLE",
+            "drawing.paper.view_label.scale": "ÉCHELLE", "ui.untitled": "Sans titre",
+            "browser.component_name": "Composant{number}",
             "drawing.paper.template.part_note": "Sauf indication contraire : linéaire ±0.2 mm, angles ±0.5°. Casser les arêtes vives 0.2 mm.",
             "drawing.paper.template.assembly_note": "Sauf indication contraire : positions d'assemblage ±0.5 mm, angles ±1°. Les tolérances des pièces figurent sur les plans de pièces.",
             "drawing.paper.template.part_type": "Plan de pièce", "drawing.paper.template.assembly_type": "Plan d'assemblage"}"#,
@@ -139,17 +185,20 @@ pub(crate) fn install_test_catalogs() {
         r#"{"drawing.paper.cell.title": "Titel", "drawing.paper.cell.legal_owner": "Rechtlicher Eigentümer",
             "drawing.paper.heading.item": "POS.", "drawing.paper.heading.quantity": "MENGE",
             "drawing.paper.view_label.view": "ANSICHT", "drawing.paper.view_label.detail": "EINZELHEIT",
-            "drawing.paper.view_label.scale": "MASSSTAB"}"#,
+            "drawing.paper.view_label.scale": "MASSSTAB", "ui.untitled": "Ohne Titel"}"#,
     );
+    static HEBREW: Catalog = Catalog::new("he", "עברית", r#"{"ui.untitled": "ללא שם"}"#);
     static CHINESE: Catalog = Catalog::new("zh", "中文", r#"{"drawing.paper.view_label.view": "视图"}"#);
     static CHINESE_TRADITIONAL: Catalog = Catalog::new("zh-TW", "繁體中文", r#"{"drawing.paper.view_label.view": "視圖"}"#);
     static WRAPPED: OnceLock<Catalog> = OnceLock::new();
-    static LOCALES: OnceLock<[&Catalog; 6]> = OnceLock::new();
+    static LOCALES: OnceLock<[&Catalog; 7]> = OnceLock::new();
     let locales = LOCALES.get_or_init(|| {
-        let wrapped: BTreeMap<&str, String> = MESSAGES.iter().map(|(id, english)| (*id, format!("{PSEUDO_OPEN}{english}{PSEUDO_CLOSE}"))).collect();
+        let numbered = NUMBERED_NAMES.map(|(prefix, id)| (id, format!("{prefix}{NUMBER}")));
+        let english = MESSAGES.iter().map(|(id, english)| (*id, english.to_string())).chain([(UNTITLED.1, UNTITLED.0.to_string())]).chain(numbered);
+        let wrapped: BTreeMap<&str, String> = english.map(|(id, english)| (id, format!("{PSEUDO_OPEN}{english}{PSEUDO_CLOSE}"))).collect();
         let json = serde_json::to_string(&wrapped).unwrap_or_default();
         let pseudo = WRAPPED.get_or_init(|| Catalog::new(PSEUDO, "Pseudo", Box::leak(json.into_boxed_str())));
-        [&ENGLISH, &FRENCH, &GERMAN, &CHINESE, &CHINESE_TRADITIONAL, pseudo]
+        [&ENGLISH, &FRENCH, &GERMAN, &HEBREW, &CHINESE, &CHINESE_TRADITIONAL, pseudo]
     });
     solidcraft_ui_text::pin_system_language();
     solidcraft_ui_text::install(locales);
@@ -235,5 +284,33 @@ mod tests {
         assert_eq!([resolve("zh-TW", &view), resolve("zh", &view)], ["視圖", "视图"], "the exact tag's word, not its base language's");
         assert_eq!(resolve("fr", &PaperText::built_in("drawing.paper.cell.mass")), "Mass", "the test catalog lacks it");
         assert_eq!(resolve("ja", &title), "Title", "no catalog: English");
+    }
+
+    /// A name SolidCraft gives by default prints in the drawing's language (#19884), by its exact tag
+    /// or its base language, a number in its kind's word, and right-to-left text in reading order, not
+    /// the screen's display order. With no word for it, it prints as given, which is its English. Only
+    /// the whole name, exactly: another language's word for Untitled, Untitled in other capitals or
+    /// with more words, and a kind with no number are names someone typed, and print as typed.
+    #[test]
+    fn a_default_name_prints_in_the_drawings_language_and_a_typed_one_as_typed() {
+        install_test_catalogs();
+        assert_eq!(
+            [given_name("fr", "Untitled"), given_name("fr-CA", "Untitled"), given_name("de", "Untitled")],
+            ["Sans titre", "Sans titre", "Ohne Titel"]
+        );
+        assert_eq!(given_name("fr", "Component3"), "Composant3");
+        assert_eq!(given_name("he", "Untitled"), "ללא שם", "reading order");
+        for language in ["en", "ja", "xx", ""] {
+            for name in ["Untitled", "Component3", "Sketch1"] {
+                assert_eq!(given_name(language, name), name, "{language}: no word for it, so its English");
+            }
+        }
+        for typed in ["Sans titre", "Ohne Titel", "untitled", "UNTITLED", "Untitled bracket", " Untitled", "Component", "Component3a", "Bracket"] {
+            for language in ["fr", "de", "he", "en"] {
+                assert_eq!(given_name(language, typed), typed, "{language}: `{typed}` is typed");
+            }
+        }
+        assert_eq!(default_name("Body2", |id| (id == "browser.body_name").then_some("Corps {number}")).as_deref(), Some("Corps 2"));
+        assert_eq!(default_name("Body2", |_| None), None, "a language without the word");
     }
 }

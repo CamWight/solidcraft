@@ -123,20 +123,10 @@ pub trait LocaleNames {
 }
 
 /// The default names SolidCraft gives (`Untitled` for a new design, `Sketch1`, `Body2`,
-/// `Component3`), translated.
+/// `Component3`) in `locale`, in display order: the engine's one rule, which a drawing's paper asks
+/// too ([`solidcraft_engine::paper_words::default_name`]).
 fn default_name(locale: Locale, text: &str) -> Option<String> {
-    if text == "Untitled" {
-        return Some(locale.text("ui.untitled").to_string());
-    }
-    for (prefix, id) in [("Sketch", "browser.sketch_name"), ("Body", "browser.body_name"), ("Component", "browser.component_name")] {
-        if let Some(number) = text.strip_prefix(prefix)
-            && !number.is_empty()
-            && number.chars().all(|c| c.is_ascii_digit())
-        {
-            return Some(locale.format(id, &[("number", number)]));
-        }
-    }
-    None
+    solidcraft_engine::paper_words::default_name(text, |id| Some(locale.text(id)))
 }
 
 impl LocaleNames for Locale {
@@ -837,6 +827,28 @@ mod tests {
         // Only the whole default name: names people type stay as typed.
         assert_eq!(ja.given_name("Untitled bracket"), "Untitled bracket");
         assert_eq!(ja.given_name("Boss"), "Boss");
+    }
+
+    /// The screen and a drawing's paper show a default name alike (#19884): both ask the engine's one
+    /// rule, so in every left-to-right language an untitled design reads on its drawing as on its tab,
+    /// and so does each other name. Right to left, paper keeps the catalog's reading order, which the
+    /// screen turns into display order for egui.
+    #[test]
+    fn the_screen_and_paper_show_a_default_name_alike() {
+        use solidcraft_engine::paper_words::given_name as on_paper;
+        install();
+        let names = ["Untitled", "Sketch1", "Body2", "Component3", "Untitled bracket", "untitled", "Sans titre", "Boss"];
+        let left_to_right = LOCALES.iter().filter(|catalog| !catalog.messages().values().any(|text| bidi::has_rtl(text)));
+        for catalog in left_to_right {
+            let locale = Locale::for_language(catalog.id);
+            for name in names {
+                assert_eq!(locale.given_name(name), on_paper(catalog.id, name), "{}: {name}", catalog.id);
+            }
+        }
+        assert_eq!(on_paper("fr", "Untitled"), "Sans titre");
+        let hebrew = Locale::for_language("he");
+        assert_eq!(on_paper("he", "Untitled"), hebrew.catalog().messages()["ui.untitled"], "reading order");
+        assert_eq!(hebrew.given_name("Untitled"), hebrew.text("ui.untitled"), "display order");
     }
     use proc_macro2::{Delimiter, TokenStream, TokenTree};
     use std::collections::BTreeSet;

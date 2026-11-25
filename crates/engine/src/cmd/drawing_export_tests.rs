@@ -1119,8 +1119,8 @@ fn a_plate_with_a_grid_of_holes_exports_as_dxf() {
 
 /// G2, the paper pseudo-language (#19884, plan §1.9): every word SolidCraft gives a drawing prints
 /// through the drawing's language. In the test catalogs' pseudo-language
-/// ([`crate::paper_words::PSEUDO`]) each built-in message is its English between `‹` and `›`, so a
-/// word on paper that isn't wrapped was printed some other way.
+/// ([`crate::paper_words::PSEUDO`]) each built-in message and default name is its English between
+/// `‹` and `›`, so a word on paper that isn't wrapped was printed some other way.
 ///
 /// - It lays out every built-in template (part and assembly, A4 to A0), a sheet of every paper size
 ///   with each built-in title block, and on the assembly template's sheet, documenting the design, a
@@ -1133,8 +1133,8 @@ fn a_plate_with_a_grid_of_holes_exports_as_dxf() {
 /// - The words of each object's runs must be wrapped, a number or symbol, or on one of the lists
 ///   below, each entry with its reason. Each list entry must be found, so a word that comes to print
 ///   in the drawing's language drops its entry, as a fix drops its line from
-///   `tests/KNOWN_FAILING_TESTS`. Every built-in message that prints must be found wrapped, so a word
-///   left off the sheet can't pass unseen.
+///   `tests/KNOWN_FAILING_TESTS`. Every built-in message that prints, and the design's default name,
+///   must be found wrapped, so a word left off the sheet can't pass unseen.
 ///
 /// What it misses: an object the fixture doesn't lay out (a dimension, a note, a balloon, a revision
 /// tag, a sheet sketch or fill, a section's hatch, a hole callout) needs its line here, as
@@ -1149,7 +1149,7 @@ fn every_word_a_drawing_prints_comes_from_its_language() {
     use solidcraft_geom::table::BALLOONED;
     use solidcraft_io::paper::paper_pdf_pages_with;
 
-    use crate::paper_words::{MESSAGES, PSEUDO, PSEUDO_CLOSE, PSEUDO_OPEN};
+    use crate::paper_words::{MESSAGES, PSEUDO, PSEUDO_CLOSE, PSEUDO_OPEN, UNTITLED};
 
     /// Allowed: what the fixture typed or its design names, printed as given.
     const TYPED: [&str; 5] = ["Plate", "Bolt", "First issue", "JS", "AB"];
@@ -1204,8 +1204,9 @@ fn every_word_a_drawing_prints_comes_from_its_language() {
     // them otherwise (plan §4, slice 6).
     let sizes: Vec<&str> = PaperSize::ALL.iter().map(|size| size.label()).collect();
     // Still to translate: words SolidCraft gives a drawing that print in English whatever its language,
-    // each a named follow-up of #19884 (review.md, "Slice 3 build (G2)").
-    let to_translate = [("Untitled", "the design's default name, in the Title and Identification number cells (plan §4, slice 4)")];
+    // each a named follow-up of #19884 (review.md, "Slice 3 build (G2)"). None is left: a new one goes
+    // here with its reason.
+    let to_translate: [(&str, &str); 0] = [];
     let listed: Vec<&str> =
         to_translate.iter().chain(&DESIGN_DATA).map(|(phrase, _)| *phrase).chain(TYPED).chain(sizes.iter().copied()).chain([LANGUAGE_CELL]).collect();
     let (mut wrapped, mut found, mut stray) = (BTreeSet::new(), BTreeSet::new(), BTreeMap::new());
@@ -1315,8 +1316,10 @@ fn every_word_a_drawing_prints_comes_from_its_language() {
     let lines: Vec<String> = stray.iter().map(|(word, at)| format!("  {word} (first on {at})")).collect();
     assert!(lines.is_empty(), "printed outside the drawing's language and on no list:\n{}", lines.join("\n"));
     let ballooned = format!("drawing.paper.heading.{BALLOONED}");
-    let printed: BTreeSet<String> = MESSAGES.iter().filter(|(id, _)| *id != ballooned).map(|(_, english)| english.to_string()).collect();
-    assert_eq!(wrapped, printed, "every built-in word a sheet prints, in the drawing's language");
+    // The design is never named, so its Title and Identification number cells print its default name.
+    let messages = MESSAGES.iter().filter(|(id, _)| *id != ballooned).map(|(_, english)| *english);
+    let printed: BTreeSet<String> = messages.chain([UNTITLED.0]).map(str::to_string).collect();
+    assert_eq!(wrapped, printed, "every built-in word and default name a sheet prints, in the drawing's language");
     let unseen: Vec<&&str> = listed.iter().filter(|phrase| !found.contains(*phrase)).collect();
     assert!(unseen.is_empty(), "on a list but never printed, so its entry goes: {unseen:?}");
 }

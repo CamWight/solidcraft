@@ -405,3 +405,32 @@ fn a_templates_note_and_type_print_in_the_drawings_language_and_typed_ones_as_ty
     let saved = serde_json::to_value(&s.drawing("test").unwrap().sheets[0].title_block_overrides).unwrap();
     assert_eq!(saved, json!({"document_type": {"message": last.1}, "general_tolerances": "ISO 2768-mK"}));
 }
+
+/// An untitled design's Title cell prints its default name in the drawing's language (#19884), as the
+/// design's tab shows it, and so does the identification number, which reads the name without a part
+/// number; a change of the language reprints it. A name someone typed prints as typed, even one that is
+/// another language's word for Untitled, or Untitled in other capitals.
+#[test]
+fn an_untitled_designs_title_prints_in_the_drawings_language_and_a_typed_name_as_typed() {
+    crate::paper_words::install_test_catalogs();
+    let (mut s, sheet) = drawing();
+    let source = solidcraft_doc::ids::encode(s.drawing("test").unwrap().sources[0].id);
+    run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "documents": {"source": source, "component": 0}}));
+    assert_eq!(s.doc.name, "Untitled");
+    let count = |s: &Session, text: &str| runs(s, sheet).iter().filter(|r| r.text == text).count();
+    assert_eq!(count(&s, "Untitled"), 2, "English: the title and the identification number");
+    for (language, printed) in [("fr", "Sans titre"), ("de", "Ohne Titel"), ("en", "Untitled")] {
+        run(&mut s, "drawing.set", json!({"language": language}));
+        assert_eq!(count(&s, printed), 2, "{language}");
+        let title = cells(&mut s).into_iter().find(|c| c["name"] == "title").unwrap();
+        assert_eq!(title["text"], printed, "drawing.inspect lists what the sheet prints");
+    }
+    for typed in ["Sans titre", "untitled"] {
+        s.doc_mut().name = typed.into();
+        for language in ["de", "fr"] {
+            run(&mut s, "drawing.set", json!({"language": language}));
+            assert_eq!(count(&s, typed), 2, "{language}: `{typed}` is typed");
+            assert_eq!(count(&s, "Ohne Titel") + count(&s, "Untitled"), 0, "{language}: `{typed}`");
+        }
+    }
+}

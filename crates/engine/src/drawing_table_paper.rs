@@ -218,15 +218,34 @@ fn rows_of(s: &Session, d: &Drawing, record: &SheetTable) -> std::result::Result
     let mut tree = Tree::new(&s.doc, &state);
     let request = bom::Request { mass: shows_mass(&record.table), ..list.request() };
     // With its members, so each balloon finds its row.
-    let listed = bom::list_with(&mut tree, &request, true).map_err(|e| e.to_string())?;
+    let mut listed = bom::list_with(&mut tree, &request, true).map_err(|e| e.to_string())?;
     let reading = d.balloons_by_list();
     let counts: HashMap<String, usize> = balloons_by_row(reading.get(&record.id).map_or(&[], Vec::as_slice), &listed, &tree).into_iter().collect();
+    names_in(&d.language, &mut listed.rows);
     let mut rows = list.rows(&listed, s.doc.drawing_units(d));
     for row in &mut rows {
         let count = row.fields.get("item").and_then(|item| counts.get(item)).copied().unwrap_or(0);
         row.fields.insert(BALLOONED.to_string(), count.to_string());
     }
     Ok(rows)
+}
+
+/// `rows` and the rows under them, each name as a drawing written in `language` prints it
+/// ([`crate::paper_words::given_name`]): a design never named reads "Sans titre" in French, as its tab
+/// does. Each name before a row joins them, so one of several is still read whole. As deep as the list
+/// is, which `bom` weighs the same way.
+fn names_in(language: &str, rows: &mut [bom::Row]) {
+    for row in rows {
+        for name in &mut row.names {
+            // Only a default name changes.
+            let printed = match crate::paper_words::given_name(language, name.as_str()) {
+                std::borrow::Cow::Owned(printed) => printed,
+                std::borrow::Cow::Borrowed(_) => continue,
+            };
+            *name = printed;
+        }
+        names_in(language, &mut row.children);
+    }
 }
 
 /// Whether a column shows a row's mass, which is what makes a list weigh its parts.
