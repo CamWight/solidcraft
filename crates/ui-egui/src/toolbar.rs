@@ -681,7 +681,8 @@ impl FileAction {
 fn new_drawing(app: &mut SolveApp) {
     let entered = !crate::drawing_workspace::active(app);
     let made = crate::workspace::enter(app, "drawing").and_then(|()| {
-        app.run("drawing.create", json!({})).map(drop).inspect_err(|_| {
+        let params = crate::prefs::drawing_started_in_app(app, json!({}));
+        app.run("drawing.create", params).map(drop).inspect_err(|_| {
             if entered {
                 let _ = crate::workspace::enter(app, "design");
             }
@@ -3893,6 +3894,17 @@ mod header_report_tests {
         let first = h.app.run("drawing.inspect", json!({})).unwrap()["sheets"][0]["id"].clone();
         assert!(first.is_string());
         assert_eq!(crate::drawing_sheet_page::inspect(&h.app)["sheet"], first, "the first sheet is shown");
+    }
+
+    /// With the app in French, File › New Drawing makes a French drawing (#19884).
+    #[test]
+    fn file_menu_new_drawing_in_french_is_a_french_drawing() {
+        let mut h = crate::scenario::Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.language = "fr".into();
+        h.app.run("solid.box", json!({"length":40,"width":20,"height":3})).unwrap();
+        FileAction::NewDrawing.run(&mut h.app);
+        assert_eq!(h.app.session.drawing("drawing.inspect").ok().map(|d| d.language.as_str()), Some("fr"));
     }
 
     /// A New Drawing the command refuses (the preferred template is gone) leaves the user in Design

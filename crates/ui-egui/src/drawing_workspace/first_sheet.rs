@@ -211,7 +211,7 @@ pub(super) fn show_picker(app: &mut SolveApp, ctx: &egui::Context) {
 }
 
 fn create(app: &mut SolveApp, params: Value) -> bool {
-    match app.run("drawing.create", params) {
+    match app.run("drawing.create", crate::prefs::drawing_started_in_app(app, params)) {
         Ok(_) => {
             crate::drawing_sheet_page::fit(app);
             if app.preferences.design_sub_tab_sheets {

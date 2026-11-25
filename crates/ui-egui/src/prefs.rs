@@ -2095,7 +2095,7 @@ pub fn apply_new_design(app: &mut SolveApp) {
 /// template for a drawing of a part or of an assembly, as the design is one
 /// ([`template::is_assembly`]), in the preferred projection and the interface font when that is a
 /// family (drawings name fonts by family, never a file), unless it names them. A template it names
-/// keeps its own projection and font.
+/// keeps its own projection and font. The language is not here: [`drawing_started_in_app`].
 pub fn new_drawing_params(app: &SolveApp, mut params: Value) -> Value {
     let Some(given) = params.as_object_mut() else { return params };
     if !given.contains_key("template") {
@@ -2107,6 +2107,18 @@ pub fn new_drawing_params(app: &SolveApp, mut params: Value) -> Value {
         if solidcraft_engine::sketch::check_family(font).is_ok() {
             given.entry("font").or_insert_with(|| json!(font));
         }
+    }
+    params
+}
+
+/// The `drawing.create` of a drawing the person starts in the app (the first-sheet page's cards,
+/// File › New Drawing): written in the app's language, unless it names a language or a template,
+/// which keeps its own (#19884), so its built-in words print as the app shows its own. Only these:
+/// a script sent to the running app reaches [`new_drawing_params`] too, and makes the English
+/// drawing it makes from the command line.
+pub(crate) fn drawing_started_in_app(app: &SolveApp, mut params: Value) -> Value {
+    if let Some(given) = params.as_object_mut().filter(|given| !given.contains_key("template")) {
+        given.entry("language").or_insert_with(|| json!(solidcraft_ui_text::effective_language(&app.preferences.language)));
     }
     params
 }
@@ -12254,6 +12266,49 @@ mod tests {
         let first = solidcraft_engine::geom::cell::Projection::First;
         assert_eq!((family.1, file.1, none.1), (first, first, first), "a font file doesn't cost the projection");
         assert_eq!((family.2, file.2), (none.2, none.2), "the font is no undo step of its own");
+    }
+
+    /// A drawing the person starts in the app is written in the app's language (#19884), so its
+    /// built-in words print as the app shows them: the language chosen, tags with a region too, or
+    /// the system's for System (English in tests). A language it names wins, and a template it
+    /// names keeps its own, as the projection does. The language is no undo step of its own.
+    #[test]
+    fn new_drawings_take_the_apps_language() {
+        crate::i18n::install();
+        let drawn = |language: &str, params: Value| {
+            let mut app = SolveApp::new(solidcraft_engine::Session::default(), Default::default());
+            app.preferences.language = language.into();
+            app.run("solid.box", json!({"length": 40, "width": 30, "height": 10})).unwrap();
+            // As the first-sheet page's cards and File › New Drawing start one.
+            app.run("drawing.create", drawing_started_in_app(&app, params)).unwrap();
+            (app.session.drawing("test").unwrap().language.clone(), app.session.undo.len())
+        };
+        for language in ["fr", "ar", "zh-TW", "pt-BR", "en"] {
+            assert_eq!(drawn(language, json!({})).0, language);
+        }
+        assert_eq!(drawn(solidcraft_ui_text::SYSTEM, json!({})).0, "en", "the system's, English in tests");
+        assert_eq!(drawn("fr", json!({"language": "de"})).0, "de", "a language named wins");
+        assert_eq!(drawn("fr", json!({"template": "iso-a3-part"})).0, "en", "a template named keeps its own");
+        assert_eq!(drawn("fr", json!({})).1, drawn("en", json!({})).1, "no undo step of its own");
+    }
+
+    /// A script's drawing stays English while the app is French (#19884, scripts stay `en`): run
+    /// through the app as a script runs it, sent over the control channel, in a batch, and by the
+    /// engine alone, as the command line runs it. A language it names is still its own.
+    #[test]
+    fn scripts_sent_to_the_app_make_english_drawings() {
+        crate::i18n::install();
+        let mut h = crate::scenario::Harness::new();
+        h.app.preferences.language = "fr".into();
+        h.app.run("solid.box", json!({"length": 40, "width": 30, "height": 10})).unwrap();
+        assert_eq!(h.app.run("drawing.create", json!({})).unwrap()["language"], "en", "app.run, as a script");
+        let sent = h.call("engine.execute", json!({"command": "drawing.create", "params": {}}));
+        assert_eq!(sent["result"]["language"], "en", "the control channel: {sent}");
+        let batch = h.call("engine.batch", json!({"commands": [{"command": "drawing.create", "params": {"language": "de"}}]}));
+        assert_eq!(batch["result"]["results"][0]["language"], "de", "a language named: {batch}");
+        let mut engine = solidcraft_engine::Session::default();
+        engine.execute("solid.box", &json!({"length": 40, "width": 30, "height": 10})).unwrap();
+        assert_eq!(engine.execute("drawing.create", &json!({})).unwrap()["language"], "en", "the command line");
     }
 
     /// #6474, #2742: Maya moves the camera with Alt and any button, HFSS with Alt or Shift+Alt and

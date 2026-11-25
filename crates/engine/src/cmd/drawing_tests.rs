@@ -813,6 +813,30 @@ fn a_refused_change_leaves_the_drawing_as_it_was() {
     assert_eq!(s.open_drawing, open);
 }
 
+/// A drawing's language follows one rule, the drawing's own (#19884): `drawing.create` refuses a
+/// tag for the reason `drawing.set` refuses it, at each edge of that rule, with nothing changed,
+/// and takes every tag `drawing.set` takes. Left out, it is the template's, English for the
+/// built-ins, so a script that names none makes an English drawing, whatever app it runs beside.
+#[test]
+fn drawing_create_takes_a_language_as_drawing_set_does() {
+    let why = |e: &str| e.find("the language").map(|at| e[at..].to_string());
+    let mut s = design();
+    assert_eq!(run(&mut s, "drawing.create", json!({}))["language"], "en");
+    let longest = "en-aaaaaaaa-aaaaaaaa-aaaaaaaa-bbbbb";
+    let too_long = format!("{longest}b");
+    for bad in ["", "e", "en_GB", "x-private", "en-", "1a", "en-toolongsub", too_long.as_str()] {
+        let (before, steps) = (s.doc.clone(), s.undo.len());
+        let set = refused(&mut s, "drawing.set", json!({"language": bad}));
+        let created = refused(&mut s, "drawing.create", json!({"language": bad}));
+        assert!(why(&created).is_some() && why(&created) == why(&set), "{bad:?}: {created} / {set}");
+        assert!(Arc::ptr_eq(&s.doc, &before) && s.undo.len() == steps, "{bad:?}: nothing changed");
+    }
+    for good in ["fr", "zh-TW", "zh-Hans-CN", longest] {
+        assert_eq!(run(&mut s, "drawing.set", json!({"language": good}))["language"], good);
+        assert_eq!(run(&mut s, "drawing.create", json!({"language": good}))["language"], good);
+    }
+}
+
 /// A checkpoint brings back the design's drawings, the one open and the undo history. Going back
 /// over a change of the model and of a drawing evaluates the model: it is no drawing-only change.
 #[test]

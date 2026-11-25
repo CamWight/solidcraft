@@ -2013,6 +2013,29 @@ mod tests {
         assert_eq!(active_sheet(&h.app), Some(drawing.sheets[0].id));
     }
 
+    /// With the app in French, the sheet the first-sheet form makes is a French drawing (#19884):
+    /// its title block's built-in labels print in French, as the app shows its words.
+    #[test]
+    fn a_blank_sheet_made_in_french_is_a_french_drawing() {
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.preferences.language = "fr".into();
+        h.app.run("solid.box", serde_json::json!({"length":40,"width":20,"height":3})).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.frames(4);
+        h.step(&serde_json::json!({"click":{"handle":"drawing:first:blank"}})).unwrap();
+        h.frames(3);
+        let french = solidcraft_ui_text::Locale::for_language("fr");
+        h.step(&serde_json::json!({"widget": french.text("cmd.drawing_create")})).unwrap();
+        h.frames(4);
+        let drawing = h.app.session.drawing("drawing.inspect").unwrap();
+        assert_eq!(drawing.language, "fr");
+        let block = drawing.sheets[0].title_block.as_ref().unwrap();
+        let title = block.cells.iter().find(|cell| cell.name == "title").and_then(|cell| cell.label.as_ref()).unwrap();
+        let printed = solidcraft_engine::paper_words::resolve(&drawing.language, &title.text);
+        assert_eq!((&*printed, french.text("drawing.paper.cell.title")), ("Titre", "Titre"));
+    }
+
     #[test]
     fn standard_view_layout_starts_a_drawing_with_four_views() {
         let mut h = Harness::new();
