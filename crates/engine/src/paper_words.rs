@@ -92,11 +92,28 @@ pub fn in_english(block: &TitleBlock) -> TitleBlock {
     english
 }
 
+/// The pseudo-language of the engine's test catalogs (G2, #19884): every paper message is its
+/// English between [`PSEUDO_OPEN`] and [`PSEUDO_CLOSE`], so a word on paper that isn't wrapped
+/// didn't come through [`resolve`]. `qps-ploc` is a pseudo-locale tag (`qps` is in BCP 47's
+/// private-use range).
+#[cfg(test)]
+pub(crate) const PSEUDO: &str = "qps-ploc";
+/// The marks round a pseudo-language word: Liberation Sans has them, so a wrapped word stays one run
+/// in the built-in font with no font to fall back to (it has no `⟦` or `⟧`).
+#[cfg(test)]
+pub(crate) const PSEUDO_OPEN: char = '‹';
+#[cfg(test)]
+pub(crate) const PSEUDO_CLOSE: char = '›';
+
 /// Catalogs for the engine's tests, which no host installs: English, French and German with the
-/// paper words they read. One list, installed once per process, so tests running side by side
-/// agree; the system language is pinned to English first, as the app's own tests pin it.
+/// paper words they read, and [`PSEUDO`] with every one of [`MESSAGES`], made from them. One list,
+/// installed once per process, so tests running side by side agree; the system language is pinned to
+/// English first, as the app's own tests pin it.
 #[cfg(test)]
 pub(crate) fn install_test_catalogs() {
+    use std::collections::BTreeMap;
+    use std::sync::OnceLock;
+
     use solidcraft_ui_text::Catalog;
     static ENGLISH: Catalog = Catalog::new("en", "English", "{}");
     static FRENCH: Catalog = Catalog::new(
@@ -115,9 +132,15 @@ pub(crate) fn install_test_catalogs() {
             "drawing.paper.view_label.view": "ANSICHT", "drawing.paper.view_label.detail": "EINZELHEIT",
             "drawing.paper.view_label.scale": "MASSSTAB"}"#,
     );
-    static LOCALES: &[&Catalog] = &[&ENGLISH, &FRENCH, &GERMAN];
+    static WRAPPED: OnceLock<Catalog> = OnceLock::new();
+    static LOCALES: OnceLock<[&Catalog; 4]> = OnceLock::new();
+    let locales = LOCALES.get_or_init(|| {
+        let wrapped: BTreeMap<&str, String> = MESSAGES.iter().map(|(id, english)| (*id, format!("{PSEUDO_OPEN}{english}{PSEUDO_CLOSE}"))).collect();
+        let json = serde_json::to_string(&wrapped).unwrap_or_default();
+        [&ENGLISH, &FRENCH, &GERMAN, WRAPPED.get_or_init(|| Catalog::new(PSEUDO, "Pseudo", Box::leak(json.into_boxed_str())))]
+    });
     solidcraft_ui_text::pin_system_language();
-    solidcraft_ui_text::install(LOCALES);
+    solidcraft_ui_text::install(locales);
 }
 
 #[cfg(test)]

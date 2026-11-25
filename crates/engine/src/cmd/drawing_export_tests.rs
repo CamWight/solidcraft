@@ -1116,3 +1116,210 @@ fn a_plate_with_a_grid_of_holes_exports_as_dxf() {
         assert_eq!(holes, nx * nz, "{nx} x {nz} holes: {read:?}");
     }
 }
+
+/// G2, the paper pseudo-language (#19884, plan §1.9): every word SolidCraft gives a drawing prints
+/// through the drawing's language. In the test catalogs' pseudo-language
+/// ([`crate::paper_words::PSEUDO`]) each built-in message is its English between `‹` and `›`, so a
+/// word on paper that isn't wrapped was printed some other way.
+///
+/// - It lays out every built-in template (part and assembly, A4 to A0), a sheet of every paper size
+///   with each built-in title block, and on the assembly template's sheet, documenting the design, a
+///   parts list, a revision table and its row, a view placed apart with its label, and a detail.
+/// - It walks every text run of each sheet's scene and of the scene its exports read
+///   ([`Scene::prepare`](solidcraft_geom::paper::Scene::prepare)). SVG, PDF, DXF and PNG each draw a
+///   run as its glyphs' outlines, so the words in a file are those runs: each export of the
+///   assembly's sheet is that walked scene's, byte for byte, with no text of its own (no SVG `<text>`,
+///   no PDF text object, no DXF TEXT or MTEXT).
+/// - The words of each object's runs must be wrapped, a number or symbol, or on one of the lists
+///   below, each entry with its reason. Each list entry must be found, so a word that comes to print
+///   in the drawing's language drops its entry, as a fix drops its line from
+///   `tests/KNOWN_FAILING_TESTS`. Every built-in message that prints must be found wrapped, so a word
+///   left off the sheet can't pass unseen.
+///
+/// What it misses: an object the fixture doesn't lay out (a dimension, a note, a balloon, a revision
+/// tag, a sheet sketch or fill, a section's hatch, a hole callout) needs its line here, as
+/// `i18n_painted_tests.rs` says for the screen.
+#[test]
+fn every_word_a_drawing_prints_comes_from_its_language() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use solidcraft_doc::drawing::template::{self, ASSEMBLY_NOTE, ASSEMBLY_TYPE, PART_NOTE, PART_TYPE};
+    use solidcraft_geom::drawing_sheet::{PaperSize, SheetSize};
+    use solidcraft_geom::paper::{Group, Item};
+    use solidcraft_geom::table::BALLOONED;
+    use solidcraft_io::paper::paper_pdf_pages_with;
+
+    use crate::paper_words::{MESSAGES, PSEUDO, PSEUDO_CLOSE, PSEUDO_OPEN};
+
+    /// Allowed: what the fixture typed or its design names, printed as given.
+    const TYPED: [&str; 5] = ["Plate", "Bolt", "First issue", "JS", "AB"];
+    /// Allowed: the drawing's language as its Language cell writes it, an identifier.
+    const LANGUAGE_CELL: &str = "QPS-PLOC";
+    /// Allowed: unit symbols.
+    const SYMBOLS: [&str; 3] = ["x", "mm", "kg"];
+
+    /// The words between the pseudo-language's marks in `text`, and the rest of it, a space where
+    /// each was. A mark with no partner stays in the rest.
+    fn unwrapped(text: &str) -> (Vec<String>, String) {
+        let (mut words, mut rest, mut from) = (Vec::new(), String::new(), text);
+        while let Some((before, after)) = from.split_once(PSEUDO_OPEN) {
+            let Some((word, next)) = after.split_once(PSEUDO_CLOSE) else { break };
+            rest.push_str(before);
+            rest.push(' ');
+            words.push(one_line(word));
+            from = next;
+        }
+        rest.push_str(from);
+        (words, rest)
+    }
+
+    /// `text`'s words one space apart: the lines a value wraps to, joined.
+    fn one_line(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
+    /// `text` (its words one space apart) without each whole-word `phrase` in it, and whether it had one.
+    fn without(text: &str, phrase: &str) -> (String, bool) {
+        let (mut padded, needle) = (format!(" {text} "), format!(" {phrase} "));
+        let had = padded.contains(&needle);
+        while padded.contains(&needle) {
+            padded = padded.replace(&needle, " ");
+        }
+        (padded.trim().to_string(), had)
+    }
+
+    /// A word no language writes: a number, a date, a scale, a unit, or one capital letter (a zone's,
+    /// a view's or a revision's).
+    fn symbol(word: &str) -> bool {
+        let letter = word.len() == 1 && word.bytes().all(|b| b.is_ascii_uppercase());
+        !word.contains([PSEUDO_OPEN, PSEUDO_CLOSE]) && (!word.chars().any(char::is_alphabetic) || SYMBOLS.contains(&word) || letter)
+    }
+
+    crate::paper_words::install_test_catalogs();
+    // Allowed: each paper size's name as its standard gives it, in the frame's lower left. A0 to A5 are
+    // symbols; Letter, Legal, ANSI and Arch are proper names, left as they are unless a language names
+    // them otherwise (plan §4, slice 6).
+    let sizes: Vec<&str> = PaperSize::ALL.iter().map(|size| size.label()).collect();
+    // Still to translate: words SolidCraft gives a drawing that print in English whatever its language,
+    // each a named follow-up of #19884 (review.md, "Slice 3 build (G2)").
+    let to_translate = [
+        (PART_NOTE, "a part template's general tolerances, typed over their cell (slice 2, deviation 1)"),
+        (ASSEMBLY_NOTE, "an assembly template's general tolerances, typed over their cell (slice 2, deviation 1)"),
+        (PART_TYPE, "a part template's document type, typed over its cell (slice 2, deviation 1)"),
+        (ASSEMBLY_TYPE, "an assembly template's document type, typed over its cell (slice 2, deviation 1)"),
+        ("Untitled", "the design's default name, in the Title and Identification number cells (plan §4, slice 4)"),
+        ("Default", "the default material's name, in the Material cell and the parts list's MATERIAL (plan §9)"),
+    ];
+    let listed: Vec<&str> = to_translate.iter().map(|(phrase, _)| *phrase).chain(TYPED).chain(sizes.iter().copied()).chain([LANGUAGE_CELL]).collect();
+    let (mut wrapped, mut found, mut stray) = (BTreeSet::new(), BTreeSet::new(), BTreeMap::new());
+    let mut walk = |at: &str, groups: &[Group]| {
+        for group in groups {
+            let runs: Vec<&str> =
+                group.items.iter().filter_map(|item| if let Item::Text(run) = item { Some(run.text.as_str()) } else { None }).collect();
+            let (words, rest) = unwrapped(&runs.join(" "));
+            wrapped.extend(words);
+            let mut rest = one_line(&rest);
+            for phrase in &listed {
+                let (left, had) = without(&rest, phrase);
+                if had {
+                    found.insert(*phrase);
+                }
+                rest = left;
+            }
+            for word in rest.split_whitespace().filter(|word| !symbol(word)) {
+                stray.entry(format!("{}: {word}", group.kind.layer())).or_insert_with(|| at.to_string());
+            }
+        }
+    };
+
+    // An assembly: a plate, and a bolt placed twice on it.
+    let mut s = Session::default();
+    for (name, size, corner) in [("Plate", [100, 50, 20], [0, 0, 0]), ("Bolt", [10, 10, 10], [45, 20, 20])] {
+        run(&mut s, "component.create", json!({"name": name}));
+        let [length, width, height] = size;
+        run(
+            &mut s,
+            "solid.box",
+            json!({"length": length, "width": width, "height": height, "corner": corner, "body_name": name, "operation": "new"}),
+        );
+        run(&mut s, "component.activate", json!({"component": "root"}));
+    }
+    run(&mut s, "occurrence.copy", json!({"component": "Bolt", "translate": [0, 20, 0]}));
+    for name in template::BUILT_INS {
+        run(&mut s, "drawing.close", json!({}));
+        run(&mut s, "drawing.create", json!({"template": name, "name": name, "language": PSEUDO}));
+    }
+    let host = s.doc.drawings.iter().find(|d| d.name == template::default_for(true)).map(|d| d.id).unwrap();
+    run(&mut s, "drawing.close", json!({}));
+    run(&mut s, "drawing.open", json!({"drawing": ids::encode(host)}));
+    let d = s.drawing("test").unwrap().clone();
+    let (sheet, source) = (ids::encode(d.sheets[0].id), ids::encode(d.sources[0].id));
+    run(&mut s, "drawing.sheet.set", json!({"sheet": sheet, "documents": {"source": source, "component": 0}}));
+    run(&mut s, "drawing.table.add", json!({"sheet": sheet, "kind": "parts_list"}));
+    run(&mut s, "drawing.table.add", json!({"sheet": sheet, "kind": "revision"}));
+    run(&mut s, "drawing.revision.add", json!({"set": {"description": "First issue", "designer": "JS", "checker": "AB", "date": "2026-11-25"}}));
+    let front = run(&mut s, "drawing.view.base", json!({"sheet": sheet, "scale": "1:2", "position_mm": [150.0, 150.0]}))["view"].clone();
+    run(&mut s, "drawing.view.projected", json!({"parent": front, "side": "above", "place": {"at": [150.0, 230.0]}}));
+    let region = json!({"circle": {"centre": [0.0, 0.0], "radius": 5.0}});
+    run(&mut s, "drawing.view.detail", json!({"parent": front, "boundary": region, "place": {"at": [300.0, 100.0]}}));
+    for size in PaperSize::ALL {
+        for block in ["built-in", "compact"] {
+            let paper = serde_json::to_value(SheetSize::Standard(size)).unwrap();
+            run(&mut s, "drawing.sheet.add", json!({"size": paper, "orientation": "landscape", "title_block": block}));
+        }
+    }
+
+    // The assembly's sheet as each export writes it: the scene walked, byte for byte, and no text of
+    // the file's own.
+    let d = s.drawing("test").unwrap().clone();
+    let record = d.sheets[0].clone();
+    let scene = crate::drawing_scene::build(&s, &d, record.id).unwrap().scene;
+    let prepared = scene.prepare().unwrap();
+    walk(&format!("{} / {} (exported)", d.name, record.name), prepared.groups());
+    let svg = run(&mut s, CMD, json!({"sheet": sheet}))["svg"].as_str().unwrap().to_string();
+    assert!(
+        svg.as_bytes() == solidcraft_io::paper::paper_svg(&prepared, &NoPictures, DEFAULT_DPI).unwrap().0.as_slice(),
+        "the SVG is the scene walked"
+    );
+    assert!(!svg.contains("<text"), "an SVG's words are its runs' outlines");
+    let dxf = run(&mut s, CMD, json!({"sheet": sheet, "format": "dxf"}))["dxf"].as_str().unwrap().to_string();
+    let group = record.line_group.unwrap_or(d.line_group);
+    let wide = |object: u64| LineKind::Visible.width_mm(d.resolve_view(object).map_or(group, |view| view.line_group.value));
+    assert!(dxf == solidcraft_io::paper::paper_dxf(&prepared, &wide).unwrap().0, "the DXF is the scene walked");
+    let (entities, _) = dxf_entities(&dxf);
+    let kinds: BTreeSet<&str> = entities.iter().map(|(kind, ..)| kind.as_str()).collect();
+    assert!(["TEXT", "MTEXT", "HATCH"].iter().all(|kind| !kinds.contains(kind)), "a DXF's words are its runs' outlines: {kinds:?}");
+    let pdf = exported(&mut s, json!({"sheet": sheet, "format": "pdf"}));
+    let none: [&dyn Pictures; 1] = [&NoPictures];
+    let options = PdfOptions { title: Some(d.name.clone()), ..PdfOptions::default() };
+    let pictures = PdfPictures { pages: &none, dpi: DEFAULT_DPI };
+    assert!(pdf == paper_pdf_pages_with(std::slice::from_ref(&prepared), &options, Some(pictures)).unwrap().0, "the PDF is the scene walked");
+    let text_objects = |content: &str| content.split_whitespace().any(|op| matches!(op, "BT" | "Tj" | "TJ"));
+    assert!(!pdf_pages(&pdf).iter().any(|(_, content)| text_objects(content)), "a PDF's words are its runs' outlines");
+    let png = exported(&mut s, json!({"sheet": sheet, "format": "png", "dpi": 25}));
+    let mut drawn = Vec::new();
+    paper_png(&prepared, PngOptions { dpi: 25.0, colour: PngColour::Grey }, &NoPictures, &mut drawn).unwrap();
+    assert!(png == drawn, "the PNG is the scene walked");
+
+    // Every sheet of every drawing, as its page draws it and as its exports read it.
+    for d in s.doc.drawings.clone() {
+        for record in &d.sheets {
+            let at = format!("{} / {}", d.name, record.name);
+            let scene = crate::drawing_scene::build(&s, &d, record.id).unwrap_or_else(|e| panic!("{at}: {e}")).scene;
+            walk(&at, scene.groups.as_slice());
+            walk(&format!("{at} (exported)"), scene.prepare().unwrap().groups());
+        }
+    }
+
+    println!("G2: words still to translate, each a follow-up of #19884:");
+    for (phrase, why) in &to_translate {
+        println!("  {phrase:?}: {why}");
+    }
+    let lines: Vec<String> = stray.iter().map(|(word, at)| format!("  {word} (first on {at})")).collect();
+    assert!(lines.is_empty(), "printed outside the drawing's language and on no list:\n{}", lines.join("\n"));
+    let ballooned = format!("drawing.paper.heading.{BALLOONED}");
+    let printed: BTreeSet<String> = MESSAGES.iter().filter(|(id, _)| *id != ballooned).map(|(_, english)| english.to_string()).collect();
+    assert_eq!(wrapped, printed, "every built-in word a sheet prints, in the drawing's language");
+    let unseen: Vec<&&str> = listed.iter().filter(|phrase| !found.contains(*phrase)).collect();
+    assert!(unseen.is_empty(), "on a list but never printed, so its entry goes: {unseen:?}");
+}
