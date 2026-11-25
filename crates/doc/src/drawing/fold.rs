@@ -59,13 +59,17 @@ pub fn axonometric(frame: &Plane, corner: [f64; 3]) -> Result<Plane> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum Axonometry {
+    /// All three at the same scale, the default.
     #[default]
     Isometric,
+    /// The depth at half the other two (ISO 5456-3 §5.2).
     Dimetric,
+    /// Any three, along the parent's paper x, its paper y and its depth, such as a trimetric view's.
     Scales([f64; 3]),
 }
 
 impl Axonometry {
+    /// Whether it is the default, isometric, which a view doesn't save.
     pub fn is_isometric(&self) -> bool {
         *self == Axonometry::Isometric
     }
