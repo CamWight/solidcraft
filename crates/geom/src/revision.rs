@@ -25,7 +25,7 @@ use std::collections::{BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cell::{self, Content, HAlign, Part, Source, check_label, check_text};
+use crate::cell::{self, Content, HAlign, PaperText, Part, Source, check_label, check_text};
 use crate::drawing_view::is_paper_coordinate;
 use crate::table::{self, Column, Heading, RowKind, Table};
 
@@ -424,7 +424,7 @@ impl RevisionRecord {
 pub fn table() -> Table {
     let column = |f: Field| Column {
         name: f.key().to_string(),
-        heading: f.heading().to_string(),
+        heading: PaperText::typed(f.heading()),
         content: Content(vec![Part::Field { source: Source::Row, key: f.key().to_string(), format: cell::Format::default() }]),
         width_mm: None,
         align: HAlign::Left,

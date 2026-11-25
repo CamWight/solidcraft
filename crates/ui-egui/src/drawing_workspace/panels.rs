@@ -11,6 +11,7 @@ use solidcraft_engine::geom::{
     table::Heading,
     title_block::{self, TitleBlock},
 };
+use solidcraft_engine::paper_words;
 use solidcraft_engine::render::VisualStyle;
 use solidcraft_theme::Tokens;
 use std::sync::LazyLock;
@@ -448,9 +449,10 @@ fn parts_list(ui: &mut egui::Ui, drawing: Option<&Drawing>, sheet: Option<u64>, 
         text(ui, tr("ui.drawing_panel.row_height"), &format!("{} mm", table.map_or(7.0, |table| table.row_height_mm)));
         ui_kit::section_heading(ui, tr("ui.drawing_panel.columns"));
         if let Some(table) = table {
+            let language = drawing.map_or("en", |drawing| drawing.language.as_str());
             for column in &table.columns {
                 let mut width = column.width_mm.map_or_else(|| tr("ui.drawing_panel.auto").to_owned(), |value| format!("{value} mm"));
-                ui_kit::row(ui, &column.heading, |ui| {
+                ui_kit::row(ui, &paper_words::resolve(language, &column.heading), |ui| {
                     ui.horizontal(|ui| {
                         let mut printed = column.printed;
                         ui_kit::checkbox(ui, "", &mut printed);
@@ -476,8 +478,10 @@ pub(super) struct AddSheet {
 }
 
 const SIZES: &[PaperSize] = &[PaperSize::A4, PaperSize::A3, PaperSize::A2, PaperSize::A1, PaperSize::A0, PaperSize::Letter, PaperSize::AnsiB];
-static STANDARD_TITLE_BLOCK: LazyLock<TitleBlock> = LazyLock::new(title_block::default_block);
-static COMPACT_TITLE_BLOCK: LazyLock<TitleBlock> = LazyLock::new(title_block::compact_block);
+// The built-in blocks with their labels in English, as a 0.49.0 drawing saved them: a block is built
+// in whether its labels are built-in messages or that English ([`paper_words::in_english`]).
+static STANDARD_TITLE_BLOCK: LazyLock<TitleBlock> = LazyLock::new(|| paper_words::in_english(&title_block::default_block()));
+static COMPACT_TITLE_BLOCK: LazyLock<TitleBlock> = LazyLock::new(|| paper_words::in_english(&title_block::compact_block()));
 
 pub(super) fn valid_sheet_name(name: &str) -> bool {
     name.is_empty() || (!name.trim().is_empty() && name.len() <= MAX_NAME_BYTES && !name.chars().any(char::is_control))
@@ -544,8 +548,8 @@ pub(super) fn add_window(app: &mut SolveApp, ctx: &egui::Context, mut form: AddS
                 let choices =
                     [tr("ui.drawing_panel.inherit"), tr("ui.drawing_panel.built_in"), tr("ui.drawing_panel.none"), tr("ui.drawing_panel.compact")];
                 let inherited = match &after.title_block {
-                    Some(block) if *block == *STANDARD_TITLE_BLOCK => choices[1],
-                    Some(block) if *block == *COMPACT_TITLE_BLOCK => choices[3],
+                    Some(block) if paper_words::in_english(block) == *STANDARD_TITLE_BLOCK => choices[1],
+                    Some(block) if paper_words::in_english(block) == *COMPACT_TITLE_BLOCK => choices[3],
                     Some(_) => choices[0],
                     None => choices[2],
                 };
@@ -925,8 +929,8 @@ fn sheet_fields(app: &mut SolveApp, ui: &mut egui::Ui, sheet: &Sheet) {
     let none = tr("ui.drawing_panel.none");
     let compact = tr("ui.drawing_panel.compact");
     let current = match sheet.title_block.as_ref() {
-        Some(block) if *block == *STANDARD_TITLE_BLOCK => built_in,
-        Some(block) if *block == *COMPACT_TITLE_BLOCK => compact,
+        Some(block) if paper_words::in_english(block) == *STANDARD_TITLE_BLOCK => built_in,
+        Some(block) if paper_words::in_english(block) == *COMPACT_TITLE_BLOCK => compact,
         Some(_) => tr("ui.graphics_custom"),
         None => none,
     };

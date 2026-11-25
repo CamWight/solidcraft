@@ -156,7 +156,7 @@ fn a_lists_rows_lay_out_in_a_table() {
     let kind = Kind::PartsList(parts);
     let definition = kind.default_table();
     let measure = |text: &str, cap: f64| text.chars().count() as f64 * cap / 2.0;
-    let laid = definition.layout(&rows, solidcore_record::Vec2::new(400.0, 280.0), &measure).unwrap();
+    let laid = definition.layout(&rows, solidcore_record::Vec2::new(400.0, 280.0), &measure, &crate::drawing::english).unwrap();
     assert_eq!(laid.rows.len(), 3);
     // ITEM, QTY, FRAME's NAME, DESCRIPTION, MATERIAL, MASS: letters at 1.75 mm, a 1 mm pad each side;
     // the outer two also hold half an outline line and half a cell line, the rest two half cell lines.
@@ -199,7 +199,7 @@ fn a_row_at_the_deepest_level_keeps_its_key() {
     assert_eq!(deepest.key.split('/').count(), 65);
     assert_eq!(rows.iter().map(|r| r.key.as_str()).collect::<BTreeSet<_>>().len(), 65);
     let definition = Kind::PartsList(parts).default_table();
-    definition.layout(&rows, solidcore_record::Vec2::new(400.0, 280.0), &|t, cap| t.len() as f64 * cap / 2.0).unwrap();
+    definition.layout(&rows, solidcore_record::Vec2::new(400.0, 280.0), &|t, cap| t.len() as f64 * cap / 2.0, &crate::drawing::english).unwrap();
 }
 
 /// `change` on the saved drawing is refused on reading, for the reason given.
@@ -248,7 +248,10 @@ fn a_list_asks_for_its_view() {
     assert_eq!(names(&Kind::Revision), ["revision", "description", "designer", "checker", "date"]);
     // How many balloons point at each row, for the editor alone: the only column not printed.
     let unprinted = |kind: &Kind| kind.default_table().columns.iter().filter(|c| !c.printed).map(|c| c.heading.clone()).collect::<Vec<_>>();
-    assert_eq!((unprinted(&Kind::PartsList(list)), unprinted(&Kind::Revision)), (vec!["BALLOONED".to_string()], vec![]));
+    assert_eq!(
+        (unprinted(&Kind::PartsList(list)), unprinted(&Kind::Revision)),
+        (vec![PaperText::built_in("drawing.paper.heading.ballooned")], vec![])
+    );
     assert_eq!(Kind::Revision.default_place(), Place::Anchor { corner: Corner::BottomLeft, offset_mm: [0.0, 0.0] });
     for kind in [Kind::PartsList(list), Kind::Revision] {
         kind.default_table().validate().unwrap();

@@ -644,7 +644,9 @@ pub struct LabelSet {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct LabelResult {
     pub letter: String,
+    /// The words before its letter as the sheet prints them: built-in words in the drawing's language.
     pub words: String,
+    /// The words before its scale, printed the same way.
     pub scale_words: String,
     pub name: String,
     pub show_letter: bool,

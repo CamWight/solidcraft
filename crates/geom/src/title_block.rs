@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::Aabb2;
-use crate::cell::{self, Content, Fit, Format, HAlign, Part, Source, is_snake_case};
+use crate::cell::{self, Content, Fit, Format, HAlign, PaperText, Part, Source, is_snake_case};
 use crate::drawing_sheet::SheetLayout;
 use crate::paper::{Group, Item, MAX_LINE_MM, ObjectKind};
 use solidcore_record::{Loop2, Seg2, Vec2};
@@ -66,7 +66,8 @@ pub struct Cell {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Label {
-    pub text: String,
+    /// Typed, or a built-in message: `drawing.paper.cell.<the cell's name>` in the built-in blocks.
+    pub text: PaperText,
     pub cap_mm: f64,
 }
 
@@ -156,7 +157,8 @@ fn symbol_size(room: Vec2) -> Option<f64> {
 /// component the sheet documents, the drawing, its newest revision and the sheet; the legal owner is
 /// the drawing's `organization`, the scale is the sheet's, the language the drawing's and the revision
 /// the newest revision row's. The general tolerances, the document type, the status and the
-/// department start empty, for a shop's own.
+/// department start empty, for a shop's own. Each label is the built-in message named after its cell
+/// (`drawing.paper.cell.legal_owner`, "Legal owner" in English), so it prints in the drawing's language.
 pub fn default_block() -> TitleBlock {
     use HAlign::{Centre, Left};
     use Source::{Component, Drawing, Revision, Sheet};
@@ -167,27 +169,27 @@ pub fn default_block() -> TitleBlock {
     let title = Fit { max_chars: Some(25), wide_max_chars: Some(30), wrap: false };
     let sheet = vec![field(Source::Sheet, "number"), Part::Text("/".into()), field(Source::Sheet, "count")];
     let cells = [
-        ("title", [-180.0, 0.0, -68.0, 14.0], "Title", text(5.0, Left, title, vec![field(Component, "name")])),
-        ("identification_number", [-68.0, 0.0, 0.0, 14.0], "Identification number", text(5.0, Left, most(16), vec![field(Drawing, "number")])),
-        ("created_by", [-180.0, 14.0, -121.0, 24.0], "Created by", text(3.5, Left, most(20), vec![field(Revision, "designer")])),
-        ("approved_by", [-121.0, 14.0, -62.0, 24.0], "Approved by", text(3.5, Left, most(20), vec![field(Revision, "checker")])),
-        ("date_of_issue", [-62.0, 14.0, -30.0, 24.0], "Date of issue", text(3.5, Left, most(10), vec![field(Revision, "date")])),
-        ("sheet", [-30.0, 14.0, 0.0, 24.0], "Sheet", text(3.5, Centre, most(9), sheet)),
-        ("material", [-180.0, 24.0, -100.0, 34.0], "Material", text(3.5, Left, whole, vec![field(Component, "material")])),
-        ("finish", [-100.0, 24.0, -30.0, 34.0], "Finish", text(3.5, Left, whole, vec![field(Component, "properties.finish")])),
-        ("mass", [-30.0, 24.0, 0.0, 34.0], "Mass", text(3.5, Centre, whole, vec![field(Component, "mass")])),
-        ("legal_owner", [-180.0, 34.0, -100.0, 49.0], "Legal owner", text(3.5, Left, wrap, vec![field(Drawing, "organization")])),
-        ("general_tolerances", [-100.0, 34.0, -30.0, 49.0], "General tolerances", text(2.5, Left, wrap, Vec::new())),
-        ("projection", [-30.0, 34.0, 0.0, 49.0], "Projection", CellKind::ProjectionSymbol),
-        ("scale", [-180.0, 49.0, -158.0, 61.0], "Scale", text(3.5, Centre, most(9), vec![field(Sheet, "scale")])),
-        ("document_type", [-158.0, 49.0, -116.0, 61.0], "Document type", text(3.5, Left, most(24), Vec::new())),
-        ("document_status", [-116.0, 49.0, -86.0, 61.0], "Document status", text(3.5, Left, most(16), Vec::new())),
-        ("language", [-86.0, 49.0, -68.0, 61.0], "Language", text(3.5, Centre, most(5), vec![field(Drawing, "language")])),
-        ("revision", [-68.0, 49.0, -48.0, 61.0], "Revision", text(3.5, Centre, most(6), vec![field(Revision, "revision")])),
-        ("department", [-48.0, 49.0, 0.0, 61.0], "Department", text(3.5, Left, most(28), Vec::new())),
+        ("title", [-180.0, 0.0, -68.0, 14.0], text(5.0, Left, title, vec![field(Component, "name")])),
+        ("identification_number", [-68.0, 0.0, 0.0, 14.0], text(5.0, Left, most(16), vec![field(Drawing, "number")])),
+        ("created_by", [-180.0, 14.0, -121.0, 24.0], text(3.5, Left, most(20), vec![field(Revision, "designer")])),
+        ("approved_by", [-121.0, 14.0, -62.0, 24.0], text(3.5, Left, most(20), vec![field(Revision, "checker")])),
+        ("date_of_issue", [-62.0, 14.0, -30.0, 24.0], text(3.5, Left, most(10), vec![field(Revision, "date")])),
+        ("sheet", [-30.0, 14.0, 0.0, 24.0], text(3.5, Centre, most(9), sheet)),
+        ("material", [-180.0, 24.0, -100.0, 34.0], text(3.5, Left, whole, vec![field(Component, "material")])),
+        ("finish", [-100.0, 24.0, -30.0, 34.0], text(3.5, Left, whole, vec![field(Component, "properties.finish")])),
+        ("mass", [-30.0, 24.0, 0.0, 34.0], text(3.5, Centre, whole, vec![field(Component, "mass")])),
+        ("legal_owner", [-180.0, 34.0, -100.0, 49.0], text(3.5, Left, wrap, vec![field(Drawing, "organization")])),
+        ("general_tolerances", [-100.0, 34.0, -30.0, 49.0], text(2.5, Left, wrap, Vec::new())),
+        ("projection", [-30.0, 34.0, 0.0, 49.0], CellKind::ProjectionSymbol),
+        ("scale", [-180.0, 49.0, -158.0, 61.0], text(3.5, Centre, most(9), vec![field(Sheet, "scale")])),
+        ("document_type", [-158.0, 49.0, -116.0, 61.0], text(3.5, Left, most(24), Vec::new())),
+        ("document_status", [-116.0, 49.0, -86.0, 61.0], text(3.5, Left, most(16), Vec::new())),
+        ("language", [-86.0, 49.0, -68.0, 61.0], text(3.5, Centre, most(5), vec![field(Drawing, "language")])),
+        ("revision", [-68.0, 49.0, -48.0, 61.0], text(3.5, Centre, most(6), vec![field(Revision, "revision")])),
+        ("department", [-48.0, 49.0, 0.0, 61.0], text(3.5, Left, most(28), Vec::new())),
     ];
-    let label = |text: &str| Some(Label { text: text.into(), cap_mm: 2.5 });
-    let cells = cells.into_iter().map(|(name, rect_mm, text, kind)| Cell { name: name.into(), rect_mm, label: label(text), kind }).collect();
+    let label = |name: &str| Some(Label { text: PaperText::built_in(&format!("drawing.paper.cell.{name}")), cap_mm: 2.5 });
+    let cells = cells.into_iter().map(|(name, rect_mm, kind)| Cell { name: name.into(), rect_mm, label: label(name), kind }).collect();
     TitleBlock { size_mm: Vec2::new(180.0, 61.0), outline_line_mm: 0.7, cell_line_mm: 0.35, cells }
 }
 
@@ -272,7 +274,7 @@ impl TitleBlock {
             require(earlier().all(|other| !other.rect(Vec2::ZERO).overlaps(&rect)), "no two cells overlap")?;
             if let Some(label) = &cell.label {
                 require(label.cap_mm.is_finite() && label.cap_mm > 0.0, "a label's cap height is finite and above 0")?;
-                cell::check_label(&label.text).map_err(|cell::Invalid(message)| Invalid(message))?;
+                label.text.check().map_err(|cell::Invalid(message)| Invalid(message))?;
             }
             if let CellKind::Text(text) = &cell.kind {
                 text.content.validate().map_err(|cell::Invalid(message)| Invalid(message))?;

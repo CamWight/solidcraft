@@ -359,6 +359,33 @@ mod tests {
         assert!(failure.text().starts_with("Dutchman konnte cube.f3d nicht öffnen: Es verlangt 2048 MiB Arbeitsspeicher, Plugins dürfen 128 MiB"));
     }
 
+    /// A drawing's built-in paper words (#19884): the engine's English is the catalog's, every
+    /// language a label needs has each word, and a word whose English a label already had leaves
+    /// that label as it was: [`Locale::label`] still shows the older message's text.
+    #[test]
+    fn the_paper_words_are_in_every_label_language_and_take_over_no_label() {
+        use solidcraft_engine::paper_words::MESSAGES;
+        install();
+        let english = Locale::for_language("en").catalog().messages();
+        for (id, text) in MESSAGES {
+            assert_eq!(Locale::for_language("en").text(id), *text, "{id}: the engine's English is the catalog's");
+            let older: Vec<&str> = english
+                .iter()
+                .filter(|(other, said)| said.as_str() == *text && !other.starts_with("drawing.paper."))
+                .map(|(other, _)| other.as_str())
+                .collect();
+            for language in ["ar", "de", "fr", "he", "ja", "ko", "ru", "vi", "zh"] {
+                let locale = Locale::for_language(language);
+                assert!(locale.catalog().messages().contains_key(*id), "{language} has no {id}");
+                let label = locale.label(text);
+                assert!(
+                    older.is_empty() || older.iter().any(|other| locale.text(other) == label),
+                    "{language}: `{text}` now shows `{label}`, none of {older:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn component_ambiguity_is_translated_without_truncating_names() {
         install();

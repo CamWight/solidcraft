@@ -283,3 +283,63 @@ fn the_sheet_page_follows_the_drawings_fields() {
     assert_eq!(serde_json::to_string(&*after.scene).unwrap(), serde_json::to_string(&build(&s, &d, sheet).unwrap().scene).unwrap());
     find(&runs(&s, sheet), "Tangency Labs");
 }
+
+/// The built-in block's labels print in the drawing's language (#19884), on the window's sheet as
+/// on an export's, and a change of the language reprints them. A label someone typed prints as
+/// typed in every language, and a word no catalog has prints its English.
+#[test]
+fn the_built_in_labels_print_in_the_drawings_language_and_typed_ones_as_typed() {
+    crate::paper_words::install_test_catalogs();
+    let (mut s, sheet) = drawing();
+    let window = |s: &mut Session| {
+        let scene = extract(s, sheet).unwrap().scene;
+        let block = scene.groups.iter().find(|g| g.kind == ObjectKind::TitleBlock).unwrap().clone();
+        block.items.into_iter().filter_map(|item| if let Item::Text(run) = item { Some(run.text) } else { None }).collect::<Vec<_>>()
+    };
+    assert!(window(&mut s).iter().any(|text| text == "Title"), "English by default");
+    run(&mut s, "drawing.set", json!({"language": "fr"}));
+    let drawn = runs(&s, sheet);
+    near(find(&drawn, "Titre").origin, placed(&s, "title").label_at.unwrap());
+    find(&drawn, "Propriétaire légal");
+    find(&drawn, "Approved by");
+    assert!(!drawn.iter().any(|r| r.text == "Title" || r.text == "Legal owner"));
+    assert_eq!(window(&mut s), drawn.iter().map(|r| r.text.clone()).collect::<Vec<_>>(), "the window's sheet is the export's");
+    run(&mut s, "drawing.set", json!({"language": "de"}));
+    let reprinted = window(&mut s);
+    assert!(reprinted.iter().any(|text| text == "Titel") && reprinted.iter().any(|text| text == "Rechtlicher Eigentümer"), "{reprinted:?}");
+    assert!(!reprinted.iter().any(|text| text == "Titre"));
+    // A label typed over the built-in one is kept as typed, saved as a plain string, in each language.
+    let mut block = serde_json::to_value(s.drawing("test").unwrap().sheets[0].title_block.as_ref().unwrap()).unwrap();
+    let title = block["cells"].as_array_mut().unwrap().iter_mut().find(|cell| cell["name"] == "title").unwrap();
+    assert_eq!(title["label"]["text"], json!({"message": "drawing.paper.cell.title"}));
+    title["label"]["text"] = json!("Benennung");
+    run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block": block}));
+    for language in ["de", "fr", "en"] {
+        run(&mut s, "drawing.set", json!({"language": language}));
+        near(find(&runs(&s, sheet), "Benennung").origin, placed(&s, "title").label_at.unwrap());
+    }
+    let saved = serde_json::to_value(s.drawing("test").unwrap().sheets[0].title_block.as_ref().unwrap()).unwrap();
+    assert_eq!(saved["cells"].as_array().unwrap().iter().find(|cell| cell["name"] == "title").unwrap()["label"]["text"], "Benennung");
+}
+
+/// A drawing saved by 0.49.0 prints exactly as before (#19884): its block's labels were saved as
+/// English text, so they read as typed text and print in English whatever the drawing's language,
+/// and the block saves again byte for byte. It is still the built-in block to the sheet panel.
+#[test]
+fn a_block_saved_before_built_in_labels_prints_and_saves_as_it_did() {
+    crate::paper_words::install_test_catalogs();
+    let (mut s, sheet) = drawing();
+    let english = crate::paper_words::in_english(&solidcraft_geom::title_block::default_block());
+    let old = serde_json::to_string(&english).unwrap();
+    assert!(old.contains(r#""text":"Title""#) && !old.contains("drawing.paper"), "a 0.49.0 block: {old}");
+    run(&mut s, "drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block": serde_json::from_str::<Value>(&old).unwrap()}));
+    let before = runs(&s, sheet);
+    run(&mut s, "drawing.set", json!({"language": "fr"}));
+    let after = runs(&s, sheet);
+    find(&after, "Title");
+    assert!(!after.iter().any(|r| r.text == "Titre"));
+    assert_eq!(after, before, "the same runs in French as in English");
+    let block = s.drawing("test").unwrap().sheets[0].title_block.clone().unwrap();
+    assert_eq!(serde_json::to_string(&block).unwrap(), old);
+    assert_eq!(crate::paper_words::in_english(&block), english);
+}

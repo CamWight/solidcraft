@@ -66,7 +66,7 @@ use solidcraft_doc::drawing_view::{
 };
 use solidcraft_doc::ids;
 use solidcraft_geom::Aabb2;
-use solidcraft_geom::cell::Projection;
+use solidcraft_geom::cell::{PaperText, Projection};
 use solidcraft_geom::drawing_sheet::{DrawingBorderProfile, Sheet};
 use solidcraft_geom::drawing_view::{Invalid, NamedView, PRESETS, ProjectedSide, Scale};
 use solidcraft_geom::paper::{MAX_COORDINATE_MM, MAX_SIDE_MM, Picture};
@@ -711,15 +711,15 @@ fn inspect(s: &mut Session, p: &Value) -> Result<Value> {
         centre_lines: d.centre_lines.iter().filter(|line| line.view == view.id).map(|line| ids::encode(line.id)).collect(),
         label: view.label.as_ref().map(|label| LabelResult {
             letter: label.letter.clone(),
-            words: label.words.clone(),
-            scale_words: label.scale_words.clone(),
+            words: crate::paper_words::resolve(&d.language, &label.words).into_owned(),
+            scale_words: crate::paper_words::resolve(&d.language, &label.scale_words).into_owned(),
             name: label.name.clone(),
             show_letter: label.show_letter,
             show_scale: label.show_scale,
             shown: label.shown,
             offset: label.offset,
             needed: view.needs_letter(),
-            text: d.label_text(view.id),
+            text: d.label_text(view.id, &|words| crate::paper_words::resolve(&d.language, words)),
             box_mm: crate::drawing_scene::label_box(s, &mut sessions, d, view.id, &placed)
                 .map(|label| BoxResult { min: label.min.into(), max: label.max.into() }),
         }),
@@ -903,17 +903,16 @@ fn change(d: &mut Drawing, id: u64, set: &ViewSet, found: &Found) -> Result<Vec<
     Ok(d.view(id).map(|after| changed_fields(&before, after)).unwrap_or_default())
 }
 
-/// `parts` typed over `label`, each part only when given.
+/// `parts` typed over `label`, each part only when given: words given are typed text from then on.
 fn type_over(label: &mut ViewLabel, parts: &LabelSet) {
-    let texts = [
-        (&mut label.letter, &parts.letter),
-        (&mut label.words, &parts.words),
-        (&mut label.scale_words, &parts.scale_words),
-        (&mut label.name, &parts.name),
-    ];
-    for (text, given) in texts {
+    for (text, given) in [(&mut label.letter, &parts.letter), (&mut label.name, &parts.name)] {
         if let Some(given) = given {
             text.clone_from(given);
+        }
+    }
+    for (words, given) in [(&mut label.words, &parts.words), (&mut label.scale_words, &parts.scale_words)] {
+        if let Some(given) = given {
+            *words = PaperText::typed(given);
         }
     }
     for (flag, given) in [(&mut label.show_letter, parts.show_letter), (&mut label.show_scale, parts.show_scale), (&mut label.shown, parts.shown)] {

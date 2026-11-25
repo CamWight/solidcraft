@@ -33,12 +33,13 @@
 //! ([`is_paper_coordinate`]); a view's occurrence paths keep [`check_occurrence_paths`]; at most
 //! [`MAX_VIEWS`] views, listed by id ([`Drawing::add_views`]).
 
+use std::borrow::Cow;
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use solidcore_record::{Plane, Vec2, Vec3};
-use solidcraft_geom::cell::{Projection, check_label};
+use solidcraft_geom::cell::{PaperText, Projection, check_label};
 use solidcraft_geom::drawing_detail::Boundary;
 use solidcraft_geom::drawing_sheet::view_letter;
 use solidcraft_geom::drawing_view::{ProjectedSide, Scale, is_paper_coordinate, projected_basis};
@@ -91,13 +92,13 @@ pub struct View {
 
 /// The most letters a view's letter has: `ZZZ` is the last one given.
 pub const MAX_LETTERS: usize = 3;
-/// What a new label prints before its letter: English capitals, as a new parts list's headings are,
-/// typed over after.
-pub const VIEW_WORDS: &str = "VIEW";
-/// What a detail view's label prints before its letter when made.
-pub const DETAIL_WORDS: &str = "DETAIL";
-/// What a new label prints before its scale.
-pub const SCALE_WORDS: &str = "SCALE";
+/// The built-in message a new label prints before its letter (`VIEW` in English), in its drawing's
+/// language as a new parts list's headings are, until typed over.
+pub const VIEW_WORDS: &str = "drawing.paper.view_label.view";
+/// The built-in message a detail view's label prints before its letter when made (`DETAIL`).
+pub const DETAIL_WORDS: &str = "drawing.paper.view_label.detail";
+/// The built-in message a new label prints before its scale (`SCALE`).
+pub const SCALE_WORDS: &str = "drawing.paper.view_label.scale";
 
 /// A view's label (#13044): its letter, which a section line, a detail's circle or a note names the
 /// view by, and what it prints. Made when the view is given its letter, then typed over; drawn while
@@ -108,9 +109,9 @@ pub struct ViewLabel {
     /// One to [`MAX_LETTERS`] capitals A to Z.
     pub letter: String,
     /// What it prints before its letter, [`VIEW_WORDS`] when made; empty: the letter alone.
-    pub words: String,
+    pub words: PaperText,
     /// What it prints before its scale, [`SCALE_WORDS`] when made.
-    pub scale_words: String,
+    pub scale_words: PaperText,
     /// A name, on a line of its own under its letter's; empty: none.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub name: String,
@@ -129,18 +130,25 @@ pub struct ViewLabel {
 }
 
 impl ViewLabel {
-    /// A new label of `letter`, printing [`VIEW_WORDS`] and [`SCALE_WORDS`].
-    pub fn new(letter: String) -> ViewLabel {
+    /// A new label of `letter`, printing the built-in [`VIEW_WORDS`] and [`SCALE_WORDS`].
+    pub fn given(letter: String) -> ViewLabel {
         ViewLabel {
             letter,
-            words: VIEW_WORDS.into(),
-            scale_words: SCALE_WORDS.into(),
+            words: PaperText::built_in(VIEW_WORDS),
+            scale_words: PaperText::built_in(SCALE_WORDS),
             name: String::new(),
             show_letter: true,
             show_scale: true,
             shown: true,
             offset: None,
         }
+    }
+
+    /// A label of `letter` printing `VIEW` and `SCALE` as typed text, as labels were made before
+    /// their words were built-in messages (#19884): what the drawing format's v2 step gives an older
+    /// drawing's views, whose words it saved in English. That step's output never changes.
+    pub fn new(letter: String) -> ViewLabel {
+        ViewLabel { words: PaperText::typed("VIEW"), scale_words: PaperText::typed("SCALE"), ..ViewLabel::given(letter) }
     }
 }
 
@@ -696,9 +704,8 @@ impl Drawing {
         if let Some(label) = &view.label {
             let letter = (1..=MAX_LETTERS).contains(&label.letter.len()) && label.letter.bytes().all(|b| b.is_ascii_uppercase());
             require(letter, || "its letter is one to three capital letters A to Z".into())?;
-            for text in [&label.words, &label.scale_words, &label.name] {
-                check_label(text).map_err(|e| DocError::Invalid(e.to_string()))?;
-            }
+            let checked = [label.words.check(), label.scale_words.check(), check_label(&label.name)];
+            checked.into_iter().collect::<std::result::Result<(), _>>().map_err(|e| DocError::Invalid(e.to_string()))?;
             let offset = label.offset.is_none_or(|[x, y]| is_paper_coordinate(x) && is_paper_coordinate(y));
             require(offset, || format!("its label's offset is at most {MAX_SIDE_MM} mm from the view's centre"))?;
         }
@@ -921,32 +928,37 @@ impl Drawing {
         let Some(view) = self.view_index(id).and_then(|at| self.views.get_mut(at)).map(Arc::make_mut) else { return Ok(()) };
         match &mut view.label {
             Some(label) => label.letter = letter,
-            None => view.label = Some(ViewLabel::new(letter)),
+            None => view.label = Some(ViewLabel::given(letter)),
         }
         self.view_letters = given;
         Ok(())
     }
 
-    /// Names detail view `id`'s label [`DETAIL_WORDS`] in place of [`VIEW_WORDS`], as ISO 128-30
-    /// names a detail (`DETAIL A`); a label with words of its own keeps them.
+    /// Names detail view `id`'s label the built-in [`DETAIL_WORDS`] in place of the built-in
+    /// [`VIEW_WORDS`], as ISO 128-30 names a detail (`DETAIL A`); a label with words of its own,
+    /// typed, keeps them.
     pub fn name_detail(&mut self, id: u64) {
         let Some(view) = self.view_index(id).and_then(|at| self.views.get_mut(at)) else { return };
         if !matches!(view.kind, ViewKind::Detail { .. }) {
             return;
         }
-        if let Some(label) = Arc::make_mut(view).label.as_mut().filter(|label| label.words == VIEW_WORDS) {
-            label.words = DETAIL_WORDS.into();
+        if let Some(label) = Arc::make_mut(view).label.as_mut().filter(|label| label.words.message() == Some(VIEW_WORDS)) {
+            label.words = PaperText::built_in(DETAIL_WORDS);
         }
     }
 
     /// What view `id`'s label reads, a line for each part shown: its words and letter (`VIEW B`), its
     /// name, then its scale when that isn't its sheet's ([`Drawing::sheet_scale`]), written as the
-    /// sheet's scale field writes it (`SCALE 2:1`). None when it draws no label: it has none, doesn't
-    /// need one, is hidden, or shows no part.
-    pub fn label_text(&self, id: u64) -> Option<String> {
+    /// sheet's scale field writes it (`SCALE 2:1`). `words(text)` is what its words print: built-in
+    /// ones in the drawing's language. None when it draws no label: it has none, doesn't need one, is
+    /// hidden, or shows no part.
+    pub fn label_text(&self, id: u64, words: &dyn Fn(&PaperText) -> Cow<'_, str>) -> Option<String> {
         let view = self.view(id).filter(|view| view.needs_letter())?;
         let label = view.label.as_ref().filter(|label| label.shown)?;
-        let after = |words: &str, what: String| if words.is_empty() { what } else { format!("{words} {what}") };
+        let after = |text: &PaperText, what: String| {
+            let printed = words(text);
+            if printed.is_empty() { what } else { format!("{printed} {what}") }
+        };
         let scale = self.resolve_view(id).ok().map(|resolved| resolved.scale.value).filter(|scale| self.sheet_scale(view.sheet) != Some(*scale));
         let lines: Vec<String> = [
             label.show_letter.then(|| after(&label.words, label.letter.clone())),

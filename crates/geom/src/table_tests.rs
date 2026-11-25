@@ -9,12 +9,17 @@ fn fixed(text: &str, cap_mm: f64) -> f64 {
     text.chars().count() as f64 * 0.6 * cap_mm
 }
 
+/// What a heading prints here, where no catalog is: its typed text, or a built-in message's id.
+fn words(text: &PaperText) -> Cow<'_, str> {
+    Cow::Borrowed(text.typed_text().or(text.message()).unwrap_or_default())
+}
+
 fn field(key: &str) -> Content {
     Content(vec![Part::Field { source: Source::Row, key: key.into(), format: Format::default() }])
 }
 
 fn column(name: &str, heading: &str, align: HAlign) -> Column {
-    Column { name: name.into(), heading: heading.into(), content: field(name), width_mm: None, align, printed: true }
+    Column { name: name.into(), heading: PaperText::typed(heading), content: field(name), width_mm: None, align, printed: true }
 }
 
 /// Item, part number and quantity: 2.5 mm text, a 0.7 mm outline and 0.35 mm lines between cells.
@@ -47,14 +52,14 @@ fn a_filter_by_balloon_hides_rows_and_changes_none() {
     let mut table = table();
     table.filter.ballooned = Some(Ballooned::Sheet);
     let mut listed = rows();
-    assert!(table.layout(&listed, Vec2::ZERO, &fixed).unwrap().rows.is_empty());
+    assert!(table.layout(&listed, Vec2::ZERO, &fixed, &words).unwrap().rows.is_empty());
     for (row, count) in listed.iter_mut().zip(["0", "2", "x"]) {
         row.fields.insert(BALLOONED.into(), count.into());
     }
-    let layout = table.layout(&listed, Vec2::ZERO, &fixed).unwrap();
+    let layout = table.layout(&listed, Vec2::ZERO, &fixed, &words).unwrap();
     assert_eq!(layout.rows.iter().map(|r| r.key.as_deref()).collect::<Vec<_>>(), [Some("pin")]);
     table.filter.ballooned = None;
-    assert_eq!(table.layout(&listed, Vec2::ZERO, &fixed).unwrap().rows.len(), 3);
+    assert_eq!(table.layout(&listed, Vec2::ZERO, &fixed, &words).unwrap().rows.len(), 3);
     assert!(!serde_json::to_string(&table).unwrap().contains("ballooned"));
     table.filter.ballooned = Some(Ballooned::Drawing);
     let read: Table = serde_json::from_str(&serde_json::to_string(&table).unwrap()).unwrap();
@@ -94,7 +99,7 @@ const WIDTHS: [f64; 3] = [8.525, 18.85, 7.025];
 
 #[test]
 fn fitted_columns_with_the_heading_at_the_top() {
-    let layout = table().layout(&rows(), Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = table().layout(&rows(), Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     assert!(near(layout.outline, rect(365.6, 252.0, 400.0, 280.0)), "{:?}", layout.outline);
     assert!(near(layout.heading.rect, rect(365.6, 273.0, 400.0, 280.0)));
     let keys: Vec<_> = layout.rows.iter().map(|r| r.key.as_deref().unwrap()).collect();
@@ -121,10 +126,31 @@ fn fitted_columns_with_the_heading_at_the_top() {
     assert!(layout.rows.iter().flat_map(|r| &r.cells).all(|c| c.warning.is_none() && c.replaced.is_none()));
 }
 
+/// A built-in heading (#19884) prints what `words` gives it, and its column fits that: "Pos." (6 mm)
+/// for the item column's message keeps it 8.525 mm wide, "Menge" (7.5 mm) widens Qty to 10.025 mm.
+/// A typed heading prints as typed, whatever `words` would make of a message.
+#[test]
+fn a_built_in_heading_prints_and_fits_what_its_words_say() {
+    let mut table = table();
+    table.columns[0].heading = PaperText::built_in("drawing.paper.heading.item");
+    table.columns[2].heading = PaperText::built_in("drawing.paper.heading.quantity");
+    fn german(text: &PaperText) -> Cow<'_, str> {
+        match text.message() {
+            Some("drawing.paper.heading.item") => Cow::Borrowed("Pos."),
+            Some(_) => Cow::Borrowed("Menge"),
+            None => words(text),
+        }
+    }
+    let layout = table.layout(&rows(), Vec2::new(400.0, 280.0), &fixed, &german).unwrap();
+    assert_eq!(layout.heading.cells.iter().map(texts).collect::<Vec<_>>(), [["Pos."], ["Part number"], ["Menge"]]);
+    let widths: Vec<f64> = layout.heading.cells.iter().map(|c| c.rect.size().x).collect();
+    assert!(widths.iter().zip([8.525, 18.85, 10.025]).all(|(w, want)| (w - want).abs() < 1e-9), "{widths:?}");
+}
+
 #[test]
 fn with_the_heading_at_the_bottom_item_1_sits_just_above_it() {
     let table = Table { heading: Heading::Bottom, ..table() };
-    let layout = table.layout(&rows(), Vec2::new(400.0, 10.0), &fixed).unwrap();
+    let layout = table.layout(&rows(), Vec2::new(400.0, 10.0), &fixed, &words).unwrap();
     assert!(near(layout.outline, rect(365.6, 10.0, 400.0, 38.0)));
     assert!(near(layout.heading.rect, rect(365.6, 10.0, 400.0, 17.0)));
     let placed: Vec<_> = layout.rows.iter().map(|r| (r.key.as_deref().unwrap(), r.rect.min.y)).collect();
@@ -141,7 +167,7 @@ fn a_set_width_wraps_between_words_and_grows_the_row() {
     rows[0].fields.insert("description".into(), "Plate, 3 mm   thick steel".into());
     rows[1].fields.insert("description".into(), "Supercalifragilistic pin".into());
     rows[2].fields.insert("description".into(), "Frame\nwelded".into());
-    let layout = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     // 20 mm less the two 0.175 halves and 2 mm of padding leaves 17.65: eleven characters a line.
     let plate = &layout.rows[0].cells[2];
     assert_eq!(texts(plate), ["Plate, 3 mm", "thick steel"], "broken between words, a run of spaces kept as one");
@@ -164,7 +190,7 @@ fn a_set_width_wraps_between_words_and_grows_the_row() {
     assert_eq!(layout.rows[2].cells[2].warning, None);
     // A fitted column grows instead: the description as one line.
     table.columns[2].width_mm = None;
-    let fitted = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let fitted = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     assert_eq!(texts(&fitted.rows[0].cells[2]), ["Plate, 3 mm   thick steel"]);
     assert!((fitted.rows[0].cells[2].rect.size().x - (25.0 * 1.5 + 2.35)).abs() < 1e-9);
 }
@@ -179,7 +205,7 @@ fn overrides_show_their_text_and_keep_the_value() {
     ];
     let mut rows = rows();
     rows[2].fields.remove("quantity");
-    let layout = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     let plate = &layout.rows[0].cells[1];
     assert_eq!((texts(plate), plate.replaced.as_deref()), (vec!["PL-100-A"], Some("PL-100")));
     let pin = &layout.rows[1].cells[2];
@@ -191,7 +217,7 @@ fn overrides_show_their_text_and_keep_the_value() {
     assert!((layout.rows[0].cells[1].rect.size().x - WIDTHS[1]).abs() < 1e-9);
     // Text around a field: the field's value inside it.
     table.columns[0].content.0.insert(0, Part::Text("#".into()));
-    let layout = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     assert_eq!(texts(&layout.rows[1].cells[0]), ["#2"]);
 }
 
@@ -199,7 +225,7 @@ fn overrides_show_their_text_and_keep_the_value() {
 fn filters_hide_rows_and_never_change_a_value() {
     let shown = |filter: Filter| {
         let table = Table { filter, ..table() };
-        let layout = table.layout(&rows(), Vec2::new(400.0, 280.0), &fixed).unwrap();
+        let layout = table.layout(&rows(), Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
         layout.rows.iter().map(|r| (r.key.clone().unwrap(), texts(&r.cells[0]).concat(), texts(&r.cells[2]).concat())).collect::<Vec<_>>()
     };
     let all = shown(Filter::default());
@@ -222,7 +248,7 @@ fn filters_hide_rows_and_never_change_a_value() {
     // A filter on what an override shows.
     let mut table = Table { filter: text("part_number", "special"), ..table() };
     table.overrides.push(Override { row: "frame".into(), column: "part_number".into(), text: "Special".into() });
-    let layout = table.layout(&rows(), Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = table.layout(&rows(), Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     assert_eq!(layout.rows.iter().map(|r| r.key.clone().unwrap()).collect::<Vec<_>>(), ["frame"]);
 }
 
@@ -267,13 +293,13 @@ fn a_column_that_isnt_printed_is_left_off_paper() {
         })
         .collect();
     let corner = Vec2::new(400.0, 280.0);
-    let (laid, alone) = (with.layout(&rows, corner, &fixed).unwrap(), table().layout(&rows, corner, &fixed).unwrap());
+    let (laid, alone) = (with.layout(&rows, corner, &fixed, &words).unwrap(), table().layout(&rows, corner, &fixed, &words).unwrap());
     assert_eq!(laid, alone);
     assert_eq!(laid.paper(9, ObjectKind::PartsList), alone.paper(9, ObjectKind::PartsList));
 
     with.filter.text.push(TextFilter { column: "note".into(), contains: "NOTE".into() });
     with.overrides.push(Override { row: "pin".into(), column: "note".into(), text: "kept".into() });
-    let filtered = with.layout(&rows, corner, &fixed).unwrap();
+    let filtered = with.layout(&rows, corner, &fixed, &words).unwrap();
     assert_eq!(filtered.rows.iter().map(|r| r.key.as_deref().unwrap()).collect::<Vec<_>>(), ["plate", "frame"], "filtered on its text");
 
     let json = serde_json::to_value(&with).unwrap();
@@ -313,7 +339,11 @@ fn hostile_tables_are_refused() {
         (with(&|t| t.columns.clear()), "a table has 1 to 64 columns"),
         (with(&|t| t.columns = (0..65).map(|i| column(&format!("c{i}"), "C", HAlign::Left)).collect()), "a table has 1 to 64 columns"),
         (with(&|t| t.columns[1].name = "item".into()), "no two columns have the same name"),
-        (with(&|t| t.columns[0].heading = "Item\nnumber".into()), "a label is one line of at most 4096 bytes"),
+        (with(&|t| t.columns[0].heading = PaperText::typed("Item\nnumber")), "a label is one line of at most 4096 bytes"),
+        (
+            with(&|t| t.columns[0].heading = PaperText::built_in("Drawing.Paper")),
+            "a built-in message's id is lowercase letters, digits, underscores and dots, at most 128 in all",
+        ),
         (with(&|t| t.columns[0].content = Content(vec![Part::Text(String::new()); 65])), "a cell has at most 64 parts"),
         (
             with(&|t| t.columns[0].content = Content(vec![Part::Field { source: Source::Component, key: "name".into(), format: Format::default() }])),
@@ -386,7 +416,7 @@ fn hostile_tables_are_refused() {
     ));
     for (table, message) in cases {
         assert_eq!(table.validate(), Err(Invalid(message)), "{message}");
-        assert_eq!(table.layout(&rows(), corner, &fixed), Err(Invalid(message)), "{message}");
+        assert_eq!(table.layout(&rows(), corner, &fixed, &words), Err(Invalid(message)), "{message}");
     }
     // And their limits.
     let accepted = [
@@ -410,7 +440,7 @@ fn hostile_tables_are_refused() {
 fn hostile_rows_and_measures_are_refused() {
     let corner = Vec2::new(400.0, 280.0);
     let t = table();
-    let layout = |rows: &[Row]| t.layout(rows, corner, &fixed);
+    let layout = |rows: &[Row]| t.layout(rows, corner, &fixed, &words);
     let plain = |key: String| row(&key, RowKind::Part, false, &[("item", "1")]);
     let many: Vec<Row> = (0..=MAX_ROWS).map(|i| plain(i.to_string())).collect();
     assert_eq!(layout(&many), Err(Invalid("a table lists at most 10,000 rows")));
@@ -429,18 +459,18 @@ fn hostile_rows_and_measures_are_refused() {
     let mut wide = table();
     wide.columns[0].content = Content(vec![Part::Text("x".repeat(4095))]);
     let repeated: Vec<Row> = (0..257).map(|i| plain(i.to_string())).collect();
-    assert_eq!(wide.layout(&repeated, corner, &fixed), Err(Invalid("a table holds at most 1 MiB of text")));
-    wide.layout(&repeated[..200], corner, &fixed).unwrap();
+    assert_eq!(wide.layout(&repeated, corner, &fixed, &words), Err(Invalid("a table holds at most 1 MiB of text")));
+    wide.layout(&repeated[..200], corner, &fixed, &words).unwrap();
     for bad in [f64::NAN, f64::INFINITY, -1.0] {
-        assert_eq!(t.layout(&rows(), corner, &|_, _| bad), Err(Invalid("a measured text is finite and at least 0 mm wide")), "{bad}");
+        assert_eq!(t.layout(&rows(), corner, &|_, _| bad, &words), Err(Invalid("a measured text is finite and at least 0 mm wide")), "{bad}");
     }
     for corner in [Vec2::new(f64::NAN, 0.0), Vec2::new(1e5 + 1.0, 0.0), Vec2::new(0.0, -1e5 - 1.0)] {
-        assert_eq!(t.layout(&rows(), corner, &fixed), Err(Invalid("a table lies within the paper's coordinates")), "{corner:?}");
+        assert_eq!(t.layout(&rows(), corner, &fixed, &words), Err(Invalid("a table lies within the paper's coordinates")), "{corner:?}");
     }
     // Inside at the corner, outside once laid out: 28 mm of rows down from y = -99,990.
-    assert_eq!(t.layout(&rows(), Vec2::new(0.0, -99_990.0), &fixed), Err(Invalid("a table lies within the paper's coordinates")));
+    assert_eq!(t.layout(&rows(), Vec2::new(0.0, -99_990.0), &fixed, &words), Err(Invalid("a table lies within the paper's coordinates")));
     // No rows: the heading alone, on the outline both ways.
-    let alone = t.layout(&[], corner, &fixed).unwrap();
+    let alone = t.layout(&[], corner, &fixed, &words).unwrap();
     assert!(alone.rows.is_empty() && near(alone.outline, alone.heading.rect));
 }
 
@@ -479,7 +509,7 @@ fn outline(x0: f64, y0: f64, x1: f64, y1: f64) -> (Vec<[i64; 4]>, bool, f64) {
 /// + 18.85). Each end is the layout's own corner, the same number exactly.
 #[test]
 fn a_tables_lines_on_paper_are_its_outline_and_each_inner_edge_once() {
-    let layout = table().layout(&rows(), Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = table().layout(&rows(), Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     let group = layout.paper(9, ObjectKind::PartsList);
     assert_eq!((group.object, group.kind), (9, ObjectKind::PartsList));
     let across = |y| piece(365.6, y, 400.0, y, 0.35);
@@ -500,7 +530,7 @@ fn a_tables_lines_on_paper_are_its_outline_and_each_inner_edge_once() {
 #[test]
 fn with_the_heading_at_the_bottom_the_lines_are_the_same_rule() {
     let table = Table { heading: Heading::Bottom, ..table() };
-    let group = table.layout(&rows(), Vec2::new(400.0, 10.0), &fixed).unwrap().paper(3, ObjectKind::RevisionTable);
+    let group = table.layout(&rows(), Vec2::new(400.0, 10.0), &fixed, &words).unwrap().paper(3, ObjectKind::RevisionTable);
     assert_eq!((group.object, group.kind), (3, ObjectKind::RevisionTable));
     let across = |y| piece(365.6, y, 400.0, y, 0.35);
     let down = |x| piece(x, 10.0, x, 38.0, 0.35);
@@ -513,11 +543,11 @@ fn with_the_heading_at_the_bottom_the_lines_are_the_same_rule() {
 #[test]
 fn a_heading_alone_and_one_column_have_only_the_lines_they_need() {
     let none = Table { filter: Filter { only: Some(Only::Assemblies), ..Filter::default() }, ..table() };
-    let heading_alone = none.layout(&rows()[..2], Vec2::new(400.0, 280.0), &fixed).unwrap().paper(1, ObjectKind::PartsList);
+    let heading_alone = none.layout(&rows()[..2], Vec2::new(400.0, 280.0), &fixed, &words).unwrap().paper(1, ObjectKind::PartsList);
     let down = |x| piece(x, 273.0, x, 280.0, 0.35);
     assert_eq!(strokes(&heading_alone), [outline(365.6, 273.0, 400.0, 280.0), down(374.125), down(392.975)]);
     let one = Table { columns: vec![column("item", "Item", HAlign::Centre)], ..table() };
-    let layout = one.layout(&rows()[..1], Vec2::new(400.0, 280.0), &fixed).unwrap();
+    let layout = one.layout(&rows()[..1], Vec2::new(400.0, 280.0), &fixed, &words).unwrap();
     // Item alone: 6 mm of text, 2 mm of padding and half the outline on each side: 8.7 mm.
     assert_eq!(strokes(&layout.paper(1, ObjectKind::PartsList)), [outline(391.3, 266.0, 400.0, 280.0), piece(391.3, 273.0, 400.0, 273.0, 0.35)]);
 }
@@ -529,7 +559,7 @@ fn a_table_at_its_limits_is_a_valid_paper_group() {
     let columns: Vec<Column> = (0..MAX_COLUMNS).map(|i| column(&format!("c{i}"), "C", HAlign::Left)).collect();
     let rows: Vec<Row> = (0..MAX_ROWS).map(|i| row(&i.to_string(), RowKind::Part, false, &[])).collect();
     let table = Table { columns, ..table() };
-    let group = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed).unwrap().paper(1, ObjectKind::PartsList);
+    let group = table.layout(&rows, Vec2::new(400.0, 280.0), &fixed, &words).unwrap().paper(1, ObjectKind::PartsList);
     assert_eq!(group.items.len(), 1 + MAX_ROWS + MAX_COLUMNS - 1);
     sheet(vec![group]).validate().unwrap();
 }

@@ -530,7 +530,11 @@ pub(crate) fn edit_title_cell(app: &mut SolveApp, sheet: u64, point: Vec2, at: e
         .and_then(|s| s["title_block_cells"].as_array()?.iter().find(|c| c["name"].as_str() == Some(cell.name.as_str())))
         .and_then(|c| c["text"].as_str().map(str::to_owned));
     let Some(text) = text.filter(|text| !text.contains('\n')) else { return false };
-    let title = cell.label.as_ref().map_or(cell.name.as_str(), |label| label.text.as_str()).to_owned();
+    // Titled as the sheet prints the cell's label, in the drawing's language.
+    let title = cell
+        .label
+        .as_ref()
+        .map_or_else(|| cell.name.clone(), |label| solidcraft_engine::paper_words::resolve(&drawing.language, &label.text).into_owned());
     let mut overrides = serde_json::Map::new();
     overrides.insert(cell.name.clone(), serde_json::json!(&text));
     let params = serde_json::json!({"sheet": encode(sheet), "title_block_overrides": overrides});

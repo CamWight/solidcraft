@@ -11,7 +11,7 @@ use solidcraft_geom::paper::line::LineGroup;
 
 use super::*;
 use crate::drawing::cutting_line::{ArrowSide, CuttingLine, SectionKind};
-use crate::drawing::{Excluded, Sheet, Source};
+use crate::drawing::{Excluded, Sheet, Source, english};
 use crate::drawing_view::{Exploded, JointPose, OccurrencePaths, Pose, StudyStep, ViewConfiguration};
 use crate::format::DRAWING;
 use crate::ids::IdSource;
@@ -733,7 +733,8 @@ fn a_view_placed_apart_gets_the_first_free_letter() {
     }
     assert_eq!([front, right, top].map(|id| letter(&d, id)), [None, None, Some("A".into())]);
     let label = d.view(top).unwrap().label.clone().unwrap();
-    assert_eq!((label.words.as_str(), label.scale_words.as_str(), label.shown, label.offset), ("VIEW", "SCALE", true, None));
+    let built_in = (PaperText::built_in(VIEW_WORDS), PaperText::built_in(SCALE_WORDS));
+    assert_eq!(((label.words, label.scale_words), label.shown, label.offset), (built_in, true, None));
     let mut apart = |d: &mut Drawing| {
         let id = add(d, &mut id_source, projected(front, ProjectedSide::Below), ViewPlace::At([150.0, 40.0]), ViewOverrides::default());
         d.give_letter(id).unwrap();
@@ -766,26 +767,26 @@ fn a_view_placed_apart_gets_the_first_free_letter() {
 fn a_views_label_reads_its_shown_parts() {
     let (mut d, _, [front, right, top]) = three();
     d.give_letter(top).unwrap();
-    assert_eq!(d.label_text(top).as_deref(), Some("VIEW A"));
-    assert_eq!((d.label_text(front), d.label_text(right)), (None, None), "no label");
+    assert_eq!(d.label_text(top, &english).as_deref(), Some("VIEW A"));
+    assert_eq!((d.label_text(front, &english), d.label_text(right, &english)), (None, None), "no label");
     view_mut(&mut d, top).settings.scale = Some("2:1".parse().unwrap());
-    assert_eq!(d.label_text(top).as_deref(), Some("VIEW A\nSCALE 2:1"), "the sheet's scale is its base view's, 1:2");
+    assert_eq!(d.label_text(top, &english).as_deref(), Some("VIEW A\nSCALE 2:1"), "the sheet's scale is its base view's, 1:2");
     let label = view_mut(&mut d, top).label.as_mut().unwrap();
-    label.words = String::new();
+    label.words = PaperText::typed("");
     label.name = "BRACKET END".into();
-    label.scale_words = "ECHELLE".into();
-    assert_eq!(d.label_text(top).as_deref(), Some("A\nBRACKET END\nECHELLE 2:1"));
+    label.scale_words = PaperText::typed("ECHELLE");
+    assert_eq!(d.label_text(top, &english).as_deref(), Some("A\nBRACKET END\nECHELLE 2:1"));
     let label = view_mut(&mut d, top).label.as_mut().unwrap();
     (label.show_letter, label.show_scale) = (false, false);
-    assert_eq!(d.label_text(top).as_deref(), Some("BRACKET END"));
+    assert_eq!(d.label_text(top, &english).as_deref(), Some("BRACKET END"));
     view_mut(&mut d, top).label.as_mut().unwrap().name.clear();
-    assert_eq!(d.label_text(top), None, "nothing shown");
+    assert_eq!(d.label_text(top, &english), None, "nothing shown");
     view_mut(&mut d, top).label.as_mut().unwrap().show_letter = true;
     view_mut(&mut d, top).label.as_mut().unwrap().shown = false;
-    assert_eq!((d.label_text(top), letter(&d, top).as_deref()), (None, Some("A")), "hidden, its letter kept");
+    assert_eq!((d.label_text(top, &english), letter(&d, top).as_deref()), (None, Some("A")), "hidden, its letter kept");
     view_mut(&mut d, top).label.as_mut().unwrap().shown = true;
     view_mut(&mut d, top).place = ViewPlace::Aligned(320.0);
-    assert_eq!((d.label_text(top), letter(&d, top).as_deref()), (None, Some("A")), "back in its projection place");
+    assert_eq!((d.label_text(top, &english), letter(&d, top).as_deref()), (None, Some("A")), "back in its projection place");
 }
 
 /// A label's letter is one to three capitals, its words one line each, and its offset a point on

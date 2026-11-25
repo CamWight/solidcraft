@@ -7054,7 +7054,7 @@ fn a_detail_view_draws_its_region_cut_to_its_window_and_its_mark_on_the_parent()
     let detail = ids::decode(made["view"].as_str().unwrap()).unwrap();
     assert_eq!((made["scale"]["text"].as_str(), made["letter"].as_str()), (Some("1:1"), Some("A")), "{made}");
     let d = s.drawing("test").unwrap().clone();
-    assert_eq!(d.label_text(detail).as_deref(), Some("DETAIL A\nSCALE 1:1"));
+    assert_eq!(d.label_text(detail, &|words| crate::paper_words::resolve(&d.language, words)).as_deref(), Some("DETAIL A\nSCALE 1:1"));
     let scene = built(&s, sheet);
     let status = scene.views.iter().find(|v| v.view == detail).map(|v| v.status.clone());
     assert_eq!(status, Some(Status::Drawn));

@@ -14,7 +14,7 @@
 //! listed by id.
 
 use serde::{Deserialize, Serialize};
-use solidcraft_geom::cell::{Content, Format, HAlign, Part, Source};
+use solidcraft_geom::cell::{Content, Format, HAlign, PaperText, Part, Source};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::MAX_SIDE_MM;
 use solidcraft_geom::table::{self, BALLOONED, Column, Filter, Heading, Table};
@@ -179,25 +179,27 @@ impl MassFormat {
 
 impl Kind {
     /// The definition a new table of this kind starts with: headings on top, rows of 7 mm, each
-    /// column as wide as its text. A parts list's last column says how many balloons point at each
-    /// row, for its editor alone: it isn't printed.
+    /// column as wide as its text. Each heading is the built-in message named after its column
+    /// (`drawing.paper.heading.quantity`, "QTY" in English), so it prints in the drawing's language. A
+    /// parts list's last column says how many balloons point at each row, for its editor alone: it
+    /// isn't printed.
     pub fn default_table(&self) -> Table {
         let columns = match self {
             Kind::PartsList(_) => vec![
-                column("item", "ITEM", HAlign::Centre),
-                column("quantity", "QTY", HAlign::Centre),
-                column("name", "NAME", HAlign::Left),
-                column("description", "DESCRIPTION", HAlign::Left),
-                column("material", "MATERIAL", HAlign::Left),
-                column("mass", "MASS", HAlign::Right),
-                Column { printed: false, ..column(BALLOONED, "BALLOONED", HAlign::Centre) },
+                column("item", HAlign::Centre),
+                column("quantity", HAlign::Centre),
+                column("name", HAlign::Left),
+                column("description", HAlign::Left),
+                column("material", HAlign::Left),
+                column("mass", HAlign::Right),
+                Column { printed: false, ..column(BALLOONED, HAlign::Centre) },
             ],
             Kind::Revision => vec![
-                column("revision", "REV", HAlign::Centre),
-                column("description", "DESCRIPTION", HAlign::Left),
-                column("designer", "DRAWN", HAlign::Left),
-                column("checker", "CHECKED", HAlign::Left),
-                column("date", "DATE", HAlign::Left),
+                column("revision", HAlign::Centre),
+                column("description", HAlign::Left),
+                column("designer", HAlign::Left),
+                column("checker", HAlign::Left),
+                column("date", HAlign::Left),
             ],
         };
         Table {
@@ -223,9 +225,10 @@ impl Kind {
     }
 }
 
-fn column(key: &str, heading: &str, align: HAlign) -> Column {
+fn column(key: &str, align: HAlign) -> Column {
     let content = Content(vec![Part::Field { source: Source::Row, key: key.into(), format: Format::default() }]);
-    Column { name: key.into(), heading: heading.into(), content, width_mm: None, align, printed: true }
+    let heading = PaperText::built_in(&format!("drawing.paper.heading.{key}"));
+    Column { name: key.into(), heading, content, width_mm: None, align, printed: true }
 }
 
 impl Record for SheetTable {

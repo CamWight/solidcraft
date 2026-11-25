@@ -23,12 +23,13 @@
 //!   centred on its edge, and a cell's text is padded from the inner edge of its lines, as in a
 //!   title block.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
 use crate::Aabb2;
-use crate::cell::{self, Content, HAlign, PADDING_MM, Part, Source, Warning, check_text, is_snake_case};
+use crate::cell::{self, Content, HAlign, PADDING_MM, PaperText, Part, Source, Warning, check_text, is_snake_case};
 use crate::paper::{Group, Item, MAX_COORDINATE_MM, MAX_LINE_MM, MAX_SIDE_MM, ObjectKind};
 use solidcore_record::{Loop2, Seg2, Vec2};
 
@@ -80,7 +81,8 @@ fn default_row_height() -> f64 {
 pub struct Column {
     /// Snake case, and no other column of the table has it: overrides and filters name it.
     pub name: String,
-    pub heading: String,
+    /// Typed, or a built-in message: `drawing.paper.heading.<the column's name>` in a new table.
+    pub heading: PaperText,
     /// Read against each row: its fields (`{"field": {"source": "row", "key": "part_number"}}`) and
     /// text.
     pub content: Content,
@@ -270,7 +272,7 @@ impl Table {
         for (i, column) in self.columns.iter().enumerate() {
             require(is_snake_case(&column.name), "a column's name is snake case and at most 64 characters")?;
             require(self.columns.iter().take(i).all(|other| other.name != column.name), "no two columns have the same name")?;
-            cell::check_label(&column.heading).map_err(cell_rule)?;
+            column.heading.check().map_err(cell_rule)?;
             column.content.validate().map_err(cell_rule)?;
             for part in &column.content.0 {
                 match part {
@@ -283,7 +285,7 @@ impl Table {
                     }
                 }
             }
-            budget.add(&column.heading)?;
+            budget.count(column.heading.saved_bytes())?;
             if let Some(width) = column.width_mm {
                 // Wider than its padding and the widest line on its sides, so its text has room.
                 let room = width > 2.0 * PADDING_MM + self.outline_line_mm.max(self.cell_line_mm);
@@ -310,8 +312,15 @@ impl Table {
 
     /// The table with the right end of its heading's outer edge at `corner` (its top right with the
     /// heading at the top, its bottom right with the heading at the bottom), showing the rows the
-    /// filter lets through. `measure(text, cap_mm)` is the width of one line of text.
-    pub fn layout(&self, rows: &[Row], corner: Vec2, measure: &dyn Fn(&str, f64) -> f64) -> Result<TableLayout> {
+    /// filter lets through. `measure(text, cap_mm)` is the width of one line of text, and
+    /// `words(heading)` what a heading prints: a built-in one in the drawing's language.
+    pub fn layout(
+        &self,
+        rows: &[Row],
+        corner: Vec2,
+        measure: &dyn Fn(&str, f64) -> f64,
+        words: &dyn Fn(&PaperText) -> Cow<'_, str>,
+    ) -> Result<TableLayout> {
         let mut budget = self.check()?;
         require(rows.len() <= MAX_ROWS, "a table lists at most 10,000 rows")?;
         let on_paper = |p: Vec2| p.x.abs() <= MAX_COORDINATE_MM && p.y.abs() <= MAX_COORDINATE_MM;
@@ -328,6 +337,8 @@ impl Table {
         }
         let shown = self.shown(rows, &mut budget)?;
         let columns: Vec<&Column> = self.columns.iter().filter(|c| c.printed).collect();
+        // What each printed heading prints, worked out once for its width and its lines.
+        let headings: Vec<Cow<'_, str>> = columns.iter().map(|c| words(&c.heading)).collect();
         let width = |text: &str| {
             let w = measure(text, self.cap_mm);
             require(w.is_finite() && w >= 0.0, "a measured text is finite and at least 0 mm wide").map(|()| w)
@@ -341,8 +352,8 @@ impl Table {
             let w = match column.width_mm {
                 Some(w) => w,
                 None => {
-                    let texts =
-                        std::iter::once(column.heading.as_str()).chain(shown.iter().filter_map(|(_, cells)| cells.get(i).map(|c| c.text.as_str())));
+                    let heading = headings.get(i).map(|h| &**h);
+                    let texts = heading.into_iter().chain(shown.iter().filter_map(|(_, cells)| cells.get(i).map(|c| c.text.as_str())));
                     let mut widest = 0.0f64;
                     for line in texts.flat_map(|t| t.split('\n')) {
                         widest = widest.max(width(line)?);
@@ -357,7 +368,7 @@ impl Table {
         // Each row's lines, from the heading, wrapped to its column.
         let pitch = self.cap_mm * LINE_PITCH;
         let mut wrapped: Vec<Vec<(Vec<String>, bool)>> = Vec::with_capacity(shown.len() + 1);
-        let heading: Vec<&str> = columns.iter().map(|c| c.heading.as_str()).collect();
+        let heading: Vec<&str> = headings.iter().map(|h| &**h).collect();
         for texts in std::iter::once(heading).chain(shown.iter().map(|(_, cells)| cells.iter().map(|c| c.text.as_str()).collect())) {
             let mut cells = Vec::with_capacity(texts.len());
             for (i, text) in texts.into_iter().enumerate() {

@@ -8,6 +8,8 @@
 //!   [`Source`] and key, with a [`Format`]. Keys, units and decimals are kept as written; the
 //!   resolver checks them against each source. [`Content::validate`] bounds its size, and
 //!   [`check_label`] a label's.
+//! - A label or a heading is [`PaperText`]: typed text, or a built-in message the drawing's
+//!   language prints.
 //! - A value is never cut: when it has more than its [`Fit`] allows, or a word is wider than its
 //!   box, it is shown whole with a [`Warning`].
 //!
@@ -26,6 +28,8 @@
 //!
 //! Breaking a value into lines that fit the box's width, and warning about width, need the text
 //! measured: they come with the paper scene's text.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -196,6 +200,93 @@ impl Content {
 /// Checks a label's text: one line of at most [`MAX_TEXT_BYTES`], without control characters.
 pub fn check_label(text: &str) -> Result<()> {
     require(text.len() <= MAX_TEXT_BYTES && !text.chars().any(char::is_control), "a label is one line of at most 4096 bytes")
+}
+
+/// The longest id a built-in message may have.
+const MAX_MESSAGE_ID_BYTES: usize = 128;
+
+/// Words a drawing prints as a label or a heading (#19884): text someone typed, printed as typed in
+/// every language, or a message SolidCraft gives, printed in the drawing's language wherever its
+/// sheet is laid out. Saved as the text itself, as a drawing always saved it, or as
+/// `{"message": id}`. Data only: nothing here reads a catalog or knows a language. No `From<&str>`
+/// either: code says which it means ([`PaperText::typed`], [`PaperText::built_in`]), so typed text
+/// can never be taken for a message, nor a message for typed text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct PaperText(Words);
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, expecting = "text, or {\"message\": id} for a built-in message")]
+enum Words {
+    Typed(String),
+    BuiltIn(Message),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "BTreeMap<String, String>")]
+struct Message {
+    message: String,
+}
+
+/// A built-in message reads only from `{"message": id}`: a derived struct would also read a list
+/// (`["Title"]`), which no drawing ever saved.
+impl TryFrom<BTreeMap<String, String>> for Message {
+    type Error = &'static str;
+
+    fn try_from(mut map: BTreeMap<String, String>) -> Result<Message, &'static str> {
+        match (map.remove("message"), map.is_empty()) {
+            (Some(message), true) => Ok(Message { message }),
+            _ => Err("a built-in message is {\"message\": id} and nothing else"),
+        }
+    }
+}
+
+impl PaperText {
+    /// Text someone typed, printed as it is.
+    pub fn typed(text: impl Into<String>) -> PaperText {
+        PaperText(Words::Typed(text.into()))
+    }
+
+    /// The built-in message `id`, printed in the drawing's language.
+    pub fn built_in(id: &str) -> PaperText {
+        PaperText(Words::BuiltIn(Message { message: id.to_string() }))
+    }
+
+    /// The text, when someone typed it.
+    pub fn typed_text(&self) -> Option<&str> {
+        match &self.0 {
+            Words::Typed(text) => Some(text),
+            Words::BuiltIn(_) => None,
+        }
+    }
+
+    /// The message's id, when it is a built-in message.
+    pub fn message(&self) -> Option<&str> {
+        match &self.0 {
+            Words::Typed(_) => None,
+            Words::BuiltIn(Message { message }) => Some(message),
+        }
+    }
+
+    /// The bytes it saves: its text, or its message's id.
+    pub fn saved_bytes(&self) -> usize {
+        self.typed_text().or(self.message()).map_or(0, str::len)
+    }
+
+    /// Checks it as a label: typed text by [`check_label`]; a message by its id, a lowercase letter
+    /// then lowercase letters, digits, underscores and dots, at most 128 in all.
+    pub fn check(&self) -> Result<()> {
+        match &self.0 {
+            Words::Typed(text) => check_label(text),
+            Words::BuiltIn(Message { message }) => {
+                let mut bytes = message.bytes();
+                let id = message.len() <= MAX_MESSAGE_ID_BYTES
+                    && bytes.next().is_some_and(|b| b.is_ascii_lowercase())
+                    && bytes.all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'.');
+                require(id, "a built-in message's id is lowercase letters, digits, underscores and dots, at most 128 in all")
+            }
+        }
+    }
 }
 
 impl Fit {

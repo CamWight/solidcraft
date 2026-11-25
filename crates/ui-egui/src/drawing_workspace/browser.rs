@@ -254,12 +254,12 @@ pub(crate) fn name_of(app: &SolveApp, id: u64) -> Option<String> {
 
 pub(crate) fn view_name(app: &SolveApp, drawing: &Drawing, view: &View, number: usize) -> String {
     // A view with a label is called what its label says: its name, else its words and letter
-    // (`DETAIL A`), never nothing.
+    // (`DETAIL A`) as the sheet prints them, in the drawing's language, never nothing.
     if let Some(label) = &view.label {
         if !label.name.is_empty() {
             return label.name.clone();
         }
-        let called = format!("{} {}", label.words, label.letter);
+        let called = format!("{} {}", solidcraft_engine::paper_words::resolve(&drawing.language, &label.words), label.letter);
         if !called.trim().is_empty() {
             return called.trim().to_string();
         }

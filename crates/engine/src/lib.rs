@@ -39,6 +39,7 @@ mod mesh_lines;
 pub mod occurrences;
 pub mod origins;
 pub mod panels;
+pub mod paper_words;
 pub mod params;
 pub mod pick_pieces;
 pub mod plugin;

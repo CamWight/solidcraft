@@ -85,7 +85,7 @@ fn a_new_table_has_its_defaults_and_saves() {
     let record = &list["record"];
     assert_eq!(record["place"], json!({"anchor": {"corner": "top_right", "offset_mm": [0.0, 0.0]}}), "{record}");
     assert_eq!((&record["table"]["heading"], &record["table"]["row_height_mm"]), (&json!("top"), &json!(7.0)));
-    assert_eq!(record["table"]["columns"][1]["heading"], json!("QTY"));
+    assert_eq!(record["table"]["columns"][1]["heading"], json!({"message": "drawing.paper.heading.quantity"}), "QTY, in the drawing's language");
     assert_eq!((&record["table"]["columns"][6]["name"], &record["table"]["columns"][6]["printed"]), (&json!("ballooned"), &json!(false)));
     // Never on paper: the sheet draws the list, but never this column.
     let svg = s.execute("drawing.export", &json!({"sheet": sheet, "format": "svg"})).unwrap();
@@ -378,6 +378,48 @@ fn a_tables_words_stand_where_their_cells_say() {
     assert_eq!(group.matches("<path fill=\"#000\" stroke=\"none\" d=\"").count(), words, "each word is in the file: {group}");
 }
 
+/// A new table's headings print in the drawing's language (#19884), on the window's sheet as a build
+/// draws them, and a change of the language reprints them; a word no catalog has prints its English.
+/// A heading someone typed, saved as plain text as a 0.49.0 drawing saved every heading, prints as
+/// typed in every language.
+#[test]
+fn a_tables_headings_print_in_the_drawings_language_and_typed_ones_as_typed() {
+    use solidcraft_geom::paper::Item;
+
+    crate::paper_words::install_test_catalogs();
+    let mut s = assembly();
+    let sheet = s.drawing("test").unwrap().sheets[0].id;
+    let table = id_of(&run(&mut s, ADD, json!({"sheet": ids::encode(sheet), "kind": "parts_list"})));
+    let printed_in = |s: &mut Session, language: &str| {
+        s.execute("drawing.set", &json!({"language": language})).unwrap();
+        crate::drawing_scene::extract(s, sheet).unwrap();
+        while crate::drawing_scene::step(s) {}
+        let view = crate::drawing_scene::extract(s, sheet).unwrap();
+        let d = s.drawing("test").unwrap().clone();
+        assert_eq!(*view.scene, crate::drawing_scene::build(s, &d, sheet).unwrap().scene, "as a build draws it");
+        let group = view.scene.groups.iter().find(|g| g.object == table).unwrap();
+        group.items.iter().filter_map(|item| if let Item::Text(run) = item { Some(run.text.clone()) } else { None }).collect::<Vec<_>>()
+    };
+    let has = |words: &[String], word: &str| words.iter().any(|one| one == word);
+    let french = printed_in(&mut s, "fr");
+    assert!(has(&french, "REP") && has(&french, "QTÉ") && has(&french, "NAME") && !has(&french, "QTY"), "{french:?}");
+    let german = printed_in(&mut s, "de");
+    assert!(has(&german, "POS.") && has(&german, "MENGE") && !has(&german, "QTÉ"), "{german:?}");
+
+    let mut columns = serde_json::to_value(&s.drawing("test").unwrap().tables.by_id(table).unwrap().table.columns).unwrap();
+    let quantity = columns.as_array_mut().unwrap().iter_mut().find(|column| column["name"] == "quantity").unwrap();
+    assert_eq!(quantity["heading"], json!({"message": "drawing.paper.heading.quantity"}));
+    quantity["heading"] = json!("Stück");
+    run(&mut s, EDIT, json!({"table": ids::encode(table), "set": {"columns": columns}}));
+    for (language, item) in [("de", "POS."), ("fr", "REP"), ("en", "ITEM")] {
+        let printed = printed_in(&mut s, language);
+        assert!(has(&printed, "Stück") && has(&printed, item), "{language}: {printed:?}");
+        assert!(!["MENGE", "QTÉ", "QTY"].iter().any(|word| has(&printed, word)), "{language}: {printed:?}");
+    }
+    let saved = serde_json::to_value(&s.drawing("test").unwrap().tables.by_id(table).unwrap().table.columns).unwrap();
+    assert_eq!(saved.as_array().unwrap().iter().find(|column| column["name"] == "quantity").unwrap()["heading"], "Stück");
+}
+
 /// A word no font can set is left off and its table says why; the table and the rest of its words
 /// still draw. Here an override puts an unassigned code point in one cell.
 #[test]
@@ -522,7 +564,7 @@ fn a_table_edits_moves_and_goes_with_its_sheet() {
 
     let edited = set(&mut s, json!({"heading": "bottom", "row_height_mm": 9.0, "place": {"at": [20.0, 30.0]}}));
     assert_eq!((&edited["record"]["table"]["heading"], &edited["record"]["place"]), (&json!("bottom"), &json!({"at": [20.0, 30.0]})), "{edited}");
-    assert_eq!(edited["record"]["table"]["columns"][1]["heading"], json!("QTY"), "the rest stays");
+    assert_eq!(edited["record"]["table"]["columns"][1]["heading"], json!({"message": "drawing.paper.heading.quantity"}), "the rest stays");
     let steps = s.undo.len();
     set(&mut s, json!({"heading": "bottom"}));
     assert_eq!(s.undo.len(), steps, "nothing changed, no step");

@@ -2333,7 +2333,7 @@ fn a_drawing_saved_with_the_old_smallest_symbol_cell_opens() {
     let mut block = solidcraft_geom::title_block::default_block();
     let cell = &mut block.cells[11];
     assert_eq!(cell.name, "projection");
-    cell.label = Some(solidcraft_geom::title_block::Label { text: "Projection".into(), cap_mm: 4.125 });
+    cell.label = Some(solidcraft_geom::title_block::Label { text: solidcraft_geom::cell::PaperText::typed("Projection"), cap_mm: 4.125 });
     cell.rect_mm[0] = -17.925;
     Arc::make_mut(&mut d.sheets[0]).title_block = Some(block);
     let read = Drawing::from_json(&d.to_json().unwrap()).unwrap();

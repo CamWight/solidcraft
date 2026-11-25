@@ -3651,6 +3651,38 @@ fn a_labels_parts_are_typed_over_hidden_and_moved() {
     assert_eq!(*s.drawing("test").unwrap(), before);
 }
 
+/// A new label's words print in the drawing's language (#19884): `VUE A`, and a detail's `DÉTAIL B`
+/// over its `ÉCHELLE`; a change of the language reprints them. Words someone typed print as typed in
+/// every language, saved as plain text, as a 0.49.0 drawing saved its `VIEW` and `SCALE`.
+#[test]
+fn a_labels_words_print_in_the_drawings_language_and_typed_ones_as_typed() {
+    crate::paper_words::install_test_catalogs();
+    let mut s = block_drawing();
+    let (_, front) = create(&mut s, BASE, json!({"sheet": "Sheet 1", "scale": "1:2", "position_mm": [150.0, 150.0]}));
+    let (_, top) = create(&mut s, PROJECTED, json!({"parent": ids::encode(front), "side": "above", "place": {"at": [150.0, 230.0]}}));
+    let region =
+        json!({"parent": ids::encode(front), "boundary": {"circle": {"centre": [0.0, 0.0], "radius": 5.0}}, "place": {"at": [300.0, 100.0]}});
+    let (_, detail) = create(&mut s, DETAIL, region);
+    let text = |s: &mut Session, view: u64| inspect_view(s, view)["label"]["text"].as_str().unwrap_or_default().to_string();
+    assert_eq!(text(&mut s, top), "VIEW A", "English by default");
+    run(&mut s, "drawing.set", json!({"language": "fr"}));
+    assert_eq!(text(&mut s, top), "VUE A");
+    assert!(text(&mut s, detail).starts_with("DÉTAIL B\nÉCHELLE "), "{}", text(&mut s, detail));
+    run(&mut s, "drawing.set", json!({"language": "de"}));
+    assert_eq!((text(&mut s, top).as_str(), inspect_view(&mut s, top)["label"]["words"].clone()), ("ANSICHT A", json!("ANSICHT")));
+    assert!(text(&mut s, detail).starts_with("EINZELHEIT B\nMASSSTAB "), "{}", text(&mut s, detail));
+
+    edit_view(&mut s, top, json!({"label": {"words": "VIEW"}}));
+    edit_view(&mut s, detail, json!({"label": {"words": "Schnitt", "scale_words": "M"}}));
+    for language in ["de", "fr", "en"] {
+        run(&mut s, "drawing.set", json!({"language": language}));
+        assert_eq!(text(&mut s, top), "VIEW A", "{language}");
+        assert!(text(&mut s, detail).starts_with("Schnitt B\nM "), "{language}: {}", text(&mut s, detail));
+    }
+    let label = serde_json::to_value(saved(&s, top).label).unwrap();
+    assert_eq!((&label["words"], &label["scale_words"]), (&json!("VIEW"), &json!({"message": "drawing.paper.view_label.scale"})), "{label}");
+}
+
 /// [`three_views`] in `projection`, with a view projected above the front view and lined up at y 220:
 /// the session, and the front view's, the right view's and that view's ids.
 fn lined_up_views(projection: Projection) -> (Session, [u64; 3]) {

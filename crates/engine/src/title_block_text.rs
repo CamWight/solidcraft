@@ -5,7 +5,8 @@
 //! - [`shown`] works out each text cell's text: the text typed over it on the sheet, or its content
 //!   with each field read ([`read`], [`Values::text`]). `drawing.inspect` lists it, and the sheet scene
 //!   sets it. A note's text reads its fields by the same [`read`].
-//! - [`lay`] measures each label as one line at its place, and each value's lines in its value box,
+//! - [`lay`] measures each label as one line at its place (a built-in one in the drawing's
+//!   language, [`crate::paper_words`]), and each value's lines in its value box,
 //!   broken between words to the box's width when its fit wraps. What doesn't fit is shown whole
 //!   and noted ([`Warning`]). A text the drawing's font can't set is left off the sheet and noted
 //!   with why, so one name in a script no font has never fails the sheet or its export. The window's
@@ -208,14 +209,18 @@ fn format_mass(grams: f64) -> String {
     format!("{:.2} kg", grams / 1000.0)
 }
 
-/// `block`'s labels, and its text cells' values as `shown` gives them, measured in the drawing's
-/// lettering (`fonts`) where `layout` places them.
-pub fn lay(block: &TitleBlock, layout: &TitleBlockLayout, fonts: &PaperFonts, shown: &[CellText]) -> Laid {
+/// `block`'s labels, built-in ones in the drawing's `language` ([`crate::paper_words`]), and its text
+/// cells' values as `shown` gives them, measured in the drawing's lettering (`fonts`) where `layout`
+/// places them.
+pub fn lay(block: &TitleBlock, layout: &TitleBlockLayout, fonts: &PaperFonts, shown: &[CellText], language: &str) -> Laid {
     let mut out = Laid::default();
     for (cell, placed) in block.cells.iter().zip(&layout.cells) {
         let mut notes = Vec::new();
         let label = cell.label.as_ref().zip(placed.label_at);
-        let label = label.map(|(label, at)| fonts.lines(&label.text, label.cap_mm, None, &TextStyle::default()).map(|lines| (lines, at)));
+        let label = label.map(|(label, at)| {
+            let text = crate::paper_words::resolve(language, &label.text);
+            fonts.lines(&text, label.cap_mm, None, &TextStyle::default()).map(|lines| (lines, at))
+        });
         let value = match (&cell.kind, shown.iter().find(|shown| shown.name == cell.name)) {
             (CellKind::Text(text), Some(value)) => Some(value_lines(text, placed.value_box, fonts, &value.text, &mut notes)),
             _ => None,

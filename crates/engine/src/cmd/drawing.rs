@@ -511,7 +511,8 @@ fn inspect(s: &mut Session, _p: &Value) -> Result<Value> {
         let size = sheet.sheet.size_mm().map_err(|e| bad(cmd, e.to_string()))?;
         let cells = title_block_cells(s, &mut tree, d, at)?;
         texts.extend(cells.iter().filter_map(|cell| cell["text"].as_str()).map(str::to_string));
-        texts.extend(sheet.title_block.iter().flat_map(|block| &block.cells).filter_map(|cell| cell.label.as_ref()).map(|label| label.text.clone()));
+        let labels = sheet.title_block.iter().flat_map(|block| &block.cells).filter_map(|cell| cell.label.as_ref());
+        texts.extend(labels.map(|label| crate::paper_words::resolve(&d.language, &label.text).into_owned()));
         let mut listed = json!({
             "id": ids::encode(sheet.id),
             "name": sheet.name,
@@ -607,7 +608,7 @@ fn title_block_cells(s: &Session, tree: &mut Tree<'_>, d: &Drawing, at: usize) -
         None => None,
     };
     let notes = block
-        .map(|(block, placed)| title_block_text::lay(block, &placed, &PaperFonts::new(&d.font, &d.language, true), &shown).notes)
+        .map(|(block, placed)| title_block_text::lay(block, &placed, &PaperFonts::new(&d.font, &d.language, true), &shown, &d.language).notes)
         .unwrap_or_default();
     let note = |note: &Note| match note {
         Note::Fit(Warning::Chars { count, max }) => json!({"fit": "chars", "count": count, "max": max}),

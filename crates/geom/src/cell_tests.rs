@@ -243,6 +243,38 @@ fn a_label_is_one_line_of_at_most_4096_bytes() {
     }
 }
 
+/// Paper text (#19884) reads a string as typed text, as every drawing saved before it wrote a label,
+/// and writes typed text back as the same string, so an older drawing saves byte for byte as it was.
+/// A built-in message is `{"message": id}`, and nothing else reads as one: a typed string that looks
+/// like an id stays typed. A label's rule holds for typed text, an id's for a message.
+#[test]
+fn paper_text_is_typed_text_or_a_built_in_message() {
+    let read = |v: serde_json::Value| serde_json::from_value::<PaperText>(v);
+    let typed = read(json!("Legal owner")).unwrap();
+    assert_eq!((typed.typed_text(), typed.message()), (Some("Legal owner"), None));
+    assert_eq!(serde_json::to_string(&typed).unwrap(), r#""Legal owner""#);
+    let id = read(json!("drawing.paper.cell.legal_owner")).unwrap();
+    assert_eq!(id, PaperText::typed("drawing.paper.cell.legal_owner"), "a string is typed, whatever it says");
+    let built_in = read(json!({"message": "drawing.paper.cell.legal_owner"})).unwrap();
+    assert_eq!((built_in.typed_text(), built_in.message()), (None, Some("drawing.paper.cell.legal_owner")));
+    assert_eq!(built_in, PaperText::built_in("drawing.paper.cell.legal_owner"));
+    assert_eq!(serde_json::to_value(&built_in).unwrap(), json!({"message": "drawing.paper.cell.legal_owner"}));
+    assert_eq!((typed.saved_bytes(), built_in.saved_bytes()), (11, 30));
+    for bad in [json!(7), json!(null), json!(["Title"]), json!({"text": "Title"}), json!({"message": 1}), json!({"message": "a", "text": "b"})] {
+        let error = read(bad.clone()).unwrap_err().to_string();
+        assert!(error.contains("text, or {\"message\": id}") || error.contains("unknown field"), "{bad}: {error}");
+    }
+    PaperText::typed("Masse (kg)").check().unwrap();
+    assert_eq!(PaperText::typed("Title\nblock").check(), Err(Invalid("a label is one line of at most 4096 bytes")));
+    const ID: Invalid = Invalid("a built-in message's id is lowercase letters, digits, underscores and dots, at most 128 in all");
+    for ok in ["drawing.paper.heading.item", "a", &"a".repeat(128)] {
+        PaperText::built_in(ok).check().unwrap();
+    }
+    for bad in ["", "Drawing.paper", "drawing paper", "drawing-paper", "1st", ".paper", "drawing.papér", &"a".repeat(129)] {
+        assert_eq!(PaperText::built_in(bad).check(), Err(ID), "{bad:?}");
+    }
+}
+
 #[test]
 fn alignments_projections_and_fits_have_snake_case_names() {
     for (align, name) in [(HAlign::Left, "left"), (HAlign::Centre, "centre"), (HAlign::Right, "right")] {

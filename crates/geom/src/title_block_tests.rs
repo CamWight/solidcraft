@@ -105,7 +105,9 @@ fn the_compact_block_is_the_old_built_in_block() {
     assert_eq!((compact.size_mm, compact.outline_line_mm, compact.cell_line_mm, compact.cells.len()), (Vec2::new(180.0, 49.0), 0.7, 0.35, 12));
     for (cell, (name, rect_mm, label, content, cap_mm, align)) in compact.cells.iter().zip(old) {
         assert_eq!((cell.name.as_str(), cell.rect_mm), (name, rect_mm));
-        assert_eq!(cell.label, Some(Label { text: label.into(), cap_mm: 2.5 }), "{name}");
+        // Its label is the built-in message named after it, which prints `label` in English.
+        let built_in = PaperText::built_in(&format!("drawing.paper.cell.{name}"));
+        assert_eq!(cell.label, Some(Label { text: built_in, cap_mm: 2.5 }), "{name}: {label}");
         match (&cell.kind, content) {
             (CellKind::Text(text), Some(content)) => assert_eq!((&text.content.0, text.cap_mm, text.align), (&content, cap_mm, align), "{name}"),
             (CellKind::ProjectionSymbol, None) => {}
@@ -131,11 +133,12 @@ fn the_default_block_has_the_iso_7200_cells_above_the_rest() {
     for typed in ["document_type", "document_status", "department"] {
         assert!(content(typed).is_empty(), "{typed}");
     }
-    let labels: Vec<_> = ["scale", "document_type", "document_status", "language", "revision", "department"]
-        .map(|name| block.cells.iter().find(|c| c.name == name).and_then(|c| c.label.as_ref()).map(|l| l.text.clone()))
-        .into_iter()
-        .collect();
-    let expected = ["Scale", "Document type", "Document status", "Language", "Revision", "Department"].map(|t| Some(t.to_string()));
+    // Each label is the built-in message named after its cell, which prints Scale, Document type, Document status,
+    // Language, Revision and Department in English (#19884).
+    let names = ["scale", "document_type", "document_status", "language", "revision", "department"];
+    let labels: Vec<_> =
+        names.map(|name| block.cells.iter().find(|c| c.name == name).and_then(|c| c.label.as_ref()).map(|l| l.text.clone())).into_iter().collect();
+    let expected = names.map(|name| Some(PaperText::built_in(&format!("drawing.paper.cell.{name}"))));
     assert_eq!(labels, expected);
     // All six lie in the row from 49 to 61 mm, side by side across the block.
     let mut row: Vec<[f64; 4]> = block.cells.iter().filter(|c| c.rect_mm[1] == 49.0).map(|c| c.rect_mm).collect();
@@ -354,8 +357,8 @@ fn hostile_definitions_are_refused() {
     };
     let named = |name: &'static str| move |b: &mut TitleBlock| b.cells[0].name = name.into();
     let at = |rect_mm: [f64; 4]| move |b: &mut TitleBlock| b.cells[0].rect_mm = rect_mm;
-    let label_cap = |cap_mm: f64| move |b: &mut TitleBlock| b.cells[0].label = Some(Label { text: "Title".into(), cap_mm });
-    let label_text = |text: String| move |b: &mut TitleBlock| b.cells[0].label = Some(Label { text: text.clone(), cap_mm: 2.5 });
+    let label_cap = |cap_mm: f64| move |b: &mut TitleBlock| b.cells[0].label = Some(Label { text: PaperText::typed("Title"), cap_mm });
+    let label_text = |text: String| move |b: &mut TitleBlock| b.cells[0].label = Some(Label { text: PaperText::typed(text.clone()), cap_mm: 2.5 });
     let value_cap = |cap_mm: f64| move |b: &mut TitleBlock| b.cells[0].kind = text(cap_mm, HAlign::Left, Fit::default(), vec![]);
     let mut cases: Vec<(TitleBlock, &str)> = Vec::new();
     for side in [0.999, 1000.001, 0.0, -180.0, f64::NAN, f64::INFINITY] {
@@ -397,21 +400,26 @@ fn hostile_definitions_are_refused() {
     for text in ["Title\nblock".to_string(), "\t".into(), "a".repeat(4097)] {
         cases.push((with(&label_text(text)), "a label is one line of at most 4096 bytes"));
     }
+    // A label saved as a built-in message whose id no message could have.
+    let message = "a built-in message's id is lowercase letters, digits, underscores and dots, at most 128 in all";
+    for id in ["".to_string(), "Drawing.paper.cell.title".into(), "drawing paper".into(), "1.cell".into(), "a".repeat(129)] {
+        cases.push((with(&|b| b.cells[0].label = Some(Label { text: PaperText::built_in(&id), cap_mm: 2.5 })), message));
+    }
     // A 14 mm cell under a 12 mm label, a 2 mm wide cell, a symbol under a label filling its cell:
     // the projection cell is 14.65 mm high inside its lines (a cell line above it, no longer the outline), so a label of
     // 11.65 leaves no room. Above a 5.4 mm label its value box is less than the smallest symbol's 6.25 mm, and the cell
     // 16.275 mm wide holds a box less than its 13.75 mm.
     let symbol = "a projection symbol's cell has room for its smallest size, 13.75 x 6.25 mm";
-    cases.push((with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 5.4 + 1e-9 })), symbol));
+    cases.push((with(&|b| b.cells[11].label = Some(Label { text: PaperText::typed("Projection"), cap_mm: 5.4 + 1e-9 })), symbol));
     cases.push((with(&|b| b.cells[11].rect_mm[0] = -16.275 + 1e-9), symbol));
     cases.push((with(&label_cap(12.0)), "a cell has room for its value below its label"));
     cases.push((
-        with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 11.65 + 1e-9 })),
+        with(&|b| b.cells[11].label = Some(Label { text: PaperText::typed("Projection"), cap_mm: 11.65 + 1e-9 })),
         "a cell has room for its value below its label",
     ));
     cases.push((with(&at([-180.0, 0.0, -178.0, 14.0])), "a cell has room for its value below its label"));
     cases.push((
-        with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 17.0 })),
+        with(&|b| b.cells[11].label = Some(Label { text: PaperText::typed("Projection"), cap_mm: 17.0 })),
         "a cell has room for its value below its label",
     ));
     // The title's value box is 7.975 mm high inside its lines. A line filling it has its descenders
@@ -469,9 +477,9 @@ fn hostile_definitions_are_refused() {
         with(&named("title_2")),
         with(&named(longest)),
         with(&value_cap(title_most - 1e-6)),
-        with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 4.125 - 1e-9 })),
+        with(&|b| b.cells[11].label = Some(Label { text: PaperText::typed("Projection"), cap_mm: 4.125 - 1e-9 })),
         with(&|b| b.cells[11].rect_mm[0] = -17.925 - 1e-9),
-        with(&|b| b.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 5.4 - 1e-9 })),
+        with(&|b| b.cells[11].label = Some(Label { text: PaperText::typed("Projection"), cap_mm: 5.4 - 1e-9 })),
         with(&|b| b.cells[11].rect_mm[0] = -16.275 - 1e-9),
         with(&label_text("a".repeat(4096))),
         with(&|b| b.cells[0].label = None),
@@ -492,7 +500,7 @@ fn a_block_round_trips_through_json_and_unknown_fields_are_refused() {
         json!({
             "name": "sheet",
             "rect_mm": [-30.0, 14.0, 0.0, 24.0],
-            "label": {"text": "Sheet", "cap_mm": 2.5},
+            "label": {"text": {"message": "drawing.paper.cell.sheet"}, "cap_mm": 2.5},
             "kind": {"text": {
                 "content": [
                     {"field": {"source": "sheet", "key": "number", "format": {"unit": null, "decimals": null}}},
@@ -574,7 +582,7 @@ fn fuzzed_definitions_never_panic_and_an_accepted_one_lays_out_inside_its_outlin
                         text.cap_mm += n;
                     }
                 }
-                4 => cell.label = Some(Label { text: "x".into(), cap_mm: n }),
+                4 => cell.label = Some(Label { text: PaperText::typed("x"), cap_mm: n }),
                 k => cell.rect_mm[(k + i) % 4] += n,
             }
         }
@@ -765,7 +773,7 @@ fn the_built_in_blocks_projection_cell_holds_the_3_5_mm_symbol() {
 fn a_cell_with_the_old_smallest_room_still_holds_a_symbol() {
     // The built-in block's projection cell cut to 17.925 mm wide under a 4.3 mm label.
     let mut block = default_block();
-    block.cells[11].label = Some(Label { text: "Projection".into(), cap_mm: 4.3 });
+    block.cells[11].label = Some(Label { text: PaperText::typed("Projection"), cap_mm: 4.3 });
     block.cells[11].rect_mm[0] = -17.925;
     block.validate().unwrap();
     let layout = block.layout(&iso(PaperSize::A3, Orientation::Landscape)).unwrap();

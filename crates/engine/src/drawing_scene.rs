@@ -1440,7 +1440,10 @@ const MARK_GAP_MM: f64 = 2.0;
 /// whether a text waits for a font to fall back to, which only the window's sheet leaves to the
 /// search's thread (`wait` false).
 fn view_labels<'a>(d: &Drawing, views: impl Iterator<Item = &'a View>, lettering: &Lettering, wait: bool) -> (Vec<SetLabel>, bool) {
-    let read = |view: &View| Some((view.id, d.label_text(view.id)?, view.label.as_ref()?.offset.map(Vec2::from)));
+    let read = |view: &View| {
+        let text = d.label_text(view.id, &|words| crate::paper_words::resolve(&lettering.language, words))?;
+        Some((view.id, text, view.label.as_ref()?.offset.map(Vec2::from)))
+    };
     let texts: Vec<(u64, String, Option<Vec2>)> = views.filter_map(read).collect();
     if texts.is_empty() {
         return (Vec::new(), false);
@@ -2069,7 +2072,7 @@ fn block_text(record: &Sheet, lettering: &Lettering, cells: &[CellText], wait: b
     let fonts = PaperFonts::new(&lettering.font, &lettering.language, wait);
     let (mut set, mut pending) = match (&record.title_block, record.title_block_layout().map_err(|e| bad(CMD, e.to_string()))?) {
         (Some(block), Some(placed)) => {
-            let laid = title_block_text::lay(block, &placed, &fonts, cells);
+            let laid = title_block_text::lay(block, &placed, &fonts, cells, &lettering.language);
             (laid.set(), laid.pending)
         }
         _ => (Set::default(), false),

@@ -92,15 +92,17 @@ pub(crate) fn drawing_space(sheet: &Sheet) -> Aabb2 {
     border.unwrap_or_else(|| Aabb2 { min: Vec2::ZERO, max: sheet.sheet.size_mm().unwrap_or(Vec2::ZERO) })
 }
 
-/// `record` of `d` placed in drawing space `space`, its words measured in `lettering`.
+/// `record` of `d` placed in drawing space `space`, its words measured in `lettering`, its built-in
+/// headings in the drawing's language ([`crate::paper_words`]).
 pub(crate) fn place(s: &Session, d: &Drawing, record: &SheetTable, space: Aabb2, lettering: &PaperFonts) -> std::result::Result<Placed, Unplaced> {
     let rows = rows_of(s, d, record).map_err(Unplaced::Failed)?;
     let table = &record.table;
     let words = Words::default();
     let measure = |text: &str, cap_mm: f64| words.width(lettering, text, cap_mm);
-    let sized = table.layout(&rows, Vec2::ZERO, &measure).map_err(|e| Unplaced::Failed(e.to_string()))?;
+    let laid = |corner| table.layout(&rows, corner, &measure, &|heading| crate::paper_words::resolve(&d.language, heading));
+    let sized = laid(Vec2::ZERO).map_err(|e| Unplaced::Failed(e.to_string()))?;
     let corner = corner_of(record.place, table.heading, sized.outline.size(), space);
-    let layout = table.layout(&rows, corner, &measure).map_err(|e| Unplaced::Failed(e.to_string()))?;
+    let layout = laid(corner).map_err(|e| Unplaced::Failed(e.to_string()))?;
     if words.pending.get() {
         return Err(Unplaced::Pending);
     }

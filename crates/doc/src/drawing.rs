@@ -1056,6 +1056,22 @@ impl crate::Document {
     }
 }
 
+/// What a new table's headings and a new view label's words print in English, as the catalogs give
+/// them (the engine's paper words resolve them there): this crate's tests have no catalog.
+#[cfg(test)]
+pub(crate) fn english(text: &solidcraft_geom::cell::PaperText) -> std::borrow::Cow<'_, str> {
+    let id = text.message().and_then(|id| id.rsplit_once('.')).map(|(group, word)| (group.rsplit('.').next().unwrap_or_default(), word));
+    let words = match id {
+        None => return std::borrow::Cow::Borrowed(text.typed_text().unwrap_or_default()),
+        Some(("heading", "quantity")) => "QTY",
+        Some(("heading", "revision")) => "REV",
+        Some(("heading", "designer")) => "DRAWN",
+        Some(("heading", "checker")) => "CHECKED",
+        Some((_, word)) => return std::borrow::Cow::Owned(word.to_uppercase()),
+    };
+    std::borrow::Cow::Borrowed(words)
+}
+
 #[cfg(test)]
 #[path = "drawing_tests.rs"]
 mod tests;

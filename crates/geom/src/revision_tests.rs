@@ -168,7 +168,10 @@ fn the_title_block_and_the_table_read_the_same_fields() {
         assert_eq!(rows[0].fields.get(f.key()).map(String::as_str), record.rows()[0].field(f.key()));
     }
     // Laid out by the sheet table: five columns, the heading at the top.
-    let layout = table().layout(&rows, Vec2::new(400.0, 280.0), &|t, cap| t.chars().count() as f64 * 0.6 * cap).unwrap();
+    fn words(text: &PaperText) -> std::borrow::Cow<'_, str> {
+        std::borrow::Cow::Borrowed(text.typed_text().unwrap_or_default())
+    }
+    let layout = table().layout(&rows, Vec2::new(400.0, 280.0), &|t, cap| t.chars().count() as f64 * 0.6 * cap, &words).unwrap();
     let headings: Vec<_> = layout.heading.cells.iter().map(|c| c.lines[0].text.as_str()).collect();
     assert_eq!(headings, ["Revision", "Description", "Designer", "Checker", "Date"]);
     let row: Vec<_> = layout.rows[0].cells.iter().map(|c| c.lines.first().map_or("", |l| l.text.as_str())).collect();
