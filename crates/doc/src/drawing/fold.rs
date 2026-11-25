@@ -79,7 +79,9 @@ impl Axonometry {
     /// r_k² - r_i²)`. An orthographic view shows an axis at the cosine of its angle to the paper, so
     /// the three scales `u` square to 2 and `k_i = √(1 - u_i²)`; with the ratios `r = u / c`, that is
     /// the root above up to a common factor, which [`axonometric`] drops. The ratios are scaled by the
-    /// largest first, the module's rule, so none overflows.
+    /// largest first, the module's rule, so none overflows. Each `k_i²` is the larger of the other two
+    /// squares less `r_i²`, then the smaller added: when the first two are close their difference is
+    /// exact (Sterbenz's lemma), so a square far smaller than the others is kept, not lost in a sum.
     ///
     /// # Errors
     ///
@@ -98,14 +100,15 @@ impl Axonometry {
         }
         let largest = x.max(y).max(depth);
         let squares = scales.map(|r| (r / largest) * (r / largest));
-        let total: f64 = squares.iter().sum();
         let mut corner = [0.0; 3];
         for (i, (k, name)) in corner.iter_mut().zip(["x", "y", "depth"]).enumerate() {
-            let others = total - squares[i];
-            if squares[i] > others {
-                return Err(refuse(format!("its {name} scale is more than the other two allow: at most {:.3}", largest * others.sqrt())));
+            let (a, b) = (squares[(i + 1) % 3], squares[(i + 2) % 3]);
+            let (big, small) = (a.max(b), a.min(b));
+            let square = (big - squares[i]) + small;
+            if square < 0.0 {
+                return Err(refuse(format!("its {name} scale is more than the other two allow: at most {:.3}", largest * (big + small).sqrt())));
             }
-            *k = (others - squares[i]).sqrt();
+            *k = square.sqrt();
         }
         Ok(corner)
     }

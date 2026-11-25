@@ -306,8 +306,9 @@ fn a_trimetric_view_shows_its_axes_at_its_scales() {
 
 /// Scales no view shows are refused, each with the size that fits: one that isn't a number above
 /// 0, and one more than the other two allow (its square past theirs together), with the most it may
-/// be. A scale so small beside the others that it leaves the corner on the parent's y is refused as
-/// a corner with no horizontal.
+/// be. A scale far smaller than the others keeps its part of the corner: `1 : 1e-8 : 1` looks from
+/// `(1e-8, √2, 1e-8)` and makes a view. One whose square underflows (1e-300) leaves the corner on the
+/// parent's y and is refused as a corner with no horizontal.
 #[test]
 fn scales_no_view_shows_are_refused() {
     let corner = |scales| Axonometry::Scales(scales).corner();
@@ -318,6 +319,9 @@ fn scales_no_view_shows_are_refused() {
     assert!(says(corner([2.0, 0.5, 1.0]), "its x scale is more than the other two allow: at most 1.118"));
     assert!(says(corner([1.0, 3.0, 1.0]), "its y scale is more than the other two allow: at most 1.414"));
     assert!(corner([3.0, 4.0, 5.0]).is_ok());
+    let tiny = corner([1.0, 1e-8, 1.0]).unwrap();
+    assert!(tiny.iter().zip([1e-8, 2f64.sqrt(), 1e-8]).all(|(k, want)| ((k - want) / want).abs() < 1e-12), "{tiny:?}");
+    assert!(pictorial_basis(&front(), (1.0, 1.0), Projection::Third, Axonometry::Scales([1.0, 1e-8, 1.0])).is_ok());
     assert!(says(pictorial_basis(&front(), (1.0, 1.0), Projection::Third, Axonometry::Scales([1.0, 1e-300, 1.0])), "no horizontal"));
     assert!(says(pictorial_basis(&front(), (1.0, 1.0), Projection::Third, Axonometry::Scales([1.0, 1.5, 1.0])), "at most 1.414"));
 }
