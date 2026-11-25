@@ -343,6 +343,29 @@ fn an_older_build_sets_placements_aside_and_reads_the_rest() {
     assert_eq!(again["unknown_placements"], placements, "saving writes them back");
 }
 
+/// A newer drawing whose view this build can't read opens without the placements on that view, as
+/// without its notes (#19678), and saving writes them back as they were.
+#[test]
+fn a_newer_drawing_leaves_out_the_placements_on_a_view_it_cant_read() {
+    let (d, [on_sheet, ..], view) = placed();
+    let mut saved = file(&d);
+    let view_id = json!(ids::encode(view));
+    saved["views"].as_array_mut().unwrap().iter_mut().find(|v| v["id"] == view_id).unwrap()["future_settings"] = json!({"curves": [1]});
+    saved["format"] = json!(DRAWING.format_string(DRAWING.current() + 1));
+    let mut opened = Drawing::from_json(&saved.to_string()).unwrap();
+    assert!(opened.views.is_empty());
+    assert_eq!(opened.placed_symbols.iter().map(|p| p.id).collect::<Vec<_>>(), [on_sheet], "the sheet's placement stays");
+    assert_eq!(opened.symbols, d.symbols);
+    let notice = &opened.newer_file.as_ref().unwrap().not_understood;
+    assert!(notice.iter().any(|entry| entry.starts_with("placed symbol")), "{notice:?}");
+    opened.name = "Renamed drawing".into();
+    let again: Value = serde_json::from_str(&opened.to_json().unwrap()).unwrap();
+    assert_eq!(again["name"], "Renamed drawing");
+    for key in ["views", "placed_symbols"] {
+        assert_eq!(again[key], saved[key], "{key}");
+    }
+}
+
 /// What reading refuses, on both sides of every bound.
 #[test]
 fn the_placements_rules_are_kept_on_reading() {
