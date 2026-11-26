@@ -2,8 +2,11 @@
 //! typed over its cells so each test knows its text. Places come from the cell text rule
 //! (`geom::cell`), widths from `paper_lines`, which measures what the runs are set from.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde_json::{Value, json};
 use solidcore_record::Vec2;
+use solidcraft_geom::cell::{MAX_TEXT_BYTES, PaperText};
 use solidcraft_geom::paper::text::TextRun;
 use solidcraft_geom::paper::{Item, ObjectKind};
 use solidcraft_geom::prelude::*;
@@ -475,4 +478,282 @@ fn an_untitled_designs_title_prints_in_the_drawings_language_and_a_typed_name_as
             assert_eq!(count(&s, "Ohne Titel") + count(&s, "Untitled"), 0, "{language}: `{typed}`");
         }
     }
+}
+
+/// A word a drawing prints that someone can type over (#19884, plan §5): a title block cell's label,
+/// or the text typed over its value, by the cell's name; a table column's heading, by the table's id
+/// and the column's name; a view label's words before its letter, or before its scale.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum WordField {
+    Label(String),
+    Override(String),
+    Heading(u64, String),
+    ViewWords(u64),
+    ScaleWords(u64),
+}
+
+impl WordField {
+    /// Its kind, as the property test sweeps them.
+    fn kind(&self) -> usize {
+        match self {
+            WordField::Label(_) => 0,
+            WordField::Override(_) => 1,
+            WordField::Heading(..) => 2,
+            WordField::ViewWords(_) => 3,
+            WordField::ScaleWords(_) => 4,
+        }
+    }
+}
+
+/// The languages of the paper words' pending catalog (`assets/locales/pending/drawing-paper-text.json`),
+/// as a drawing's `language` names them.
+const PAPER_LANGUAGES: [&str; 11] = ["en", "ar", "de", "fr", "he", "ja", "ko", "ru", "vi", "zh", "zh-TW"];
+
+/// Every word of `d`'s first sheet, its tables and its views, as saved.
+fn word_fields(d: &Drawing) -> BTreeMap<WordField, PaperText> {
+    let mut fields = BTreeMap::new();
+    let sheet = &d.sheets[0];
+    for cell in sheet.title_block.iter().flat_map(|block| &block.cells) {
+        if let Some(label) = &cell.label {
+            fields.insert(WordField::Label(cell.name.clone()), label.text.clone());
+        }
+    }
+    for (cell, text) in &sheet.title_block_overrides {
+        fields.insert(WordField::Override(cell.clone()), text.clone());
+    }
+    for table in d.tables.iter() {
+        for column in &table.table.columns {
+            fields.insert(WordField::Heading(table.id, column.name.clone()), column.heading.clone());
+        }
+    }
+    for view in &d.views {
+        if let Some(label) = &view.label {
+            fields.insert(WordField::ViewWords(view.id), label.words.clone());
+            fields.insert(WordField::ScaleWords(view.id), label.scale_words.clone());
+        }
+    }
+    fields
+}
+
+/// Types `text` over `field` of the open drawing by the command a user's edit runs: the title block
+/// as `drawing.sheet.set` takes it, a cell's text, a table's columns as `drawing.table.edit` takes
+/// them, a view label's part. Whether it was taken; a refusal is never an internal error.
+fn type_word(s: &mut Session, field: &WordField, text: &str) -> bool {
+    let d = s.drawing("test").unwrap().clone();
+    let (id, p) = match field {
+        WordField::Label(cell) => {
+            let mut block = serde_json::to_value(d.sheets[0].title_block.as_ref().unwrap()).unwrap();
+            let named = block["cells"].as_array_mut().unwrap().iter_mut().find(|c| c["name"] == cell.as_str()).unwrap();
+            named["label"]["text"] = json!(text);
+            ("drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block": block}))
+        }
+        WordField::Override(cell) => {
+            let cells: serde_json::Map<String, Value> = [(cell.clone(), json!(text))].into_iter().collect();
+            ("drawing.sheet.set", json!({"sheet": "Sheet 1", "title_block_overrides": cells}))
+        }
+        WordField::Heading(table, column) => {
+            let mut columns = serde_json::to_value(&d.tables.by_id(*table).unwrap().table.columns).unwrap();
+            let named = columns.as_array_mut().unwrap().iter_mut().find(|c| c["name"] == column.as_str()).unwrap();
+            named["heading"] = json!(text);
+            ("drawing.table.edit", json!({"table": solidcraft_doc::ids::encode(*table), "set": {"columns": columns}}))
+        }
+        WordField::ViewWords(view) => ("drawing.view.edit", json!({"view": solidcraft_doc::ids::encode(*view), "set": {"label": {"words": text}}})),
+        WordField::ScaleWords(view) => {
+            ("drawing.view.edit", json!({"view": solidcraft_doc::ids::encode(*view), "set": {"label": {"scale_words": text}}}))
+        }
+    };
+    let r = s.execute(id, &p);
+    assert!(!matches!(r, Err(crate::EngineError::Internal(..))), "{id} {field:?}: {r:?}");
+    r.is_ok()
+}
+
+/// Whether the drawing's own rule refuses `text` over `field` of `d`: a label, a heading and a view
+/// label's words are one line of at most 4096 bytes without a control character
+/// (`cell::check_label`); the texts typed over a block's cells, the built-in messages' ids among
+/// them, hold 4096 bytes in all, with no control character but a line break (`cell::check_text`).
+fn may_refuse(d: &Drawing, field: &WordField, text: &str) -> bool {
+    match field {
+        WordField::Override(cell) => {
+            let others: usize = d.sheets[0].title_block_overrides.iter().filter(|(name, _)| *name != cell).map(|(_, over)| over.saved_bytes()).sum();
+            others + text.len() > MAX_TEXT_BYTES || text.chars().any(|c| c.is_control() && c != '\n')
+        }
+        _ => text.len() > MAX_TEXT_BYTES || text.chars().any(char::is_control),
+    }
+}
+
+/// What `field` of `d`, saved as `saved`, prints in `language`, read where the sheet reads it: a
+/// label and a scale's words by [`crate::paper_words::resolve`], which laying out the title block and
+/// a view label call; a cell's text as [`shown`] gives it; a heading from its table's layout; a view's
+/// words from its label's text ([`Drawing::label_text`]).
+fn printed_word(s: &Session, d: &Drawing, field: &WordField, saved: &PaperText, language: &str) -> String {
+    let words = |text: &PaperText| crate::paper_words::resolve(language, text).into_owned();
+    match field {
+        WordField::Label(_) | WordField::ScaleWords(_) => words(saved),
+        WordField::Override(cell) => {
+            let mut local = d.clone();
+            local.language = language.to_string();
+            let state = s.model.state();
+            let mut tree = Tree::new(&s.doc, &state);
+            shown(s, &mut tree, &local, 0).into_iter().find(|shown| shown.name == *cell).unwrap().text
+        }
+        WordField::Heading(table, column) => {
+            let table = &d.tables.by_id(*table).unwrap().table;
+            let printed: Vec<_> = table.columns.iter().filter(|c| c.printed).collect();
+            // A column the table doesn't print (a parts list's ballooned column) has no heading on paper.
+            let Some(at) = printed.iter().position(|c| c.name == *column) else { return words(saved) };
+            let laid = table.layout(&[], Vec2::ZERO, &|_, _| 1.0, &|heading| crate::paper_words::resolve(language, heading)).unwrap();
+            laid.heading.cells[at].lines.iter().map(|line| line.text.as_str()).collect::<Vec<_>>().join("\n")
+        }
+        WordField::ViewWords(view) => {
+            let letter = &d.view(*view).unwrap().label.as_ref().unwrap().letter;
+            let Some(text) = d.label_text(*view, &|text| crate::paper_words::resolve(language, text)) else { return words(saved) };
+            // Its first line is its words and letter (`VIEW A`), or its letter alone.
+            let first = text.split('\n').next().unwrap_or_default();
+            first.strip_suffix(&format!(" {letter}")).unwrap_or(if first == letter.as_str() { "" } else { first }).to_string()
+        }
+    }
+}
+
+/// The hostile shapes of text someone can type: empty and blank text, line breaks and other control
+/// characters, every built-in message's id and English and near misses of it, the words of every
+/// installed catalog (the pseudo-language's wrapped ones too), each script the catalog's languages
+/// write, combining marks and format characters, and text at the 4096-byte limit and over it.
+/// Sorted, once each, so the generator picks the same every run.
+fn hostile_words() -> Vec<String> {
+    let blank = ["", " ", "   ", "\u{a0}", "\u{3000}", "\n", "a\nb", "\r\n", "\t", "\u{0}", "\u{7}", "\u{1b}[31mred", "\u{7f}", "\u{85}"];
+    // A message's saved form, and an id no catalog has, typed as text.
+    let saved = ["{\"message\": \"drawing.paper.cell.title\"}", "{\"message\":\"x\"}", "drawing.paper.no_such_word"];
+    // Latin, Cyrillic, Arabic, Hebrew, Chinese, Japanese, Korean and Vietnamese script, and two
+    // directions in one text.
+    let scripts = ["Werkstoff", "Matière", "Материал", "ИЗМ.", "المادة", "חומר", "材料", "材質", "재료", "Vật liệu", "Part חומר 12", "مادة 42 mm"];
+    // Combining marks, joiners, a direction mark and override, a byte order mark, an emoji sequence.
+    let marks = ["Mate\u{301}riau", "T\u{336}i\u{337}tle", "Title\u{200d}", "\u{200c}", "\u{200f}Title", "\u{202e}eltiT", "\u{feff}Title", "👩‍🔧"];
+    let mut words: BTreeSet<String> = blank.into_iter().chain(saved).chain(scripts).chain(marks).map(str::to_string).collect();
+    for (id, english) in crate::paper_words::MESSAGES {
+        words.extend([id.to_string(), english.to_string(), english.to_lowercase(), format!(" {english}")]);
+    }
+    for catalog in solidcraft_ui_text::locales() {
+        words.extend(catalog.messages().values().cloned());
+    }
+    words.extend([MAX_TEXT_BYTES, MAX_TEXT_BYTES + 1].map(|bytes| "W".repeat(bytes)));
+    words.extend([MAX_TEXT_BYTES / 3, MAX_TEXT_BYTES / 3 + 1].map(|chars| "材".repeat(chars)));
+    words.into_iter().collect()
+}
+
+/// Each of `languages` in turn by `drawing.set`, as Drawing Settings changes it: every word in
+/// `typed` is saved as typed text and prints as typed; every other word is still the one the drawing
+/// was `made` with, and a built-in message prints in the language, its English wrapped in the
+/// pseudo-language. Then the drawing saved and opened again has every word as it was.
+fn every_word_checked(s: &mut Session, made: &BTreeMap<WordField, PaperText>, typed: &BTreeMap<WordField, String>, languages: &[&str]) {
+    use crate::paper_words::{PSEUDO, PSEUDO_CLOSE, PSEUDO_OPEN, english};
+
+    for language in languages {
+        run(s, "drawing.set", json!({"language": language}));
+        let d = s.drawing("test").unwrap().clone();
+        assert_eq!(d.language, *language);
+        let saved = word_fields(&d);
+        assert!(typed.keys().all(|field| saved.contains_key(field)), "no word typed is lost");
+        for (field, now) in &saved {
+            let printed = printed_word(s, &d, field, now, language);
+            let Some(text) = typed.get(field) else {
+                assert_eq!(Some(now), made.get(field), "{field:?}: nobody typed it");
+                let expected = match now.message() {
+                    Some(id) if *language == PSEUDO => format!("{PSEUDO_OPEN}{}{PSEUDO_CLOSE}", english(id).unwrap()),
+                    _ => crate::paper_words::resolve(language, now).into_owned(),
+                };
+                assert_eq!(printed, expected, "{field:?} in {language}");
+                continue;
+            };
+            assert_eq!(*now, PaperText::typed(text.as_str()), "{field:?}");
+            assert_eq!(printed, *text, "{field:?} in {language}");
+        }
+    }
+    let d = s.drawing("test").unwrap().clone();
+    let reopened = Drawing::from_json(&d.to_json().unwrap()).unwrap();
+    assert_eq!(word_fields(&reopened), word_fields(&d), "saved and opened, every word as it was");
+}
+
+/// Text someone types over a drawing's words prints exactly as typed in every language of the paper
+/// words' catalog, and only built-in messages translate (#19884, plan §5). Every hostile shape
+/// ([`hostile_words`]) is typed over every kind of word (a title block label, a cell's text, a table
+/// heading, a view label's words and its scale's words), each over a field of its kind a seeded
+/// generator picks, then random pairs of them; before an edit the generator may change the drawing's
+/// language. An edit is refused only by its field's own rule, and a refused edit changes nothing. A
+/// word taken is saved as typed text, never as a message, even when it is a message's id, English or
+/// translation, and prints exactly as typed in every language. Every so often, and at the end, each
+/// language is set by `drawing.set` and every word read again: typed words as typed, the rest the
+/// built-in messages the drawing was made with, printed in that language; then saved and opened.
+#[test]
+fn typed_words_print_as_typed_in_every_language_and_only_built_in_ones_translate() {
+    crate::paper_words::install_test_catalogs();
+    let (mut s, sheet) = drawing();
+    let on = solidcraft_doc::ids::encode(sheet);
+    run(&mut s, "drawing.table.add", json!({"sheet": on, "kind": "parts_list"}));
+    run(&mut s, "drawing.table.add", json!({"sheet": on, "kind": "revision"}));
+    let front = run(&mut s, "drawing.view.base", json!({"sheet": "Sheet 1", "scale": "1:2", "position_mm": [150.0, 150.0]}))["view"].clone();
+    run(&mut s, "drawing.view.projected", json!({"parent": front, "side": "above", "place": {"at": [150.0, 230.0]}}));
+    let made = word_fields(s.drawing("test").unwrap());
+    // Each kind's fields; a cell's text can be typed over any text cell, one with none typed yet too.
+    let cells: Vec<String> = {
+        let d = s.drawing("test").unwrap();
+        let state = s.model.state();
+        let mut tree = Tree::new(&s.doc, &state);
+        shown(&s, &mut tree, d, 0).into_iter().map(|cell| cell.name).collect()
+    };
+    let mut kinds: [Vec<WordField>; 5] = Default::default();
+    for field in made.keys().cloned().chain(cells.into_iter().map(WordField::Override)) {
+        let kind = &mut kinds[field.kind()];
+        if !kind.contains(&field) {
+            kind.push(field);
+        }
+    }
+    assert!(kinds.iter().all(|fields| !fields.is_empty()), "every kind of word: {kinds:?}");
+    let d = s.drawing("test").unwrap().clone();
+    let lettered = |field: &WordField| matches!(field, WordField::ViewWords(view) if d.label_text(*view, &|text| crate::paper_words::resolve("en", text)).is_some());
+    assert!(kinds[3].iter().any(lettered), "a view label printed with its letter");
+
+    let mut state = 19884_u64;
+    let mut next = move |n: usize| {
+        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        ((state >> 33) % n.max(1) as u64) as usize
+    };
+    let languages: Vec<&str> = PAPER_LANGUAGES.into_iter().chain([crate::paper_words::PSEUDO]).collect();
+    let texts = hostile_words();
+    let mut cases: Vec<(usize, String)> = texts.iter().flat_map(|text| (0..kinds.len()).map(move |kind| (kind, text.clone()))).collect();
+    for _ in 0..80 {
+        let kind = next(kinds.len());
+        let pair = format!("{}{}", texts[next(texts.len())], texts[next(texts.len())]);
+        cases.push((kind, pair));
+    }
+    let mut typed: BTreeMap<WordField, String> = BTreeMap::new();
+    let (mut taken, mut refused) = (0, 0);
+    for (case, (kind, text)) in cases.iter().enumerate() {
+        if case > 0 && case.is_multiple_of(150) {
+            every_word_checked(&mut s, &made, &typed, &languages);
+        }
+        if next(3) == 0 {
+            run(&mut s, "drawing.set", json!({"language": languages[next(languages.len())]}));
+        }
+        let fields = &kinds[*kind];
+        let field = &fields[next(fields.len())];
+        let before = (**s.drawing("test").unwrap()).clone();
+        let refusable = may_refuse(&before, field, text);
+        let took = type_word(&mut s, field, text);
+        assert_eq!(took, !refusable, "{field:?} {text:?} in {}: refused only by its rule", before.language);
+        let d = s.drawing("test").unwrap().clone();
+        if !took {
+            assert!(*d == before, "{field:?} {text:?}: a refused edit changes nothing");
+            refused += 1;
+            continue;
+        }
+        taken += 1;
+        typed.insert(field.clone(), text.clone());
+        let saved = word_fields(&d);
+        assert_eq!(saved[field], PaperText::typed(text.as_str()), "{field:?} {text:?}: saved as typed text, never as a message");
+        for language in &languages {
+            assert_eq!(printed_word(&s, &d, field, &saved[field], language), *text, "{field:?} {text:?} in {language}");
+        }
+    }
+    every_word_checked(&mut s, &made, &typed, &languages);
+    assert!(taken > cases.len() / 2 && refused > 0, "{taken} taken, {refused} refused of {}", cases.len());
 }
