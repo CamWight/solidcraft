@@ -374,7 +374,7 @@ mod tests {
                 .filter(|(other, said)| said.as_str() == *text && !other.starts_with("drawing.paper."))
                 .map(|(other, _)| other.as_str())
                 .collect();
-            for language in ["ar", "de", "fr", "he", "ja", "ko", "ru", "vi", "zh"] {
+            for language in ["ar", "de", "fr", "he", "ja", "ko", "ru", "vi", "zh", "zh-TW"] {
                 let locale = Locale::for_language(language);
                 assert!(locale.catalog().messages().contains_key(*id), "{language} has no {id}");
                 let label = locale.label(text);

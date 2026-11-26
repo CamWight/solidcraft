@@ -111,10 +111,10 @@ pub(crate) const PSEUDO_OPEN: char = '‹';
 #[cfg(test)]
 pub(crate) const PSEUDO_CLOSE: char = '›';
 
-/// Catalogs for the engine's tests, which no host installs: English, French and German with the
-/// paper words they read, and [`PSEUDO`] with every one of [`MESSAGES`], made from them. One list,
-/// installed once per process, so tests running side by side agree; the system language is pinned to
-/// English first, as the app's own tests pin it.
+/// Catalogs for the engine's tests, which no host installs: English, French, German, Chinese and
+/// Traditional Chinese with the paper words they read, and [`PSEUDO`] with every one of [`MESSAGES`],
+/// made from them. One list, installed once per process, so tests running side by side agree; the
+/// system language is pinned to English first, as the app's own tests pin it.
 #[cfg(test)]
 pub(crate) fn install_test_catalogs() {
     use std::collections::BTreeMap;
@@ -141,12 +141,15 @@ pub(crate) fn install_test_catalogs() {
             "drawing.paper.view_label.view": "ANSICHT", "drawing.paper.view_label.detail": "EINZELHEIT",
             "drawing.paper.view_label.scale": "MASSSTAB"}"#,
     );
+    static CHINESE: Catalog = Catalog::new("zh", "中文", r#"{"drawing.paper.view_label.view": "视图"}"#);
+    static CHINESE_TRADITIONAL: Catalog = Catalog::new("zh-TW", "繁體中文", r#"{"drawing.paper.view_label.view": "視圖"}"#);
     static WRAPPED: OnceLock<Catalog> = OnceLock::new();
-    static LOCALES: OnceLock<[&Catalog; 4]> = OnceLock::new();
+    static LOCALES: OnceLock<[&Catalog; 6]> = OnceLock::new();
     let locales = LOCALES.get_or_init(|| {
         let wrapped: BTreeMap<&str, String> = MESSAGES.iter().map(|(id, english)| (*id, format!("{PSEUDO_OPEN}{english}{PSEUDO_CLOSE}"))).collect();
         let json = serde_json::to_string(&wrapped).unwrap_or_default();
-        [&ENGLISH, &FRENCH, &GERMAN, WRAPPED.get_or_init(|| Catalog::new(PSEUDO, "Pseudo", Box::leak(json.into_boxed_str())))]
+        let pseudo = WRAPPED.get_or_init(|| Catalog::new(PSEUDO, "Pseudo", Box::leak(json.into_boxed_str())));
+        [&ENGLISH, &FRENCH, &GERMAN, &CHINESE, &CHINESE_TRADITIONAL, pseudo]
     });
     solidcraft_ui_text::pin_system_language();
     solidcraft_ui_text::install(locales);
@@ -228,6 +231,8 @@ mod tests {
         install_test_catalogs();
         let title = PaperText::built_in("drawing.paper.cell.title");
         assert_eq!([resolve("fr", &title), resolve("fr-CA", &title), resolve("DE", &title)], ["Titre", "Titre", "Titel"]);
+        let view = PaperText::built_in("drawing.paper.view_label.view");
+        assert_eq!([resolve("zh-TW", &view), resolve("zh", &view)], ["視圖", "视图"], "the exact tag's word, not its base language's");
         assert_eq!(resolve("fr", &PaperText::built_in("drawing.paper.cell.mass")), "Mass", "the test catalog lacks it");
         assert_eq!(resolve("ja", &title), "Title", "no catalog: English");
     }
