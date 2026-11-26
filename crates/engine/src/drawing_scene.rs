@@ -1823,7 +1823,7 @@ impl Assembly {
     /// Adds the sketches after dimensions/fills, using the same whole-sheet admission: a sheet's as
     /// they are, a view's through its view's frame and to its centre, as the view's dimensions go.
     /// A view's sketch whose view isn't in the scene is left out and says so. A view's sketch turns with
-    /// its view, by 	urn of the view's id in degrees ([sketch::through]).
+    /// its view, by `turn` of the view's id in degrees ([sketch::through]).
     fn add_sketches<K: Borrow<DrawnSketch>>(&mut self, sketches: impl Iterator<Item = (u64, K)>, turn: impl Fn(u64) -> f64) {
         for (sketch, drawn) in sketches {
             let drawn = drawn.borrow();

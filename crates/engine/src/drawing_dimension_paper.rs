@@ -439,7 +439,7 @@ impl Turn {
     fn reading(self, dir: Vec2) -> Vec2 {
         let turned = self.on(dir);
         // Whether a direction reads forward: the way [`LineCoords::forward`] turns a line to run.
-        let reads = |d: Vec2| LineCoords::forward(LinearDirection::Aligned, d).is_some_and(|line| line.unit.dot(d) > 0.0);
+        let reads = |d: Vec2| LineCoords::forward(LinearDirection::Aligned, d).is_some_and(|line| line.along(d) > 0.0);
         if reads(dir) && !reads(turned) { -turned } else { turned }
     }
 }
