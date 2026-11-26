@@ -577,7 +577,8 @@ fn read_library(dir: &str, listing: Listing, limits: &Limits, seen: &mut Seen) -
     };
     let mut entries = Vec::new();
     for kind in [Kind::Material, Kind::Appearance] {
-        // Only a real folder: a link named `materials` is not one, so a library can't reach outside.
+        // Only a real folder (`vfs::dirs_in` lists no other): a link named `materials` is not one, so
+        // a library can't reach outside. The writes keep the same rule (`write::real_folders`).
         let Some(sub) = listing.folders.iter().find(|f| file_label(f) == kind.folder()) else { continue };
         let files = match seen.files(sub, Cap::EntriesPerKind(kind), limits.entries_per_kind) {
             Ok(files) => files,

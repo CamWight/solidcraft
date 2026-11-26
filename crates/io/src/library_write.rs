@@ -62,6 +62,29 @@ mod checked_write {
         check_new_design_path(path, None)?;
         vfs::create_new_dir_all(path)
     }
+    pub(super) fn real_dir(path: &str) -> Result<bool> {
+        check_new_design_path(path, None)?;
+        vfs::real_dir(path)
+    }
+}
+
+/// The folders a write in `folder` passes inside its place, each a real folder or not made yet, as
+/// a scan reads only real folders ([`crate::vfs::real_dir`]): the library's folder itself in a folder
+/// place (a scan lists it as one of the place's folders), then `folder/below[0]`, `…/below[1]`, …
+/// A folder not made yet ends the check: nothing is below it.
+fn real_folders(place: &Place, folder: &str, below: &[&str]) -> Result<(), String> {
+    let mut dirs: Vec<String> = matches!(place, Place::Folder(_)).then(|| folder.to_string()).into_iter().collect();
+    let mut dir = folder.to_string();
+    for name in below {
+        dir = join(&dir, name);
+        dirs.push(dir.clone());
+    }
+    for dir in &dirs {
+        if !checked_write::real_dir(dir).map_err(|e| at(dir, e))? {
+            break;
+        }
+    }
+    Ok(())
 }
 
 impl Libraries {
@@ -187,6 +210,7 @@ impl Libraries {
         let bytes = serde_json::to_vec_pretty(&header).map_err(|e| e.to_string())?;
         let manifest = join(&folder, &format!("{}{MANIFEST_SUFFIX}", stem(name)));
         for kind in [Kind::Material, Kind::Appearance] {
+            real_folders(&row.place, &folder, &[kind.folder()])?;
             checked_write::make_dirs(&join(&folder, kind.folder())).map_err(|e| at(&folder, e))?;
         }
         checked_write::create(&manifest, &bytes).map_err(|e| at(&manifest, e))?;
@@ -199,7 +223,7 @@ impl Libraries {
         let (scan, target, folder) = self.writable(library)?;
         let local = new_entry_id(target, &definition);
         let entry = Entry::with_id(library, &local, definition, provenance).map_err(|e| e.to_string())?;
-        let file = self.write_new(target, folder, &entry)?;
+        let file = self.write_new(&scan.place, target, folder, &entry)?;
         let written = Written { library: library.into(), entry: Some(entry.id), revision: Some(entry.revision), file };
         Ok((self.read_again(scan, Some(folder)), written))
     }
@@ -226,6 +250,7 @@ impl Libraries {
         if Kind::of(&definition) != listed.kind() {
             return Err(format!("{id} is a {}; its kind can't change", old.definition.kind()));
         }
+        real_folders(&scan.place, folder, &[listed.kind().folder()])?;
         let path = join(&join(folder, listed.kind().folder()), listed.label());
         let on_disk = unchanged(&path, listed.kind(), &library_id, revision)?;
         let local = id.split_once('/').map(|(_, local)| local).unwrap_or_default();
@@ -243,16 +268,18 @@ impl Libraries {
         let (library, listed, _) = self.listed_entry(id)?;
         let library_id = library.id().unwrap_or_default().to_string();
         let (scan, _, folder) = self.writable(&library_id)?;
+        real_folders(&scan.place, folder, &[listed.kind().folder()])?;
         let path = join(&join(folder, listed.kind().folder()), listed.label());
         unchanged(&path, listed.kind(), &library_id, revision)?;
-        let to = to_bin(&path, folder, listed.kind(), listed.label())?;
+        let to = to_bin(&scan.place, &path, folder, listed.kind(), listed.label())?;
         let written = Written { library: library_id, entry: Some(id.into()), revision: Some(revision.into()), file: to };
         Ok((self.read_again(scan, Some(folder)), written))
     }
 
     /// Write `entry` to a new file in its kind folder, named after it, never over another file.
-    fn write_new(&self, library: &Library, folder: &str, entry: &Entry) -> Result<String, String> {
+    fn write_new(&self, place: &Place, library: &Library, folder: &str, entry: &Entry) -> Result<String, String> {
         let kind = Kind::of(&entry.definition);
+        real_folders(place, folder, &[kind.folder()])?;
         let dir = join(folder, kind.folder());
         let files = match checked::files_in(&dir, LIMITS.entries_per_kind) {
             Ok(files) => files,
@@ -313,8 +340,9 @@ fn unchanged(path: &str, kind: Kind, library: &str, revision: &str) -> Result<u6
 /// bin holds that name: the file's name from the library's folder. The bin is never listed (it can grow
 /// past any cap): each name is tried, and a name already there refuses the move, so nothing in the bin
 /// is ever replaced. The one place a removal happens, so a different bin is a change here only.
-fn to_bin(path: &str, folder: &str, kind: Kind, label: &str) -> Result<String, String> {
+fn to_bin(place: &Place, path: &str, folder: &str, kind: Kind, label: &str) -> Result<String, String> {
     let bin = join(&join(folder, BIN), kind.folder());
+    real_folders(place, folder, &[BIN, kind.folder()])?;
     checked_write::make_dirs(&bin).map_err(|e| at(&bin, e))?;
     let stem = label.get(..label.len().saturating_sub(5)).filter(|_| super::ends_with(label, ".json")).unwrap_or(label);
     for candidate in std::iter::once(stem.to_string()).chain((2..=LIMITS.entries_per_kind + 2).map(|n| format!("{stem} ({n})"))) {

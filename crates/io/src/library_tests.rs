@@ -963,6 +963,31 @@ fn a_change_never_writes_through_a_link_at_the_entrys_name() {
     assert_eq!(std::fs::read(&outside).unwrap(), before, "the linked file is untouched");
 }
 
+/// Library writes refuse a linked folder, as the scan does: with a link where a kind folder or the
+/// bin goes, an add or a removal is refused, nothing is made where the link points, and the entry
+/// stays where it was.
+#[cfg(unix)]
+#[test]
+fn library_writes_refuse_a_linked_folder_as_the_scan_does() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    shop(&lib, ID);
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::remove_dir_all(lib.join("appearances")).unwrap();
+    std::os::unix::fs::symlink(&outside, lib.join("appearances")).unwrap();
+    std::os::unix::fs::symlink(&outside, lib.join(write::BIN)).unwrap();
+    let libraries = libraries_of(vec![row(Place::Library(path(&lib)))]);
+
+    let err = libraries.add_entry(ID, look(ID, "x", "Red").definition, Provenance::default()).unwrap_err();
+    assert!(err.contains("link"), "{err}");
+    let pla = material(ID, "pla", "PLA", 1.24);
+    let err = libraries.remove_entry(&pla.id, &pla.revision).unwrap_err();
+    assert!(err.contains("link"), "{err}");
+    assert!(lib.join("materials/PLA.json").is_file(), "the entry stays");
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0, "nothing made where the links point");
+}
+
 /// A new file's name works on every system SolidCraft runs on, hides no format character, and is
 /// never one the folder has, whatever the case.
 #[test]

@@ -124,10 +124,27 @@ mod imp {
             })
             .collect()
     }
-    /// The paths of the folders directly in a folder, sorted; at most `max` of them. A link to a
-    /// folder is not one (its file type is the link's), so a listing never leaves `dir`.
+    /// The paths of the folders directly in a folder, sorted; at most `max` of them. Only real
+    /// folders ([`real_folder`]), so a listing never leaves `dir`.
     pub fn dirs_in(dir: &str, max: usize) -> Result<Vec<String>> {
-        Ok(entries_in(dir, max, std::fs::FileType::is_dir, "too many folders in the folder")?.into_iter().map(|(path, _)| path).collect())
+        Ok(entries_in(dir, max, real_folder, "too many folders in the folder")?.into_iter().map(|(path, _)| path).collect())
+    }
+    /// A real folder: its own type is a folder. A link to a folder (a Windows junction too) is not
+    /// one. Folder listings and the library writes keep this one rule.
+    fn real_folder(t: &std::fs::FileType) -> bool {
+        t.is_dir() && !t.is_symlink()
+    }
+    /// Whether a real folder ([`real_folder`]) is at `path`: `false` when nothing is there yet, an
+    /// error when something else is (a link, a file).
+    pub fn real_dir(path: &str) -> Result<bool> {
+        check_new(path)?;
+        touched();
+        match std::fs::symlink_metadata(path) {
+            Ok(meta) if real_folder(&meta.file_type()) => Ok(true),
+            Ok(_) => Err(Error::new(ErrorKind::InvalidInput, format!("{path}: not a folder of its own (a link to a folder is not one)"))),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -223,6 +240,15 @@ mod imp {
             return Err(Error::new(ErrorKind::InvalidData, "too many folders in the folder"));
         }
         Ok(out.into_iter().collect())
+    }
+    /// Whether a folder is at `path`: one some stored file sits under (browser storage has no
+    /// links); a stored file at `path` itself is not one.
+    pub fn real_dir(path: &str) -> Result<bool> {
+        if exists(path) {
+            return Err(Error::new(ErrorKind::InvalidInput, format!("{path}: not a folder of its own")));
+        }
+        let prefix = format!("{}/", path.trim_end_matches('/'));
+        Ok(FILES.with(|f| f.borrow().keys().any(|p| p.starts_with(&prefix))))
     }
     pub fn list(prefix: &str) -> Vec<(String, u64)> {
         FILES.with(|f| f.borrow().iter().filter(|(p, _)| p.starts_with(prefix)).map(|(p, b)| (p.clone(), b.len() as u64)).collect())
