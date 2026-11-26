@@ -1152,6 +1152,51 @@ fn a_place_that_turns_unreadable_or_over_a_cap_or_comes_back_counts_as_changed()
     assert_eq!(rescan_with(&over, &small).expect("within again").status(), &Status::Available);
 }
 
+/// Makes `file` unreadable to other readers until the closure returned runs: held open with no
+/// sharing on Windows, its permissions taken away elsewhere.
+fn hold(file: &Path) -> impl FnOnce() {
+    #[cfg(windows)]
+    let held = {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().read(true).share_mode(0).open(file).unwrap()
+    };
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(file, std::fs::Permissions::from_mode(0)).unwrap();
+    }
+    let file = file.to_path_buf();
+    move || {
+        #[cfg(windows)]
+        drop(held);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let _ = file;
+    }
+}
+
+/// A file the scan couldn't read is read again by the next check, though no listing changed:
+/// another program held it, which shows in no listing.
+#[test]
+fn a_file_the_scan_could_not_read_is_read_again_by_the_check() {
+    let dir = tempfile::tempdir().unwrap();
+    shop(dir.path(), ID);
+    let release = hold(&dir.path().join("Shop.sclibrary.json"));
+    let first = scan(&Place::Library(path(dir.path())));
+    let unread = matches!(first.libraries()[0].status(), Status::Unavailable(Reason::Unreadable(_)));
+    release();
+    if !unread {
+        // This system let the held file be read (a Unix test run as root): nothing to check.
+        return;
+    }
+    let again = rescan_if_changed(&first).expect("the unread file is read again");
+    assert_eq!(again.libraries()[0].status(), &Status::Available);
+    assert_eq!(rescan_if_changed(&again), None, "read now: nothing to read again");
+}
+
 /// The limit of a changed-only check, kept on purpose: an edit that keeps a file's length and its
 /// time (a drive that keeps time in 2 s steps, FAT, and an edit inside one step) isn't seen. The
 /// Refresh button scans again in full; this test pins the limit so a change to it is a choice.

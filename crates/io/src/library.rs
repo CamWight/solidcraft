@@ -325,6 +325,14 @@ impl Scanned {
     pub fn libraries(&self) -> &[Library] {
         &self.libraries
     }
+    /// Whether a library or an entry here couldn't be read ([`Reason::Unreadable`]).
+    fn unread(&self) -> bool {
+        let unreadable = |reason: &Reason| matches!(reason, Reason::Unreadable(_));
+        self.libraries.iter().any(|library| {
+            matches!(&library.status, Status::Unavailable(reason) if unreadable(reason))
+                || library.entries.iter().any(|listed| listed.state.as_ref().err().is_some_and(unreadable))
+        })
+    }
 }
 
 /// What a place holds, with its status, each library's status and each entry's, within
@@ -368,14 +376,16 @@ pub(crate) fn scan_with(place: &Place, limits: &Limits) -> Scanned {
 ///
 /// What it can't see, on purpose: an edit that keeps a file's length and its time. A drive that
 /// keeps time in steps (FAT: 2 s) can hide an edit made inside one step; the Refresh button scans
-/// in full for that. A file with no time (browser storage) counts as changed.
+/// in full for that. A file with no time (browser storage) counts as changed, and so does a place
+/// with a file the scan couldn't read (another program held it, the network failed): what kept it
+/// unread leaves no mark on a listing, so the place is scanned again until it reads.
 pub fn rescan_if_changed(scan: &Scanned) -> Option<Scanned> {
     rescan_with(scan, &LIMITS)
 }
 
 /// [`rescan_if_changed`] whose new scan uses other limits (tests); the check uses the scan's own.
 pub(crate) fn rescan_with(scan: &Scanned, limits: &Limits) -> Option<Scanned> {
-    scan.seen.changed().then(|| scan_with(&scan.place, limits))
+    (scan.unread() || scan.seen.changed()).then(|| scan_with(&scan.place, limits))
 }
 
 /// Every listing a scan made, in its order: what the scan saw of its place's files. A listing
