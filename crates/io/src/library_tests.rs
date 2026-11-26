@@ -591,6 +591,15 @@ fn a_library_place_on_a_network_location_is_refused() {
     assert_eq!(crate::vfs::file_calls(), calls);
 }
 
+/// Only Windows opens a network folder by its `\\host\share` name. Elsewhere that text is a
+/// relative path, so a place spelled so is refused there, named by its host, before any read.
+#[test]
+fn a_network_folders_windows_name_is_a_place_only_on_windows() {
+    let why = place_refusal(r"\\nas.example\lib");
+    assert_eq!(why.is_none(), cfg!(windows), "{why:?}");
+    assert!(why.is_none_or(|why| why.contains(r"network location \\nas.example")));
+}
+
 /// Seeded fuzz (the readers' mutations, #469): hostile place lists and hostile library files. Nothing
 /// panics, every cap holds, and every bad input is reported with its reason: a place that can't be
 /// read is listed with why, and every entry file that is there is listed, used or refused.

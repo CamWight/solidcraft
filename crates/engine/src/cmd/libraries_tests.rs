@@ -511,10 +511,16 @@ fn the_library_place_commands_check_a_change_and_echo_it() {
 
     let added = s.execute("library.places.add", &json!({"path": mine, "kind": "library", "at": 0})).unwrap();
     assert_eq!(added, json!({"path": mine, "kind": "library", "read_only": false, "at": 0}), "a local folder can be changed");
-    let shared = s.execute("library.places.add", &json!({"path": r"\\server.example\lib", "kind": "folder"})).unwrap();
-    assert_eq!(shared["read_only"], json!(true), "a network folder is read-only unless the user says otherwise");
-    let writable = s.execute("library.places.add", &json!({"path": r"\\server.example\lib", "kind": "folder", "read_only": false})).unwrap();
-    assert_eq!(writable["read_only"], json!(false));
+    // A network folder by its Windows name; elsewhere a share is the folder it is mounted at.
+    let network = json!({"path": r"\\server.example\lib", "kind": "folder"});
+    if cfg!(windows) {
+        let shared = s.execute("library.places.add", &network).unwrap();
+        assert_eq!(shared["read_only"], json!(true), "a network folder is read-only unless the user says otherwise");
+        let writable = s.execute("library.places.add", &json!({"path": r"\\server.example\lib", "kind": "folder", "read_only": false})).unwrap();
+        assert_eq!(writable["read_only"], json!(false));
+    } else {
+        assert!(s.execute("library.places.add", &network).unwrap_err().to_string().contains("mounted"));
+    }
 
     let set = s.execute("library.places.set", &json!({"path": shop, "read_only": true, "at": 0})).unwrap();
     assert_eq!(set, json!({"path": shop, "read_only": true, "at": 0}));
