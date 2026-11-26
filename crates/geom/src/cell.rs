@@ -233,7 +233,7 @@ struct Message {
 impl TryFrom<BTreeMap<String, String>> for Message {
     type Error = &'static str;
 
-    fn try_from(mut map: BTreeMap<String, String>) -> Result<Message, &'static str> {
+    fn try_from(mut map: BTreeMap<String, String>) -> std::result::Result<Message, &'static str> {
         match (map.remove("message"), map.is_empty()) {
             (Some(message), true) => Ok(Message { message }),
             _ => Err("a built-in message is {\"message\": id} and nothing else"),
