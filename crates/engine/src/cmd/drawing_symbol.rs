@@ -180,7 +180,7 @@ fn place(s: &mut Session, p: &Value) -> Result<Value> {
     let record = s.drawing(PLACE)?.clone();
     record.symbols.by_id(request.symbol.0).ok_or_else(|| missing(PLACE, request.symbol.0))?;
     let anchor = anchor(s, &record, request.anchor, PLACE)?;
-    check_on_view(&record, &anchor, anchor.path(), PLACE)?;
+    check_on_view(&record, &anchor, anchor.reference(), PLACE)?;
     let id = record.allocate_id(&mut s.ids).map_err(|e| bad(PLACE, e.to_string()))?;
     let placed = PlacedSymbol {
         id,
@@ -270,7 +270,7 @@ fn placed_inspect(s: &mut Session, p: &Value) -> Result<Value> {
         candidates,
         texts,
         fields,
-        warnings: placed.anchor.view().map(|view| drawn_warning(d, view, placed.anchor.path())).unwrap_or_default(),
+        warnings: placed.anchor.view().map(|view| drawn_warning(d, view, placed.anchor.reference())).unwrap_or_default(),
         param_warnings: Vec::new(),
     };
     serde_json::to_value(reply).map_err(|e| EngineError::Other(e.to_string()))
