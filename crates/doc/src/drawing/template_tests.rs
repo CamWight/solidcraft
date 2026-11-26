@@ -26,11 +26,11 @@ fn note(d: &Drawing) -> Option<&PaperText> {
     d.sheets[0].title_block_overrides.get("general_tolerances")
 }
 
-/// Every built-in is a template on its ISO paper (A4 upright, the rest flat) with the ISO border
-/// and the built-in title block, a part's with the part note over its general tolerances and an
-/// assembly's with the assembly note, the same bytes each time it is made. Each size comes as both.
-/// The notes and document types are built-in messages, saved as `{"message": id}` (#19884), so they
-/// print in the drawing's language. Another name is none.
+/// Every built-in is a template on its ISO paper, lying flat (A4 too), with the ISO border and the
+/// built-in title block, a part's with the part note over its general tolerances and an assembly's
+/// with the assembly note, the same bytes each time it is made. Each size comes as both. The notes
+/// and document types are built-in messages, saved as `{"message": id}` (#19884), so they print in
+/// the drawing's language. Another name is none.
 #[test]
 fn every_built_in_is_a_template_on_its_paper() {
     let mut seen = BTreeSet::new();
@@ -50,8 +50,7 @@ fn every_built_in_is_a_template_on_its_paper() {
         assert_eq!(*saved, serde_json::json!({"message": want.message()}), "{name}: saved as its message");
         let SheetSize::Standard(paper) = sheet.sheet.size else { panic!("{name}: a standard size") };
         assert_eq!(serde_json::to_value(paper).unwrap(), serde_json::json!(size), "{name}");
-        let upright = if size == "a4" { Orientation::Portrait } else { Orientation::Landscape };
-        assert_eq!((sheet.sheet.orientation, &sheet.border), (upright, &Some(DrawingBorderProfile::iso())), "{name}");
+        assert_eq!((sheet.sheet.orientation, &sheet.border), (Orientation::Landscape, &Some(DrawingBorderProfile::iso())), "{name}");
         assert_eq!(sheet.title_block, Some(title_block::default_block()), "{name}: the built-in block");
         assert_eq!(d.name, format!("ISO {}", size.to_uppercase()));
         assert_eq!(title(name), Some(d.name.clone()), "{name}: its title without making it");
