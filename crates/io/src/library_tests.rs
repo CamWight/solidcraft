@@ -735,6 +735,8 @@ fn hostile_place_lists_and_library_files_are_refused_with_a_reason() {
         labels
     };
     for (file, seed) in [("Shop.sclibrary.json", 0x5c1), ("materials/PLA.json", 0x5c2), ("appearances/Blue.json", 0x5c3)] {
+        // A damaged entry file is that entry's problem only: its library stays available.
+        let entry_file = !file.ends_with(MANIFEST_SUFFIX);
         let file = fuzz.join(file);
         let good = std::fs::read(&file).unwrap();
         solidcraft_testkit::survives(&path(&file), &solidcraft_testkit::mutations(&good, true, seed), 2 * LIMITS.entries_per_kind, |bytes| {
@@ -746,6 +748,7 @@ fn hostile_place_lists_and_library_files_are_refused_with_a_reason() {
             };
             if let Status::Unavailable(why) = library.status() {
                 assert!(!why.to_string().is_empty());
+                assert!(!entry_file, "a damaged entry file made its library unavailable: {why}");
                 return None;
             }
             let mut labels: Vec<String> = library.entries().iter().map(|l| l.label().to_string()).collect();
