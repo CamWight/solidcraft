@@ -35,6 +35,7 @@ fn noted() -> (Drawing, [u64; 3]) {
         place: ViewPlace::At([150.0, 150.0]),
         settings: ViewOverrides { scale: Some("1:2".parse().unwrap()), ..ViewOverrides::default() },
         reference_shown_percent: 0.0,
+        centre_marks: None,
         label: None,
         rotation: 0.0,
     })]);

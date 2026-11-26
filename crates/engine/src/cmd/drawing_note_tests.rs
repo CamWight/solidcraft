@@ -44,6 +44,7 @@ fn placed() -> (Session, u64, u64, [u64; 2]) {
         place: ViewPlace::At([200.0, 150.0]),
         settings,
         reference_shown_percent: 0.0,
+        centre_marks: None,
         label: None,
         rotation: 0.0,
     })]);
