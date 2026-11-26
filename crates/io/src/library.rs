@@ -115,6 +115,26 @@ pub enum PlaceEdit {
     },
 }
 
+/// Why `rows` can't be the user's list of places, after My Library's folder (`my_library`): more
+/// than [`MAX_PLACES`], a row for the built-in library (it is always listed), or a folder listed
+/// twice however it is spelled ([`place_key`]), My Library's included. [`Libraries::edit`] and the
+/// app's `ui.prefs` keep this one rule.
+pub fn check_places(my_library: Option<&str>, rows: &[PlaceRow]) -> Result<(), String> {
+    if rows.len() > MAX_PLACES {
+        return Err(format!("a list holds at most {MAX_PLACES} places"));
+    }
+    let mut keys: Vec<String> = my_library.map(place_key).into_iter().collect();
+    for row in rows {
+        let Some(path) = row.place.path() else { return Err("the built-in library is always listed".into()) };
+        let key = place_key(path);
+        if keys.contains(&key) {
+            return Err(format!("{path} is listed already"));
+        }
+        keys.push(key);
+    }
+    Ok(())
+}
+
 /// What a folder is compared by, so one folder is one place however it is spelled: repeated
 /// separators, `.` parts and a trailing separator don't matter, nor, on Windows, ASCII case and
 /// which of the two separators. Text only: a network folder is never asked, so a `..` part (only
@@ -770,15 +790,9 @@ impl Libraries {
         };
         match edit {
             PlaceEdit::Add { row, at } => {
-                let Some(path) = row.place.path() else { return Err("the built-in library is always listed".into()) };
-                if self.listed(path).is_some() {
-                    return Err(format!("{path} is listed already"));
-                }
-                if rows.len() >= MAX_PLACES {
-                    return Err(format!("a list holds at most {MAX_PLACES} places"));
-                }
                 let at = fits(*at, rows.len())?;
                 rows.insert(at, row.clone());
+                check_places(self.my_library.as_ref().and_then(|mine| mine.place.path()), &rows)?;
             }
             PlaceEdit::Remove { path } => {
                 let i = at_path(&rows, path).ok_or_else(|| format!("no place is listed at {path}"))?;

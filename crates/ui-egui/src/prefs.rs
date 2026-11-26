@@ -3201,7 +3201,7 @@ fn themes_that_read<'de, D: serde::Deserializer<'de>>(saved: D) -> Result<Vec<cr
 
 /// The saved library places that still read, at most [`MAX_PLACES`](solidcraft_engine::io::library::MAX_PLACES).
 /// A row this version can't read (a kind from a newer release) is dropped on its own, with a log
-/// line, not with the others.
+/// line, not with the others, and so is a row for the built-in library, which is always listed.
 fn places_that_read<'de, D: serde::Deserializer<'de>>(saved: D) -> Result<Vec<solidcraft_engine::io::library::PlaceRow>, D::Error> {
     use solidcraft_engine::io::library::MAX_PLACES;
     let saved = Vec::<serde_json::Value>::deserialize(saved)?;
@@ -3210,8 +3210,12 @@ fn places_that_read<'de, D: serde::Deserializer<'de>>(saved: D) -> Result<Vec<so
     }
     Ok(saved
         .into_iter()
-        .filter_map(|row| match serde_json::from_value(row) {
-            Ok(row) => Some(row),
+        .filter_map(|row| match serde_json::from_value::<solidcraft_engine::io::library::PlaceRow>(row) {
+            Ok(row) if row.place.path().is_some() => Some(row),
+            Ok(_) => {
+                log::warn!("preferences: a library place for the built-in library is left out; it is always listed");
+                None
+            }
             Err(error) => {
                 log::warn!("preferences: a library place can't be read ({error}); leaving it out");
                 None
@@ -4015,6 +4019,9 @@ fn prepare_preferences(
     }
     refuse_unavailable_preferences(p, WINDOWS_SMOOTH_WINDOW_DRAG_AVAILABLE)?;
     let mut cur = serde_json::to_value(base).map_err(|e| e.to_string())?;
+    // The places asked for, read strictly: a saved file's reader (`places_that_read`) leaves out a row
+    // it can't read and cuts a long list, which is right for a file, but a request is refused instead.
+    let mut asked_places = None;
     if let (Some(o), Some(src)) = (cur.as_object_mut(), p.as_object()) {
         for (k, v) in src {
             if !o.contains_key(k) {
@@ -4038,6 +4045,18 @@ fn prepare_preferences(
                     .map(|(i, value)| theme_from_preferences(value, true).map_err(|error| format!("`custom_themes[{i}]`: {error}")))
                     .collect::<Result<_, _>>()?;
                 o.insert(k.clone(), serde_json::to_value(themes).map_err(|e| e.to_string())?);
+            } else if k == "library_places" {
+                use solidcraft_engine::io::library::{MAX_PLACES, PlaceRow};
+                let rows = v
+                    .as_array()
+                    .filter(|rows| rows.len() <= MAX_PLACES)
+                    .ok_or_else(|| format!("`library_places` must be an array of at most {MAX_PLACES} places"))?;
+                let rows: Vec<PlaceRow> = rows
+                    .iter()
+                    .enumerate()
+                    .map(|(i, row)| serde_json::from_value(row.clone()).map_err(|error| format!("`library_places[{i}]`: {error}")))
+                    .collect::<Result<_, _>>()?;
+                asked_places = Some(rows);
             } else if k != "theme_options" {
                 o.insert(k.clone(), v.clone());
             }
@@ -4094,6 +4113,9 @@ fn prepare_preferences(
         return Err("`dimension_colour` must be null or three numbers 0…255".into());
     }
     let mut new: Prefs = serde_json::from_value(cur).map_err(|e| e.to_string())?;
+    if let Some(rows) = asked_places {
+        new.library_places = rows;
+    }
     new.retain_legacy_panel_fields(base);
     migrate_gruvbox(&mut new);
     if let Some(update) = p.get("theme_options") {
@@ -4178,10 +4200,13 @@ fn prepare_preferences(
             solidcraft_engine::io::vfs::check(&grant.folder.to_string_lossy()).map_err(|e| format!("`plugin_grants` folder for `{id}`: {e}"))?;
         }
     }
-    // The same for a library place: a later scan reads it as the app.
-    if new.library_places.iter().any(|row| row.place.path().is_none()) {
-        return Err("`library_places` rows each name a folder; the built-in library is always listed".into());
+    // The places' one rule, as `library.places.*` keeps it, when this request changes them (a list
+    // saved before is not judged again here).
+    if p.get("library_places").is_some() || p.get("my_library_folder").is_some() {
+        let my_library = Some(new.my_library_folder.trim()).filter(|folder| !folder.is_empty());
+        solidcraft_engine::io::library::check_places(my_library, &new.library_places).map_err(|e| format!("`library_places`: {e}"))?;
     }
+    // The same for a library place: a later scan reads it as the app.
     let new_folders = new.library_places.iter().filter(|row| !app.preferences.library_places.contains(row)).filter_map(|row| row.place.path());
     let my_library = (new.my_library_folder != app.preferences.my_library_folder && !new.my_library_folder.trim().is_empty())
         .then_some(new.my_library_folder.as_str());
@@ -7252,6 +7277,40 @@ mod tests {
         other.load_prefs(&saved);
         assert_eq!(serde_json::to_value(&other.preferences.library_places).unwrap(), json!([row(0)]));
         assert_eq!(other.preferences.my_library_folder, place("my-libraries"));
+    }
+
+    /// `ui.prefs` keeps the places' one rule: a row that doesn't read, a list over the cap, a folder
+    /// listed twice or as My Library, or the built-in library is refused with its reason, never left
+    /// out or cut without a word. A built-in row saved before is left out on load, and never stops a
+    /// request that doesn't change the places.
+    #[test]
+    fn ui_prefs_refuses_the_place_lists_the_place_commands_refuse() {
+        use serde_json::json;
+        let root = std::env::temp_dir();
+        let place = |name: &str| root.join(name).to_string_lossy().into_owned();
+        let row = |name: &str| json!({"place": {"kind": "folder", "path": place(name)}, "read_only": false});
+        let built_in = json!({"place": {"kind": "built_in"}, "read_only": true});
+        let mut app = crate::SolveApp::new(solidcraft_engine::Session::default(), crate::Services::default());
+        super::set(&mut app, &json!({"library_places": [row("a")], "my_library_folder": place("mine")})).unwrap();
+        let many: Vec<_> = (0..=solidcraft_engine::io::library::MAX_PLACES).map(|i| row(&format!("many-{i}"))).collect();
+        for (places, why) in [
+            (json!([row("b"), {"place": {"kind": "shelf", "path": place("x")}}]), "library_places[1]"),
+            (json!(many), "at most"),
+            (json!([row("b"), row("b")]), "listed already"),
+            (json!([row("mine")]), "listed already"),
+            (json!([built_in.clone()]), "always listed"),
+        ] {
+            let err = super::set(&mut app, &json!({"library_places": places})).unwrap_err();
+            assert!(err.contains(why), "{why}: {err}");
+        }
+        assert!(super::set(&mut app, &json!({"my_library_folder": place("a")})).unwrap_err().contains("listed already"));
+        assert_eq!(serde_json::to_value(&app.preferences.library_places).unwrap(), json!([row("a")]), "nothing changed");
+
+        let saved = super::lenient(&json!({"library_places": [built_in, row("a")]}));
+        assert_eq!(serde_json::to_value(&saved.library_places).unwrap(), json!([row("a")]), "the built-in row is left out on load");
+        let built_in_row = solidcraft_engine::io::library::PlaceRow { place: solidcraft_engine::io::library::Place::BuiltIn, read_only: true };
+        app.preferences.library_places.push(built_in_row);
+        super::set(&mut app, &json!({"length_decimals": 3})).unwrap();
     }
 
     /// My Library is the `libraries` folder in SolidCraft's data folder, or none without one.
