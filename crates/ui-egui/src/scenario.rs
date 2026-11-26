@@ -170,13 +170,21 @@ impl Drop for Harness {
     }
 }
 
+/// A new app as the harness runs one, at its start and after a restart: test-owned like the import
+/// cache, so no frame reads the developer's own My Library folder.
+fn new_app() -> SolveApp {
+    let mut app = SolveApp::new(Session::default(), Services::default());
+    app.preferences.my_library_folder.clear();
+    app
+}
+
 impl Harness {
     pub fn new() -> Harness {
         // Test-owned reuse store: never the developer's per-user data folder.
         solidcraft_engine::use_import_cache_dir(std::env::temp_dir().join(format!("solidcraft-scenario-imports-{}", std::process::id())));
         solidcraft_ui_text::pin_system_language();
         let mut h = Harness {
-            app: SolveApp::new(Session::default(), Services::default()),
+            app: new_app(),
             ctx: {
                 let ctx = egui::Context::default();
                 crate::fonts::setup_bundled_fonts(&ctx);
@@ -193,8 +201,6 @@ impl Harness {
             screen_scale: None,
             cam_mark: None,
         };
-        // Test-owned like the import cache: no frame reads the developer's own My Library folder.
-        h.app.preferences.my_library_folder.clear();
         WIDTHS.with(|m| m.borrow_mut().clear());
         h.install();
         h.ctx.enable_accesskit();
@@ -660,7 +666,7 @@ impl Harness {
                         self.frames(1);
                     }
                 }
-                let mut old = std::mem::replace(&mut self.app, SolveApp::new(Session::default(), Services::default()));
+                let mut old = std::mem::replace(&mut self.app, new_app());
                 if how == "close" {
                     crate::recovery_ui::close(&mut old);
                     // The desktop saves its settings on close and loads them on the next start.

@@ -191,3 +191,15 @@ fn a_changed_only_refresh_keeps_an_unchanged_place_and_reads_a_changed_one() {
     assert!(std::sync::Arc::ptr_eq(&after[1], &again[1]), "the unchanged place keeps its scan");
     assert!(!std::sync::Arc::ptr_eq(&after[2], &again[2]));
 }
+
+/// The test harness's app never reads the developer's own My Library folder: not at its start,
+/// and not after either kind of restart.
+#[test]
+fn the_harness_app_has_no_my_library_after_a_restart() {
+    let mut h = Harness::new();
+    assert_eq!(h.app.preferences.my_library_folder, "");
+    for how in ["crash", "close"] {
+        h.step(&json!({"restart": how})).unwrap();
+        assert_eq!(h.app.preferences.my_library_folder, "", "{how}");
+    }
+}
