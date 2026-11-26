@@ -99,7 +99,8 @@ mod imp {
         let mut out = Vec::new();
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
-            if keep(&entry.file_type()?) {
+            let Some(file_type) = still_there(entry.file_type())? else { continue };
+            if keep(&file_type) {
                 out.push((entry.path().to_string_lossy().into_owned(), entry));
                 if out.len() > max {
                     return Err(Error::new(ErrorKind::InvalidData, too_many.to_string()));
@@ -116,13 +117,21 @@ mod imp {
     /// [`files_in`] with each file's length and modification time, from the listing itself (on
     /// Windows the folder read already holds them; elsewhere one `stat` per file, no file opened).
     pub fn stamped_files_in(dir: &str, max: usize) -> Result<Vec<Stamped>> {
-        entries_in(dir, max, std::fs::FileType::is_file, "too many files in the folder")?
-            .into_iter()
-            .map(|(path, entry)| {
-                let meta = entry.metadata()?;
-                Ok(Stamped { path, len: meta.len(), modified: meta.modified().ok() })
-            })
-            .collect()
+        let stamped = |(path, entry): (String, std::fs::DirEntry)| {
+            let meta = still_there(entry.metadata()).transpose()?;
+            Some(meta.map(|meta| Stamped { path, len: meta.len(), modified: meta.modified().ok() }))
+        };
+        entries_in(dir, max, std::fs::FileType::is_file, "too many files in the folder")?.into_iter().filter_map(stamped).collect()
+    }
+    /// One entry's details from a folder listing; `None` for an entry removed since the folder was
+    /// read, which is left out, as a listing made a moment later leaves it out. Any other failure is
+    /// the listing's.
+    pub(super) fn still_there<T>(read: Result<T>) -> Result<Option<T>> {
+        match read {
+            Ok(found) => Ok(Some(found)),
+            Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e),
+        }
     }
     /// The paths of the folders directly in a folder, sorted; at most `max` of them. Only real
     /// folders ([`real_folder`]), so a listing never leaves `dir`.
@@ -1637,5 +1646,17 @@ mod tests {
         assert_eq!(scope.retained_heap_bytes().unwrap(), expected);
         assert_eq!(scope, before);
         assert_eq!(super::PathScope::default().retained_heap_bytes().unwrap(), 0);
+    }
+
+    /// A file removed between a folder's listing and the read of its details is left out of the
+    /// listing; it doesn't make the whole folder fail as missing.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_file_removed_since_its_folder_was_listed_is_left_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let gone = super::imp::still_there(std::fs::symlink_metadata(dir.path().join("gone.json")));
+        assert!(gone.is_ok_and(|meta| meta.is_none()));
+        let held: std::io::Result<()> = Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "held"));
+        assert!(super::imp::still_there(held).is_err(), "any other failure is the listing's");
     }
 }
