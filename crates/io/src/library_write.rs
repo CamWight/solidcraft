@@ -49,9 +49,10 @@ mod checked_write {
         check_new_design_path(path, None)?;
         crate::safe_write::create_atomic(Path::new(path), bytes)
     }
-    pub(super) fn replace(path: &str, bytes: &[u8]) -> Result<()> {
+    /// `still` is asked again just before the new file takes the name.
+    pub(super) fn replace(path: &str, bytes: &[u8], still: impl FnOnce() -> Result<()>) -> Result<()> {
         check_design_path(path, None)?;
-        crate::safe_write::write_atomic_no_follow(Path::new(path), bytes)
+        crate::safe_write::write_atomic_no_follow_if(Path::new(path), bytes, still)
     }
     pub(super) fn move_to(from: &str, to: &str) -> Result<()> {
         check_design_path(from, None)?;
@@ -257,7 +258,10 @@ impl Libraries {
         let entry = Entry::with_id(&library_id, local, definition, provenance.unwrap_or(old.provenance)).map_err(|e| e.to_string())?;
         let bytes = encode(&entry)?;
         within_library_cap(library, on_disk, bytes.len() as u64)?;
-        checked_write::replace(&path, &bytes).map_err(|e| at(&path, e))?;
+        // Asked again once the new file is written beside it, so a change another app made since the
+        // first check is kept, not written over.
+        let still = || unchanged(&path, listed.kind(), &library_id, revision).map(drop).map_err(std::io::Error::other);
+        checked_write::replace(&path, &bytes, still).map_err(|e| at(&path, e))?;
         let file = listed.file();
         let written = Written { library: library_id, entry: Some(entry.id), revision: Some(entry.revision), file };
         Ok((self.read_again(scan, Some(folder)), written))

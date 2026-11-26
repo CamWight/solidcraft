@@ -908,6 +908,17 @@ fn writes_refuse_read_only_places_the_built_in_library_and_files_changed_since_t
     std::fs::remove_file(open.join("materials/PLA.json")).unwrap();
     assert!(libraries.remove_entry(&pla.id, &pla.revision).unwrap_err().contains("removed since it was read"));
 
+    // Changed by another app while the change is written, after the first check: still refused, and
+    // the other app's file stays as it left it.
+    fn theirs(file: &Path) {
+        std::fs::write(file, b"their change").unwrap();
+    }
+    let s275 = material(ID, "s275", "Steel S275", 7.85);
+    crate::safe_write::meanwhile::before_the_last_step(theirs);
+    let err = libraries.edit_entry(&s275.id, &s275.revision, steel(1.0), None).unwrap_err();
+    assert!(err.contains("changed since it was read"), "{err}");
+    assert_eq!(std::fs::read(open.join("materials/Steel S275.json")).unwrap(), b"their change");
+
     // A write that would take the library past its cap would leave it unavailable: refused. Files a
     // scan refuses still count, as a scan counts every byte it reads.
     let full = dir.path().join("full");

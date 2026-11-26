@@ -361,7 +361,15 @@ pub fn write_atomic(path: &Path, bytes: &[u8], backup: bool) -> std::io::Result<
 /// and what it points to is never touched. Anything there that isn't a regular file is refused. For
 /// the app's own small files beside a design, which never live anywhere else.
 pub fn write_atomic_no_follow(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_no_follow_if(path, bytes, || Ok(()))
+}
+
+/// [`write_atomic_no_follow`] that asks `still` once the new content is written and flushed beside
+/// `path`, just before it takes the name: an error from `still` leaves `path` as it is. For a
+/// change that must find the file as it was read, checked as late as the write allows.
+pub(crate) fn write_atomic_no_follow_if(path: &Path, bytes: &[u8], still: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
     if cfg!(target_arch = "wasm32") {
+        still()?;
         return crate::vfs::write(&path.to_string_lossy(), bytes);
     }
     let there = fs::symlink_metadata(path).ok();
@@ -374,9 +382,11 @@ pub fn write_atomic_no_follow(path: &Path, bytes: &[u8]) -> std::io::Result<()> 
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
+    #[cfg(test)]
+    meanwhile::write(path);
     // A rename replaces the name itself, so a link put there since the check above goes, and the
     // file it pointed to stays as it was.
-    if let Err(e) = replace_synced(&tmp, path) {
+    if let Err(e) = still().and_then(|()| replace_synced(&tmp, path)) {
         let _ = fs::remove_file(&tmp);
         return Err(e);
     }
@@ -418,9 +428,10 @@ pub fn create_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// file (a hard link, which fails if `to` is taken, as [`link_backup`] makes one), then `from` goes.
 /// Not tempfile's rename: on Windows it resets the file's attributes first, and marks it temporary
 /// when refused. A stop between the two steps leaves both names, never neither. A drive without
-/// links (`refused_by_the_drive`) gets a copy published with [`create_atomic`], and `from` goes only
-/// once that copy is whole and `from` still holds what was copied. If `from` can't go, `to` goes
-/// again and the move is refused.
+/// links (`refused_by_the_drive`) gets a copy published with [`create_atomic`]. Either way `from`
+/// goes only while it still holds what `to` holds: a file another program put at `from` meanwhile
+/// stays, with both names kept, and the move is refused. If `from` can't go, `to` goes again and
+/// the move is refused.
 pub(crate) fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     if cfg!(target_arch = "wasm32") {
         // The browser's store is one map on one thread: the check, read, write and remove can't interleave.
@@ -437,14 +448,13 @@ pub(crate) fn move_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
         return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, format!("{}: the file is read-only", from.display())));
     }
     match hard_link(from, to) {
-        Err(e) if refused_by_the_drive(&e) => {
-            let bytes = fs::read(from)?;
-            create_atomic(to, &bytes)?;
-            if fs::read(from)? != bytes {
-                return Err(std::io::Error::other("the file changed while it was moved; both copies were kept"));
-            }
-        }
+        Err(e) if refused_by_the_drive(&e) => create_atomic(to, &fs::read(from)?)?,
         linked => linked?,
+    }
+    #[cfg(test)]
+    meanwhile::write(from);
+    if fs::read(from)? != fs::read(to)? {
+        return Err(std::io::Error::other("the file changed while it was moved; both copies were kept"));
     }
     // Windows refuses the removal while another program holds the file, as it refuses a save's rename.
     if let Err(e) = rename_with_retry(|| fs::remove_file(from), cfg!(windows), std::thread::sleep) {
@@ -536,6 +546,28 @@ fn temps_beside(path: &Path) -> Vec<PathBuf> {
         .map(|e| e.path())
         .filter(|p| p.file_name().map(|n| n.to_string_lossy().to_string()).is_some_and(|n| n.starts_with(&prefix) && n.ends_with(".tmp")))
         .collect()
+}
+
+/// Tests: another program's write to a file, just before a write's last step takes or frees the
+/// name (the rename over it, or a move's removal of the old name).
+#[cfg(test)]
+pub(crate) mod meanwhile {
+    use std::path::Path;
+
+    thread_local! {
+        static WRITER: std::cell::Cell<Option<fn(&Path)>> = const { std::cell::Cell::new(None) };
+    }
+
+    /// The next last step on this thread runs `writer` on its file first, once.
+    pub(crate) fn before_the_last_step(writer: fn(&Path)) {
+        WRITER.with(|w| w.set(Some(writer)));
+    }
+
+    pub(super) fn write(path: &Path) {
+        if let Some(writer) = WRITER.with(std::cell::Cell::take) {
+            writer(path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -836,6 +868,30 @@ mod tests {
             assert!(!from.exists());
             assert_eq!(fs::read(&free).unwrap(), b"steel");
             assert!(stale_temps(&free).is_empty());
+            LINKS_REFUSED.with(|l| l.set(false));
+            fs::remove_dir_all(d).unwrap();
+        }
+    }
+
+    /// A file another program puts at the old name while the move runs (after the second name is
+    /// made) stays: the move is refused and both files are kept, whether the drive takes links or
+    /// the file is copied.
+    #[test]
+    fn a_move_never_removes_a_file_put_at_the_old_name_meanwhile() {
+        fn theirs(path: &Path) {
+            let tmp = path.with_extension("theirs");
+            fs::write(&tmp, b"their change").unwrap();
+            fs::rename(&tmp, path).unwrap();
+        }
+        for refused in [false, true] {
+            LINKS_REFUSED.with(|l| l.set(refused));
+            let d = dir(if refused { "move-meanwhile-copied" } else { "move-meanwhile" });
+            let (from, to) = (d.join("Steel.json"), d.join("bin.json"));
+            fs::write(&from, b"steel").unwrap();
+            meanwhile::before_the_last_step(theirs);
+            let err = move_no_replace(&from, &to).unwrap_err();
+            assert!(err.to_string().contains("changed while it was moved"), "{err}");
+            assert_eq!((fs::read(&from).unwrap(), fs::read(&to).unwrap()), (b"their change".to_vec(), b"steel".to_vec()));
             LINKS_REFUSED.with(|l| l.set(false));
             fs::remove_dir_all(d).unwrap();
         }
