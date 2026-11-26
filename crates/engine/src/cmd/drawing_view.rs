@@ -831,6 +831,7 @@ fn edit(s: &mut Session, p: &Value) -> Result<Value> {
         || set.hide.is_some()
         || set.hide_bodies.is_some()
         || set.reference_shown_percent.is_some()
+        || set.axonometry.is_some()
         || apart;
     let resolve = |d: &Drawing, ids: &[u64]| ids.iter().map(|id| d.resolve_view(*id).ok()).collect::<Vec<Option<ResolvedView>>>();
     let before = resolve(s.drawing(EDIT)?, &descendants);

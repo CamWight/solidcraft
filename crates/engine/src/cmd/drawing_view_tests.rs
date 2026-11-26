@@ -273,6 +273,28 @@ fn an_edit_that_takes_a_view_off_the_sheet_says_so() {
     assert!(styled.get("outside").is_none(), "{styled}");
 }
 
+/// A new axonometry changes a pictorial view's size, so an edit that makes it wider lists it when
+/// it now leaves the sheet's drawing space. A 100 x 60 x 20 block's dimetric view is 1.6 mm wider
+/// than its isometric one at 1:1 (114.75 against 113.14), so an isometric view 0.4 mm inside the
+/// space's left edge leaves it as dimetric.
+#[test]
+fn an_axonometry_edit_that_takes_a_view_off_the_sheet_says_so() {
+    let mut s = Session::default();
+    run(&mut s, "solid.box", json!({"length": 100, "width": 60, "height": 20, "body_name": "Block"}));
+    run(&mut s, "drawing.create", json!({}));
+    let space = s.drawing("test").unwrap().sheets[0].drawing_space().unwrap();
+    let (_, front) = create(&mut s, BASE, json!({"sheet": "Sheet 1", "scale": "1:1"}));
+    let (iso, id) = create(&mut s, PROJECTED, json!({"parent": ids::encode(front), "side": "above_right"}));
+    let (min, centre) = (point(&iso["boundary_mm"]["min"]), boundary(&iso).1);
+    let at = [centre.x + space.min.x + 0.4 - min.x, (space.min.y + space.max.y) / 2.0];
+    let placed = edit_view(&mut s, id, json!({"place": {"at": at}}));
+    assert!(placed.get("outside").is_none(), "isometric, it fits: {placed}");
+    let wider = edit_view(&mut s, id, json!({"axonometry": "dimetric"}));
+    assert!(point(&inspect_view(&mut s, id)["boundary_mm"]["min"]).x < space.min.x, "dimetric, it leaves the space");
+    let listed: Vec<Value> = wider["outside"].as_array().unwrap().iter().map(|o| o["view"].clone()).collect();
+    assert_eq!(listed, vec![json!(ids::encode(id))], "{wider}");
+}
+
 /// A second sheet in the drawing, A3 landscape as the first: its id.
 fn second_sheet(s: &mut Session) -> u64 {
     let added = run(s, "drawing.sheet.add", json!({}));
