@@ -129,9 +129,10 @@ fn widget_near_centres(nodes: &[(egui::accesskit::NodeId, egui::accesskit::Node)
     })
 }
 
-/// The app in a headless egui context.
+/// The app in a headless egui context. The app is boxed: it is hundreds of kilobytes, and a
+/// helper that returns or holds a harness would keep a copy of it in its stack frame (#21642).
 pub struct Harness {
-    pub app: SolveApp,
+    pub app: Box<SolveApp>,
     pub ctx: egui::Context,
     /// The last frame's platform output (with its accessibility tree: dialog widgets are found
     /// by their text there).
@@ -171,9 +172,9 @@ impl Drop for Harness {
 }
 
 /// A new app as the harness runs one, at its start and after a restart: test-owned like the import
-/// cache, so no frame reads the developer's own My Library folder.
-fn new_app() -> SolveApp {
-    let mut app = SolveApp::new(Session::default(), Services::default());
+/// cache, so no frame reads the developer's own My Library folder. Boxed, as the harness holds it.
+fn new_app() -> Box<SolveApp> {
+    let mut app = Box::new(SolveApp::new(Session::default(), Services::default()));
     app.preferences.my_library_folder.clear();
     app
 }
