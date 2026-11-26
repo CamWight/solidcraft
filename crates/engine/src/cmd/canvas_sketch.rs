@@ -800,9 +800,9 @@ mod tests {
         assert!(s.execute("canvas.to_sketch", &json!({"canvas": "nope"})).is_err());
     }
 
-    /// A white 200x100 PNG with a red disc (centre 50, 50; radius 30) holding a darker red disc
+    /// A white 200x100 picture with a red disc (centre 50, 50; radius 30) holding a darker red disc
     /// (radius 12), and a blue square (x 120 to 180, y 20 to 80).
-    fn shapes() -> String {
+    fn shapes_image() -> image::RgbaImage {
         let mut img = image::RgbaImage::from_pixel(200, 100, image::Rgba([255, 255, 255, 255]));
         for (x, y, px) in img.enumerate_pixels_mut() {
             let d = ((x as f64 - 50.0).powi(2) + (y as f64 - 50.0).powi(2)).sqrt();
@@ -814,8 +814,13 @@ mod tests {
                 *px = image::Rgba([0, 0, 255, 255]);
             }
         }
+        img
+    }
+
+    /// [`shapes_image`] as a PNG file.
+    fn shapes() -> String {
         let mut out = std::io::Cursor::new(Vec::new());
-        img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+        shapes_image().write_to(&mut out, image::ImageFormat::Png).unwrap();
         image_file(&out.into_inner())
     }
 
@@ -983,12 +988,9 @@ mod tests {
         assert!(s.doc.features.is_empty(), "nothing is added");
     }
 
-    /// A picture stored on its side with an EXIF orientation is traced as its canvas shows it,
-    /// upright (#19112): [`drawing`] stored 200 x 100 with orientation 6 shows 100 x 200, the ring
-    /// above the square, so the outlines run taller than wide.
-    #[test]
-    fn a_turned_picture_is_traced_as_its_canvas_shows_it() {
-        let img = drawing();
+    /// `img` as a PNG file stored on its side: EXIF orientation 6, so it shows turned a quarter
+    /// clockwise, stored pixel (x, y) shown at (height - 1 - y, x).
+    fn turned(img: &image::RgbaImage) -> String {
         let mut out = Vec::new();
         let mut encoder = png::Encoder::new(&mut out, img.width(), img.height());
         encoder.set_color(png::ColorType::Rgba);
@@ -999,8 +1001,16 @@ mod tests {
         writer.write_chunk(png::chunk::ChunkType(*b"eXIf"), &exif).unwrap();
         writer.write_image_data(img.as_raw()).unwrap();
         writer.finish().unwrap();
+        image_file(&out)
+    }
+
+    /// A picture stored on its side with an EXIF orientation is traced as its canvas shows it,
+    /// upright (#19112): [`drawing`] stored 200 x 100 with orientation 6 shows 100 x 200, the ring
+    /// above the square, so the outlines run taller than wide.
+    #[test]
+    fn a_turned_picture_is_traced_as_its_canvas_shows_it() {
         let mut s = Session::default();
-        s.execute("canvas.insert", &json!({"path": image_file(&out), "plane": "XY", "width": 50})).unwrap();
+        s.execute("canvas.insert", &json!({"path": turned(&drawing()), "plane": "XY", "width": 50})).unwrap();
         let r = s.execute("canvas.to_sketch", &json!({})).unwrap();
         assert_eq!((&r["outlines"], &r["holes"]), (&json!(2), &json!(1)), "{r}");
         let ss = s.model.state().sketch(r["sketch"].as_u64().unwrap()).unwrap().clone();
@@ -1011,5 +1021,27 @@ mod tests {
         let (wide, high) = (span(|p| p.x), span(|p| p.y));
         // 80 by 170 pixels of drawing at 0.5 mm a pixel.
         assert!(high > 1.5 * wide, "upright: {wide} mm wide, {high} mm high");
+    }
+
+    /// A colour region picked on a turned picture is found and traced where its canvas shows it
+    /// (#19112, #20798): [`shapes_image`] stored 200 x 100 with orientation 6 shows 100 x 200 at
+    /// 1 mm a pixel, its blue square turned to shown pixels x 20 to 80, y 120 to 180.
+    #[test]
+    fn a_region_picked_on_a_turned_picture_is_traced_as_shown() {
+        let mut s = Session::default();
+        s.execute("canvas.insert", &json!({"path": turned(&shapes_image()), "plane": "XY", "width": 100, "center": [10, 5]})).unwrap();
+        // Shown pixel (x, y) lies at [10 - 50 + x, 5 + 100 - y]: the square's centre (50, 150) at
+        // [10, -45], below the canvas the stored picture would make.
+        let r = s.execute("canvas.to_sketch", &json!({"at": [10.0, -45.0]})).unwrap();
+        assert_eq!((r["outlines"].as_u64(), r["holes"].as_u64()), (Some(1), Some(0)), "{r}");
+        let a = areas(&s, &r);
+        assert!(a.len() == 1 && (a[0] - 3600.0).abs() < 3600.0 * 0.05, "{a:?}");
+        let ss = s.model.state().sketch(r["sketch"].as_u64().unwrap()).unwrap().clone();
+        let (xs, ys): (Vec<f64>, Vec<f64>) = ss.sketch.points.iter().map(|p| (p.pos.x, p.pos.y)).unzip();
+        let bounds = |v: &[f64]| (v.iter().copied().fold(f64::INFINITY, f64::min), v.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+        let ((x0, x1), (y0, y1)) = (bounds(&xs), bounds(&ys));
+        // The square from x -20 to 40 and y -75 to -15, within a pixel and a half.
+        let near = |got: f64, want: f64| (got - want).abs() < 1.5;
+        assert!(near(x0, -20.0) && near(x1, 40.0) && near(y0, -75.0) && near(y1, -15.0), "x {x0} to {x1}, y {y0} to {y1}");
     }
 }
