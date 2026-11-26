@@ -50,7 +50,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&PLACES_LIST_CONTRACT)
         .output(output_schema_for::<LibraryPlacesListed>)
         .params("→ places: [{kind, path, read_only, my_library, scan, why, libraries}], the built-in library first; reads no files"),
-    CommandSpec::new("library.places.add", "Add Library Place", crate::checked!("library.places.add", places_add)).icon("add").noundo().doc_only()
+    CommandSpec::new("library.places.add", "Add Library Place", crate::checked!("library.places.add", places_add)).icon("plus").noundo().doc_only()
         .contract(&PLACES_ADD_CONTRACT)
         .output(output_schema_for::<LibraryPlaceChange>)
         .params("path: absolute folder, kind: library | folder, read_only? (default: true for a network folder), at? (default: the end); the app adds it"),
@@ -66,7 +66,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&PLACES_REFRESH_CONTRACT)
         .output(output_schema_for::<LibraryPlacesRefreshed>)
         .params("path?: a listed place (default: every place); changed_only? false: only places whose files changed, by each file's length and time; the app scans it again"),
-    CommandSpec::new("library.create", "New Library", crate::checked!("library.create", create)).icon("add").noundo().doc_only()
+    CommandSpec::new("library.create", "New Library", crate::checked!("library.create", create)).icon("new").noundo().doc_only()
         .contract(&CREATE_CONTRACT)
         .output(output_schema_for::<LibraryWritten>)
         .params("place: a listed place's folder, name: 1-128 bytes, provenance?; a new library folder there (in a library place, that folder, which must be empty); never in a read-only place"),
@@ -74,7 +74,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .contract(&ENTRY_LIST_CONTRACT)
         .output(output_schema_for::<LibraryEntriesListed>)
         .params("library: id → entries: [{id, revision, kind, name, file, why}], refused ones with why; reads no files"),
-    CommandSpec::new("library.entry.add", "Add Library Entry", crate::checked!("library.entry.add", entry_add)).icon("add").noundo().doc_only()
+    CommandSpec::new("library.entry.add", "Add Library Entry", crate::checked!("library.entry.add", entry_add)).icon("plus").noundo().doc_only()
         .contract(&ENTRY_ADD_CONTRACT)
         .output(output_schema_for::<LibraryWritten>)
         .params("library: id, definition: {kind: material | appearance, value}, provenance?; a new file under a new id; never in a read-only place or the built-in library"),
