@@ -943,6 +943,39 @@ fn writes_refuse_read_only_places_the_built_in_library_and_files_changed_since_t
     assert!(libraries.add_entry("user.many", steel(7.85), Provenance::default()).unwrap_err().contains("holds the most entries"));
 }
 
+/// Two apps with the same places, each with its own scan: a write decides its new id and the
+/// library's size from what is on disk now, so the app whose scan is older neither hands out an id
+/// the other took nor fills the library past its cap.
+#[test]
+fn a_write_takes_its_id_and_size_from_the_library_on_disk_now() {
+    let dir = tempfile::tempdir().unwrap();
+    let lib = dir.path().join("lib");
+    shop(&lib, ID);
+    let rows = vec![row(Place::Library(path(&lib)))];
+    let (one, other) = (libraries_of(rows.clone()), libraries_of(rows));
+    let (_, first) = one.add_entry(ID, steel(7.85), Provenance::default()).unwrap();
+    let (_, second) = other.add_entry(ID, steel(7.9), Provenance::default()).unwrap();
+    assert_eq!(first.entry.as_deref(), Some("user.shop/material-steel"));
+    assert_eq!(second.entry.as_deref(), Some("user.shop/material-steel-2"), "an id taken since the older scan");
+    assert!(library_at(&lib).entries().iter().all(|l| l.entry().is_ok()), "no entry refused as a duplicate");
+
+    // Filled near its cap since the older scan: the add is refused, as the next scan would find the
+    // library over it.
+    for i in 0..15 {
+        put(&lib.join(format!("materials/pad-{i:02}.json")), vec![b' '; LIMITS.entry_bytes as usize]);
+    }
+    let used = library_at(&lib).bytes;
+    put(&lib.join("materials/pad-last.json"), vec![b' '; (LIMITS.library_bytes - used) as usize - 100]);
+    assert!(other.add_entry(ID, steel(8.0), Provenance::default()).unwrap_err().contains("would be larger"));
+
+    // A library of the same name made since the older scan: the new one gets another id.
+    let place = path(&dir.path().join("libraries"));
+    let rows = vec![row(Place::Folder(place.clone()))];
+    let (one, other) = (libraries_of(rows.clone()), libraries_of(rows));
+    assert_eq!(one.create_library(&place, "Bench", Provenance::default()).unwrap().1.library, "user.bench");
+    assert_eq!(other.create_library(&place, "Bench", Provenance::default()).unwrap().1.library, "user.bench-2");
+}
+
 /// A library place on a network location takes no write either, and nothing is asked of the network.
 #[test]
 fn a_library_cannot_be_made_on_a_network_location() {

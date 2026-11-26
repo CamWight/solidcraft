@@ -142,11 +142,7 @@ impl Libraries {
             None => super::scan(&scan.place),
             Some(folder) => {
                 let mut fresh = Scanned::clone(scan);
-                let mut seen = Seen::default();
-                let library = match list(folder, &LIMITS, &mut seen) {
-                    Ok(listing) => read_library(folder, listing, &LIMITS, &mut seen),
-                    Err(reason) => Library::unavailable(folder, reason),
-                };
+                let (library, seen) = read_folder(folder);
                 if let Some(old) = fresh.libraries.iter_mut().find(|l| l.folder() == Some(folder)) {
                     *old = library;
                     // Its listings too, so the check after a write finds the place as it left it.
@@ -173,8 +169,11 @@ impl Libraries {
             return Err(format!("{place} is read-only; allow changes to the place first"));
         }
         let scan = self.set.places().iter().find(|s| s.place == row.place).ok_or_else(|| format!("{place} hasn't been scanned yet"))?;
+        // The place as it is now decides, not the session's scan: another app may have made a library
+        // there since.
+        let now = super::scan(&row.place);
         // A missing place is made; any other reason it can't be read stops the write.
-        if let Status::Unavailable(why) = &scan.status
+        if let Status::Unavailable(why) = &now.status
             && *why != Reason::Missing
         {
             return Err(format!("{place} {why}"));
@@ -195,7 +194,7 @@ impl Libraries {
                 join(dir, &stem)
             }
             Place::Library(dir) => {
-                if !scan.libraries.iter().all(|l| l.status == Status::Unavailable(Reason::NoManifest)) {
+                if !now.libraries.iter().all(|l| l.status == Status::Unavailable(Reason::NoManifest)) {
                     return Err(format!("{dir} holds a library already; a library place is one library"));
                 }
                 dir.clone()
@@ -206,7 +205,9 @@ impl Libraries {
         if matches!(row.place, Place::Library(_)) && !empty_or_missing(&folder)? {
             return Err(format!("{folder} isn't empty; a new library needs an empty folder"));
         }
-        let id = new_library_id(self, name);
+        let others = self.set.places().iter().filter(|p| !Arc::ptr_eq(p, scan)).flat_map(|p| &p.libraries);
+        let ids: Vec<&str> = others.chain(&now.libraries).filter_map(Library::id).collect();
+        let id = new_library_id(&ids, name);
         let header = super::Header { format: super::FORMAT.into(), id: id.clone(), name: name.into(), provenance };
         let bytes = serde_json::to_vec_pretty(&header).map_err(|e| e.to_string())?;
         let manifest = join(&folder, &format!("{}{MANIFEST_SUFFIX}", stem(name)));
@@ -221,10 +222,11 @@ impl Libraries {
 
     /// A new entry in the library `library`, under a new id made from its name.
     pub fn add_entry(&self, library: &str, definition: Definition, provenance: Provenance) -> Result<(Libraries, Written), String> {
-        let (scan, target, folder) = self.writable(library)?;
-        let local = new_entry_id(target, &definition);
+        let (scan, _, folder) = self.writable(library)?;
+        let now = on_disk_now(library, folder)?;
+        let local = new_entry_id(&now, &definition);
         let entry = Entry::with_id(library, &local, definition, provenance).map_err(|e| e.to_string())?;
-        let file = self.write_new(&scan.place, target, folder, &entry)?;
+        let file = self.write_new(&scan.place, &now, folder, &entry)?;
         let written = Written { library: library.into(), entry: Some(entry.id), revision: Some(entry.revision), file };
         Ok((self.read_again(scan, Some(folder)), written))
     }
@@ -247,7 +249,7 @@ impl Libraries {
     ) -> Result<(Libraries, Written), String> {
         let (library, listed, old) = self.listed_entry(id)?;
         let library_id = library.id().unwrap_or_default().to_string();
-        let (scan, library, folder) = self.writable(&library_id)?;
+        let (scan, _, folder) = self.writable(&library_id)?;
         if Kind::of(&definition) != listed.kind() {
             return Err(format!("{id} is a {}; its kind can't change", old.definition.kind()));
         }
@@ -257,7 +259,7 @@ impl Libraries {
         let local = id.split_once('/').map(|(_, local)| local).unwrap_or_default();
         let entry = Entry::with_id(&library_id, local, definition, provenance.unwrap_or(old.provenance)).map_err(|e| e.to_string())?;
         let bytes = encode(&entry)?;
-        within_library_cap(library, on_disk, bytes.len() as u64)?;
+        within_library_cap(&on_disk_now(&library_id, folder)?, on_disk, bytes.len() as u64)?;
         // Asked again once the new file is written beside it, so a change another app made since the
         // first check is kept, not written over.
         let still = || unchanged(&path, listed.kind(), &library_id, revision).map(drop).map_err(std::io::Error::other);
@@ -304,6 +306,27 @@ impl Libraries {
         let path = join(&dir, &name);
         checked_write::create(&path, &bytes).map_err(|e| at(&path, e))?;
         Ok(super::entry_file(kind, &name))
+    }
+}
+
+/// The library in `folder` read now, with a scan's reads and caps, and the listings it made.
+fn read_folder(folder: &str) -> (Library, Seen) {
+    let mut seen = Seen::default();
+    let library = match list(folder, &LIMITS, &mut seen) {
+        Ok(listing) => read_library(folder, listing, &LIMITS, &mut seen),
+        Err(reason) => Library::unavailable(folder, reason),
+    };
+    (library, seen)
+}
+
+/// The library `id` in `folder` as it is on disk now. A write takes its new id and its size from
+/// this, not from the session's scan, which a write by another app since may have made old.
+fn on_disk_now(id: &str, folder: &str) -> Result<Library, String> {
+    let (library, _) = read_folder(folder);
+    match library.status() {
+        Status::Unavailable(why) => Err(format!("the library {id} at {folder} {why}")),
+        Status::Available if library.id() != Some(id) => Err(format!("{folder} holds another library now; list the places again")),
+        Status::Available => Ok(library),
     }
 }
 
@@ -371,10 +394,9 @@ fn empty_or_missing(folder: &str) -> Result<bool, String> {
     Ok(dirs.is_empty() && files.is_ok_and(|f| f.is_empty()))
 }
 
-/// A new library id from `name`: `user.<slug>`, then `-2`, `-3`, against every library id the
-/// set lists. Never `solidcraft.`, which is kept for SolidCraft's own libraries.
-fn new_library_id(libraries: &Libraries, name: &str) -> String {
-    let ids: Vec<&str> = libraries.set.libraries().filter_map(|(l, _)| l.id()).collect();
+/// A new library id from `name`: `user.<slug>`, then `-2`, `-3`, against `ids`, every library id
+/// the places list. Never `solidcraft.`, which is kept for SolidCraft's own libraries.
+fn new_library_id(ids: &[&str], name: &str) -> String {
     unique_id("user.", &super::slug(name), "library", |id| ids.contains(&id))
 }
 
