@@ -801,6 +801,19 @@ fn a_new_library_is_made_in_its_own_folder_and_read_back_at_once() {
     assert!(err.contains("isn't empty"), "{err}");
     assert_eq!(std::fs::read_dir(&full).unwrap().count(), 1, "nothing written");
 
+    // A create stopped before its manifest leaves only the empty kind folders: trying again works,
+    // in the same folder, in a library place and in a folder place.
+    let stopped = dir.path().join("stopped");
+    for kind in ["materials", "appearances"] {
+        std::fs::create_dir_all(stopped.join(kind)).unwrap();
+    }
+    libraries_of(vec![row(Place::Library(path(&stopped)))]).create_library(&path(&stopped), "Bench", Provenance::default()).unwrap();
+    assert!(stopped.join("Bench.sclibrary.json").is_file());
+    let again = dir.path().join("again");
+    std::fs::create_dir_all(again.join("Bench/materials")).unwrap();
+    libraries_of(vec![row(Place::Folder(path(&again)))]).create_library(&path(&again), "Bench", Provenance::default()).unwrap();
+    assert!(again.join("Bench/Bench.sclibrary.json").is_file(), "the stopped create's folder, not a second one");
+
     // Refused before anything is written: a read-only place, a place not listed, a bad name.
     let locked = dir.path().join("locked");
     let libraries = libraries_of(vec![PlaceRow { place: Place::Folder(path(&locked)), read_only: true }]);

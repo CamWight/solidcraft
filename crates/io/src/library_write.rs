@@ -188,9 +188,12 @@ impl Libraries {
                 if taken.len() >= LIMITS.libraries_per_folder {
                     return Err(format!("{dir} holds the most folders a place reads ({})", LIMITS.libraries_per_folder));
                 }
-                let taken: Vec<String> = taken.iter().map(|d| super::file_label(d).to_lowercase()).collect();
-                let stem = unique(&stem(name), |candidate| taken.contains(&candidate.to_lowercase()))
-                    .ok_or_else(|| format!("{dir}: every folder name for {name} is taken"))?;
+                let names: Vec<String> = taken.iter().map(|d| super::file_label(d)).collect();
+                // Taken whatever the case, but a folder of this very name that a stopped create left
+                // ([`unused`]) is used again, not passed over.
+                let left = |folder: &String| unused(&join(dir, folder)).unwrap_or(false);
+                let taken = |candidate: &str| names.iter().any(|n| n.to_lowercase() == candidate.to_lowercase() && !(n == candidate && left(n)));
+                let stem = unique(&stem(name), taken).ok_or_else(|| format!("{dir}: every folder name for {name} is taken"))?;
                 join(dir, &stem)
             }
             Place::Library(dir) => {
@@ -201,8 +204,8 @@ impl Libraries {
             }
             Place::BuiltIn => return Err(Reason::BuiltIn.to_string()),
         };
-        // In a library place the folder must be empty: never turn someone's folder into a library.
-        if matches!(row.place, Place::Library(_)) && !empty_or_missing(&folder)? {
+        // The folder must be empty: never turn someone's folder into a library.
+        if !unused(&folder)? {
             return Err(format!("{folder} isn't empty; a new library needs an empty folder"));
         }
         let others = self.set.places().iter().filter(|p| !Arc::ptr_eq(p, scan)).flat_map(|p| &p.libraries);
@@ -383,15 +386,19 @@ fn to_bin(place: &Place, path: &str, folder: &str, kind: Kind, label: &str) -> R
     Err(format!("{bin}: every name for {label} is taken"))
 }
 
-fn empty_or_missing(folder: &str) -> Result<bool, String> {
-    let dirs = match checked::dirs_in(folder, 1) {
+/// Whether a new library may be made in `folder`: it isn't there, or holds nothing, or holds only
+/// the empty kind folders a create stopped before its manifest leaves, so trying again works.
+fn unused(folder: &str) -> Result<bool, String> {
+    let kinds = [Kind::Material, Kind::Appearance].map(|kind| join(folder, kind.folder()));
+    let dirs = match checked::dirs_in(folder, kinds.len()) {
         Ok(dirs) => dirs,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(true),
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => return Ok(false),
         Err(e) => return Err(at(folder, e)),
     };
-    let files = checked::files_in(folder, 1);
-    Ok(dirs.is_empty() && files.is_ok_and(|f| f.is_empty()))
+    let no_files = |dir: &str| checked::files_in(dir, 0).is_ok_and(|files| files.is_empty());
+    let empty = |dir: &String| kinds.contains(dir) && no_files(dir.as_str()) && checked::dirs_in(dir, 0).is_ok_and(|dirs| dirs.is_empty());
+    Ok(no_files(folder) && dirs.iter().all(empty))
 }
 
 /// A new library id from `name`: `user.<slug>`, then `-2`, `-3`, against `ids`, every library id
