@@ -86,7 +86,13 @@ impl Placement {
 
     #[cfg(test)]
     pub(super) fn request(&self, drawing: &Drawing) -> Option<Value> {
-        self.target(drawing, Vec2::new(0.0, 0.0)).map(|(_, _, request)| request)
+        self.request_at(drawing, Vec2::new(0.0, 0.0))
+    }
+
+    /// The request the preview snapshots with the pointer at `cursor` on the sheet.
+    #[cfg(test)]
+    pub(super) fn request_at(&self, drawing: &Drawing, cursor: Vec2) -> Option<Value> {
+        self.target(drawing, cursor).map(|(_, _, request)| request)
     }
 
     fn orientation(&self) -> &str {

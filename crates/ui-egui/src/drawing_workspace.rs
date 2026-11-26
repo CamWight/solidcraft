@@ -1991,6 +1991,45 @@ mod tests {
         assert_eq!(drawing.view_centre(base.id).unwrap().y, drawing.view_centre(projected.id).unwrap().y);
     }
 
+    /// The preview beside a view, on a diagonal, looks the way the pictorial view a click there
+    /// makes looks: isometric, as `drawing.view.projected` makes it by default (#13044).
+    #[test]
+    fn a_diagonal_placement_previews_the_isometric_view_it_places() {
+        use solidcraft_engine::doc::drawing::{
+            fold::Axonometry,
+            view::{Beside, ViewKind},
+        };
+        use solidcraft_engine::geom::Vec3Geom;
+
+        let mut h = Harness::new();
+        h.app.home.open = false;
+        h.app.run("solid.box", serde_json::json!({"length":40,"width":20,"height":3})).unwrap();
+        enter(&mut h.app, true).unwrap();
+        h.app.run("drawing.create", serde_json::json!({})).unwrap();
+        let base = h.app.run("drawing.view.base", serde_json::json!({"sheet":"Sheet 1","scale":"1:1","position_mm":[150,150]})).unwrap();
+        h.frames(4);
+        let parent = base["view"].as_str().and_then(solidcraft_engine::doc::ids::decode).unwrap();
+        let tool = placement::Placement::from_parent(&h.app, parent).unwrap();
+        let offset = Vec2::new(80.0, 80.0);
+        let beside = Beside::of_offset(offset).unwrap();
+        assert!(matches!(beside, Beside::Diagonal(_)), "{beside:?}");
+        let drawing = h.app.session.drawing("drawing.inspect").unwrap();
+        let request = tool.request_at(drawing, drawing.view_centre(parent).unwrap() + offset).unwrap();
+
+        let placed = h.app.run("drawing.view.projected", serde_json::json!({"parent": base["view"], "side": beside})).unwrap();
+        let id = placed["view"].as_str().and_then(solidcraft_engine::doc::ids::decode).unwrap();
+        let drawing = h.app.session.drawing("drawing.inspect").unwrap();
+        assert!(matches!(drawing.view(id).unwrap().kind, ViewKind::Pictorial { axonometry: Axonometry::Isometric, .. }));
+        let basis = drawing.resolve_view(id).unwrap().basis;
+        let direction = basis.y.cross(basis.x);
+        let near = |got: &serde_json::Value, want: [f64; 3]| {
+            let got: Vec<f64> = got.as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+            got.len() == 3 && got.iter().zip(want).all(|(a, b)| (a - b).abs() < 1e-9)
+        };
+        assert!(near(&request["view"]["direction"], [direction.x, direction.y, direction.z]), "{request}");
+        assert!(near(&request["view"]["up"], [basis.y.x, basis.y.y, basis.y.z]), "{request}");
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn base_view_snapshot_draws_marks_while_a_drawing_is_open() {
