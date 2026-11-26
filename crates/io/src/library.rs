@@ -115,15 +115,14 @@ pub enum PlaceEdit {
     },
 }
 
-/// What a folder is compared by, so one folder is one place however it is spelled: on Windows,
-/// ASCII case and the two separators don't matter; elsewhere only a trailing `/`. Text only: a
-/// network folder is never asked.
+/// What a folder is compared by, so one folder is one place however it is spelled: repeated
+/// separators, `.` parts and a trailing separator don't matter, nor, on Windows, ASCII case and
+/// which of the two separators. Text only: a network folder is never asked, so a `..` part (only
+/// the disk can say where it leads) stays as it is written.
 fn place_key(path: &str) -> String {
-    if cfg!(windows) {
-        path.to_ascii_lowercase().replace('/', "\\").trim_end_matches('\\').to_string()
-    } else {
-        path.trim_end_matches('/').to_string()
-    }
+    let parts: Vec<String> = std::path::Path::new(path).components().map(|part| part.as_os_str().to_string_lossy().into_owned()).collect();
+    let key = parts.join("/");
+    if cfg!(windows) { key.to_ascii_lowercase().replace('\\', "/") } else { key }
 }
 
 /// A library folder's manifest.

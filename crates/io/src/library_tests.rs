@@ -398,6 +398,15 @@ fn a_folder_spelled_two_ways_is_one_place_on_windows() {
     }
 }
 
+/// Repeated separators, `.` parts and a trailing separator don't make a second place, on every system.
+#[test]
+fn a_folder_with_repeated_separators_or_dot_parts_is_one_place() {
+    let list = Libraries::new(Arc::new(scan(&Place::BuiltIn)), None, vec![row(Place::Library("/work/Shop".into()))], &[], &[]);
+    for spelling in ["/work//Shop", "/work/./Shop", "/work/Shop/.", "/work/Shop//"] {
+        assert!(list.edit(&PlaceEdit::Add { row: row(Place::Library(spelling.into())), at: None }).is_err(), "{spelling}");
+    }
+}
+
 #[cfg(not(windows))]
 #[test]
 fn a_folders_case_counts_elsewhere() {
