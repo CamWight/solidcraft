@@ -1,7 +1,7 @@
 use egui::{Stroke, vec2};
 use serde_json::{Value, json};
 use solidcore_record::Vec2;
-use solidcraft_engine::doc::drawing::{Drawing, view::Beside};
+use solidcraft_engine::doc::drawing::{Drawing, fold::Axonometry, view::Beside};
 use solidcraft_engine::doc::ids::encode;
 use solidcraft_engine::geom::Vec3Geom;
 use solidcraft_engine::geom::drawing_view::ProjectedSide;
@@ -82,7 +82,8 @@ impl Placement {
         let beside = Beside::of_offset(cursor - centre)?;
         drawing.can_project_from(parent).ok()?;
         let resolved = drawing.resolve_view(parent).ok()?;
-        let basis = beside.basis(&resolved.basis, drawing.projection).ok()?;
+        // The tool places a diagonal's pictorial view isometric, as drawing.view.projected does by default.
+        let basis = beside.basis(&resolved.basis, drawing.projection, Axonometry::Isometric).ok()?;
         let at = match beside {
             Beside::Side(ProjectedSide::Left | ProjectedSide::Right) => Vec2::new(cursor.x, centre.y),
             Beside::Side(ProjectedSide::Above | ProjectedSide::Below) => Vec2::new(centre.x, cursor.y),
