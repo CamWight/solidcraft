@@ -4,7 +4,8 @@
 //! - Only PNG and JPEG, told by their bytes, and only whole files. The size is read from the
 //!   header and refused over [`MAX_IMAGE_PIXELS`] before anything is decoded.
 //! - An EXIF orientation is applied, so a photo stands as every viewer shows it. It is read by
-//!   [`crate::image_orientation`], as a drawing reads the file's size, so the two always agree.
+//!   [`crate::image_orientation`], by the same EXIF rule the doc crate reads a drawing's file size by,
+//!   so the two always agree.
 //!   Colour profiles are not read: the pixels are taken as sRGB, as browsers take an untagged image.
 //! - Each pixel of the grid is the average of the image under the part of that pixel inside the
 //!   rectangle (a box filter), in linear light with alpha premultiplied: a shrunk logo keeps its

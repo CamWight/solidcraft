@@ -6255,7 +6255,9 @@ version = "0.50.0"
 name = "solidcraft-doc"
 version = "0.50.0"
 dependencies = [
+ "image",
  "log",
+ "png",
  "serde",
  "serde_json",
  "sha2 0.10.9",

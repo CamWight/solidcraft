@@ -22,6 +22,10 @@ solidcraft-derive = { workspace = true }
 solidcraft-format = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true, features = ["raw_value"] }
+# A picture file's header (image_orientation): its EXIF orientation as these decoders read it, as render has them.
+# Doc's, since a canvas's and a sheet picture's shown size are part of the model the cache is keyed by (#21702).
+image = { workspace = true, features = ["jpeg"] }
+png = { workspace = true }
 thiserror = { workspace = true }
 log = { workspace = true }
 sha2 = { workspace = true }

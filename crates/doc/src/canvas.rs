@@ -5,9 +5,9 @@
 use serde::{Deserialize, Serialize};
 use solidcore_record::{Plane, Vec2, Vec3};
 use solidcraft_geom::prelude::*;
-use solidcraft_render::image_orientation;
 
 use crate::PlaneRef;
+use crate::image_orientation;
 
 /// Largest image a canvas may hold (bytes).
 pub const MAX_CANVAS_BYTES: usize = 16 << 20;

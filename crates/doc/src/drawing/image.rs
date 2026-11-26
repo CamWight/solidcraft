@@ -29,12 +29,12 @@ use serde::{Deserialize, Serialize};
 use solidcraft_geom::drawing_view::is_paper_coordinate;
 use solidcraft_geom::paper::{MAX_IMAGE_PIXELS, MAX_SIDE_MM};
 use solidcraft_geom::title_block::{Cell, CellKind};
-use solidcraft_render::image_orientation::{Header, header, shown};
 
 use super::by_id::Record;
 use super::{Drawing, require};
 use crate::blob::Blob;
 use crate::canvas::base64_decode;
+use crate::image_orientation::{Header, header, shown};
 use crate::{DocError, Result, ids};
 
 /// The most image files a drawing may have.

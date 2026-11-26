@@ -4,8 +4,8 @@ use serde_json::{Value, json};
 use solidcore_record::{Plane, Vec2, Vec3};
 use solidcraft_doc::PlaneRef;
 use solidcraft_doc::canvas::{Canvas, CanvasAnchor, MAX_CANVAS_BYTES};
+use solidcraft_doc::image_orientation::{header, shown};
 use solidcraft_geom::prelude::*;
-use solidcraft_render::image_orientation::{header, shown};
 
 use super::CommandSpec;
 use crate::params::{bad, bool_, num, str_, vec2};
