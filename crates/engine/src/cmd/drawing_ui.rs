@@ -66,7 +66,6 @@ pub static COMMANDS: &[CommandSpec] = &[
     planned!("drawing.view.detail.planned", "Detail View", "4816").at("DRAWING LAYOUT", "VIEWS").icon("drawing_detail_view"),
     planned!("drawing.views.align", "Align Views", "4894").at("DRAWING LAYOUT", "ARRANGE").icon("drawing_align_views"),
     planned!("drawing.image", "Insert Image", "4894").at("DRAWING LAYOUT", "INSERT").icon("drawing_image"),
-    planned!("drawing.line", "Drawing Line", "4890").icon("line"),
     planned!("drawing.resources", "Browse Drawing Resources", "4894").icon("drawing_resources"),
     planned!("drawing.dimension", "Drawing Dimension", "4896").at("DRAWING ANNOTATE", "MEASURE").icon("drawing_dimension"),
     planned!("drawing.hole_callout", "Hole Callout", "4896").at("DRAWING ANNOTATE", "MEASURE").icon("drawing_hole_callout"),
