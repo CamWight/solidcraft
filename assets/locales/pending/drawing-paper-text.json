@@ -380,8 +380,6 @@
     "drawing.paper.view_label.view": "视图"
   },
   "zh-TW": {
-    "Sheet": "圖紙",
-    "Title": "標題",
     "drawing.paper.cell.approved_by": "核准",
     "drawing.paper.cell.created_by": "編製",
     "drawing.paper.cell.date_of_issue": "發行日期",
