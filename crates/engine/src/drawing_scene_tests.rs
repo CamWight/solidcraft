@@ -6394,7 +6394,7 @@ fn a_turned_views_sketch_turns_with_it() {
     run(&mut s, "sketch.finish", json!({}));
     let sketch_of = |s: &mut Session| serde_json::to_string(cached_sketch_group(&settled(s, sheet).scene, id)).unwrap();
     let unturned = sketch_of(&mut s);
-    for degrees in [90.0, 30.0] {
+    for degrees in [90.0_f64, 30.0] {
         run(&mut s, "drawing.view.edit", json!({"view":ids::encode(front),"set":{"rotation":degrees}}));
         let shown = settled(&mut s, sheet);
         assert_eq!(bytes(&shown.scene), bytes(&built(&s, sheet).scene));
