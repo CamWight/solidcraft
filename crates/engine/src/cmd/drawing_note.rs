@@ -19,6 +19,7 @@ use super::CommandSpec;
 use super::drawing_dimension::status_words;
 use super::drawing_view::{check_drawn, drawn_warning};
 use crate::params::bad;
+use crate::schema::drawing_balloon::AtEdge;
 use crate::schema::drawing_note::{
     AddParams, AnchorParam, BranchParam, BranchResult, BranchesSet, DeleteParams, DeleteResult, EditParams, EditResult, FieldResult, InspectParams,
     NoteResult,
@@ -45,7 +46,7 @@ pub static COMMANDS: &[CommandSpec] = &[
         .params(
             "anchor: {sheet: id or name}, {view: id}, {edge: {view, edge}} or {corner: {view, corner}} (an edge or a corner as drawing.dimension.add \
              takes it; its leader ends there); at: [x, y] on paper in mm, from the sheet's lower-left corner or the view's centre; content: text, \
-             or [{text} or {field: {source: component|drawing|sheet|revision, key, format?}}]; cap_mm?: 0.5..100, its text height; align?: left (default: the text starts at `at`), centre (the text is centred on `at`) or right (the text ends at `at`), each line of several standing the same way; branches?: [{edge} or \
+             or [{text} or {field: {source: component|drawing|sheet|revision, key, format?}}]; cap_mm?: 0.5..100, its text height; align?: left (default: the text starts at `at`), centre (the text is centred on `at`) or right (the text ends at `at`), each line of several standing the same way; at_edge?: middle (default) or picked, where an edge anchor's leader ends: on the edge's middle, or at its `point`, kept as a part of the edge's length; branches?: [{edge} or\
              {corner}], more leaders of a note on a view, 16 leaders in all, its anchor's included → what drawing.note.inspect answers \
              for it. Saved by name, never the point picked; an edge or a corner on a part its view doesn't \
              draw is refused. One undo step; no model is evaluated.",
@@ -98,11 +99,11 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
         return Err(bad(ADD, why));
     }
     let record = s.drawing(ADD)?.clone();
-    let anchor = anchor(s, &record, request.anchor, ADD)?;
+    let anchor = anchor(s, &record, request.anchor, request.at_edge, ADD)?;
     let branches = request.branches.iter().map(|pick| branch(s, pick, ADD)).collect::<Result<Vec<_>>>()?;
     let align = Some(request.align.unwrap_or(HAlign::Left));
     let mut note = Note { id: 0, anchor, at: request.at, content: request.content.0, cap_mm: request.cap_mm, align, branches };
-    check_on_view(&record, &note.anchor, note.references(), ADD)?;
+    check_on_view(s, &record, &note.anchor, note.references(), ADD)?;
     note.id = record.allocate_id(&mut s.ids).map_err(|e| bad(ADD, e.to_string()))?;
     let id = note.id;
     s.edit_drawing(ADD, |d| {
@@ -113,16 +114,17 @@ fn add(s: &mut Session, p: &Value) -> Result<Value> {
 }
 
 /// The anchor `param` names in `record`: a sheet, a view, or an edge or a corner of a view's model,
-/// saved by name. A note's, and anything else placed as a note is.
-pub(super) fn anchor(s: &Session, record: &Drawing, param: AnchorParam, cmd: &str) -> Result<Anchor> {
+/// saved by name, an edge's leader ending where `at_edge` says. A note's, and anything else placed as a note is.
+pub(super) fn anchor(s: &Session, record: &Drawing, param: AnchorParam, at_edge: AtEdge, cmd: &str) -> Result<Anchor> {
     let on_view = |view: u64| record.view(view).map(|_| view).ok_or_else(|| bad(cmd, format!("the drawing has no view {}", ids::encode(view))));
     Ok(match param {
         AnchorParam::Sheet(named) => Anchor::Sheet(crate::drawing_scene::sheet_id(record, &named, cmd)?),
         AnchorParam::View(view) => Anchor::View(on_view(view.0)?),
-        AnchorParam::Edge { view, edge } => Anchor::Edge {
-            view: on_view(view.0)?,
-            edge: s.doc.edge_reference(&s.model, &edge.pick, &edge.path).map_err(|why| bad(cmd, why.to_string()))?,
-        },
+        AnchorParam::Edge { view, edge: picked } => {
+            let edge = s.doc.edge_reference(&s.model, &picked.pick, &picked.path).map_err(|why| bad(cmd, why.to_string()))?;
+            let along = super::drawing_balloon::leader_along(s, &edge, &picked.pick, at_edge, cmd)?;
+            Anchor::Edge { view: on_view(view.0)?, edge, along }
+        }
         AnchorParam::Corner { view, corner } => Anchor::Corner {
             view: on_view(view.0)?,
             point: s.doc.corner_reference(&s.model, &corner.pick, &corner.path).map_err(|why| bad(cmd, why.to_string()))?,
@@ -132,9 +134,9 @@ pub(super) fn anchor(s: &Session, record: &Drawing, param: AnchorParam, cmd: &st
 
 /// Refuses an object anchored at `anchor` whose leaders point at the model through `references`,
 /// when its view doesn't draw a part they point at. A note's, and anything else placed as a note is.
-pub(super) fn check_on_view<'a>(record: &Drawing, anchor: &Anchor, references: impl IntoIterator<Item = Reference<'a>>, cmd: &str) -> Result<()> {
+pub(super) fn check_on_view<'a>(s: &Session, record: &Drawing, anchor: &Anchor, references: impl IntoIterator<Item = Reference<'a>>, cmd: &str) -> Result<()> {
     match anchor.view() {
-        Some(view) => check_drawn(record, view, references, cmd),
+        Some(view) => check_drawn(s, record, view, references, cmd),
         None => Ok(()),
     }
 }
@@ -211,7 +213,7 @@ fn new_branches(s: &Session, id: u64, set: BranchesSet) -> Result<Vec<Branch>> {
     })?;
     let added = set.add.iter().map(|pick| branch(s, pick, EDIT)).collect::<Result<Vec<_>>>()?;
     if let Some(view) = note.anchor.view() {
-        check_drawn(record, view, added.iter().map(Branch::reference), EDIT)?;
+        check_drawn(s, record, view, added.iter().map(Branch::reference), EDIT)?;
     }
     Ok(kept.into_iter().chain(added).collect())
 }
@@ -234,7 +236,7 @@ fn answer(s: &Session, cmd: &str, id: u64) -> Result<Value> {
     let read = |values: &Values| (values.text(&note.content), fields(values, &note.content));
     let at = d.sheet_of(&note.anchor).ok_or_else(|| bad(cmd, format!("note {} is on no sheet", ids::encode(id))))?;
     let (text, fields) = crate::title_block_text::with_values(s, &mut Tree::new(&s.doc, &state), d, at, std::iter::once(&note.content), read);
-    let mut warnings = note.anchor.view().map(|view| drawn_warning(d, view, note.references())).unwrap_or_default();
+    let mut warnings = note.anchor.view().map(|view| drawn_warning(s, d, view, note.references())).unwrap_or_default();
     warnings.extend(off_paper(d, note, &text, at));
     let reply = NoteResult {
         note: ids::encode(id),

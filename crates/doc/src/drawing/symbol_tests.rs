@@ -269,7 +269,7 @@ fn placed() -> (Drawing, [u64; 3], u64) {
         label: None,
     })]);
     let edge = ModelEdge { body: "Bolt".into(), origin_feature: 4, name: "F1:side|F2:head".into(), path: vec![3] };
-    let anchors = [Anchor::Sheet(sheet), Anchor::View(view), Anchor::Edge { view, edge }];
+    let anchors = [Anchor::Sheet(sheet), Anchor::View(view), Anchor::Edge { view, edge, along: None }];
     let mut added = [0; 3];
     for (i, (anchor, id)) in anchors.into_iter().zip(&mut added).enumerate() {
         *id = d.allocate_id(&mut id_source).unwrap();
