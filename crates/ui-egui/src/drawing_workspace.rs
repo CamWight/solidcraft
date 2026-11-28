@@ -2704,9 +2704,7 @@ mod tests {
     /// The File menu offers Drawing Settings… only in Drawing with a drawing open.
     #[test]
     fn file_menu_offers_drawing_settings_only_with_a_drawing_open() {
-        let offered = |h: &Harness| {
-            crate::toolbar::file_rows(&h.app).iter().any(|row| matches!(row, crate::app_bar::FileRow::Item(item) if item.id == "drawing.set"))
-        };
+        let offered = |h: &Harness| crate::toolbar::file_rows(&h.app).iter().any(|row| row.id == "drawing.set");
         let mut h = Harness::new();
         h.app.home.open = false;
         h.app.run("solid.box", serde_json::json!({"length":40,"width":20,"height":3})).unwrap();
